@@ -14,7 +14,7 @@ int main(void) {
         NSDictionary *event = [log.snapshot[@"events"] lastObject];
         CHECK([event[@"facts"] count] == 3 && [event[@"facts"][@"senderCount"] isEqual:@1]);
         NSString *serialized = log.snapshot.description;
-        for (NSString *secret in @[@"wxid_secret", @"secret@chatroom", @"private message", @"123456"])
+        for (NSString *secret in @[@"wxid_secret", @"secret@chatroom", @"private message", @"messageID"])
             CHECK(![serialized containsString:secret]);
         for (NSUInteger i = 0; i < 1000; i++) [log record:@"capture_attempt" facts:@{@"ruleCount": @(i)}];
         CHECK([log.snapshot[@"events"] count] == 300);
