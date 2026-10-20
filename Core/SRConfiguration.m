@@ -4,7 +4,7 @@
 @implementation SRConfiguration
 + (NSMutableDictionary *)emptyDraft {
     return [@{@"schema": @1, @"sourceGroup": @{}, @"senders": @[], @"types": @[@"text", @"image"],
-              @"minimum": @10, @"maximum": @20, @"rules": @[]} mutableCopy];
+              @"minimum": @10, @"maximum": @20, @"rules": @[], @"excludedGroups": @[]} mutableCopy];
 }
 + (BOOL)row:(id)row group:(BOOL)group {
     if (![row isKindOfClass:NSDictionary.class]) return NO;
@@ -35,6 +35,14 @@
             if (![self row:row group:NO] || [senderIDs containsObject:row[@"id"]]) @throw @"sender";
             [senderIDs addObject:row[@"id"]];
         }
+        // Missing exclusions remain valid for drafts saved by earlier versions.
+        NSArray *excluded = draft[@"excludedGroups"] ?: @[];
+        if (![excluded isKindOfClass:NSArray.class]) @throw @"exclusions";
+        NSMutableSet *excludedIDs = [NSMutableSet set];
+        for (id row in excluded) {
+            if (![self row:row group:YES] || [excludedIDs containsObject:row[@"id"]]) @throw @"excluded group";
+            [excludedIDs addObject:row[@"id"]];
+        }
         NSMutableSet *targets = [NSMutableSet set], *ruleIDs = [NSMutableSet set];
         for (id rule in rules) {
             if (![rule isKindOfClass:NSDictionary.class] || ![rule[@"id"] isKindOfClass:NSString.class] ||
@@ -44,7 +52,7 @@
             [ruleIDs addObject:rule[@"id"]];
             for (id row in rule[@"targets"]) {
                 if (![self row:row group:YES] || [row[@"id"] isEqual:source[@"id"]] ||
-                    [targets containsObject:row[@"id"]]) @throw @"target conflict";
+                    [targets containsObject:row[@"id"]] || [excludedIDs containsObject:row[@"id"]]) @throw @"target conflict";
                 [targets addObject:row[@"id"]];
             }
         }

@@ -32,6 +32,7 @@
     }]];
 }
 - (BOOL)isSelected:(NSString *)identifier { return [self.selected containsObject:identifier]; }
+- (NSUInteger)selectedCount { return self.selected.count; }
 - (void)toggle:(NSString *)identifier {
     if (![self.available containsObject:identifier]) return;
     if ([self.selected containsObject:identifier]) [self.selected removeObject:identifier];
@@ -40,5 +41,11 @@
 - (void)selectFirst:(NSUInteger)count {
     [self.selected removeAllObjects];
     for (NSUInteger i = 0; i < MIN(count, self.rows.count); i++) [self.selected addObject:self.rows[i][@"id"]];
+}
+- (void)setRowsMatching:(NSString *)query selected:(BOOL)selected {
+    for (NSDictionary *row in [self rowsMatching:query]) {
+        if (selected) [self.selected addObject:row[@"id"]];
+        else [self.selected removeObject:row[@"id"]];
+    }
 }
 @end

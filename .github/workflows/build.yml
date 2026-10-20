@@ -32,10 +32,12 @@ jobs:
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/store-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRSourceCapture.m Core/SRRunner.m Core/SRPacing.c tests/relay_pipeline_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/pipeline-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReader.m Core/SRSelection.m Core/SRConfiguration.m Core/SRPacing.c tests/adapter_test.m -framework Foundation -o "$RUNNER_TEMP/adapter-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRGroupPlanner.m Core/SRSelection.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRStore.m Core/SRPacing.c tests/group_planner_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/group-planner-test"
           for pass in 1 2 3; do
             "$RUNNER_TEMP/store-test"
             "$RUNNER_TEMP/adapter-test"
             "$RUNNER_TEMP/pipeline-test"
+            "$RUNNER_TEMP/group-planner-test"
           done
       - name: Install build tools
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb

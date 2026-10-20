@@ -88,12 +88,12 @@ int main(void) {
                            @"wxid_b": contact(@"wxid_b", @"Same nickname")};
         NSMutableArray *contacts = [NSMutableArray arrayWithObject:fixture.myself];
         [contacts addObject:group]; [contacts addObject:group];
-        for (int i = 0; i < 2000; i++) [contacts addObject:contact([NSString stringWithFormat:@"group-%d@chatroom", i], @"Group")];
+        for (int i = 0; i < 12345; i++) [contacts addObject:contact([NSString stringWithFormat:@"group-%d@chatroom", i], @"Group")];
         fixture.contacts = contacts;
         for (NSString *version in @[@"8.0.76", @"8.0.79"]) {
             SRWeChatReader *r = reader(version);
             CHECK([r connect:NULL]); CHECK([r.accountID isEqual:@"wxid_me"]);
-            CHECK([r groups:NULL].count == 2001);
+            CHECK([r groups:NULL].count == 12346);
             NSArray *members = [r membersOfGroup:@"source@chatroom" error:NULL];
             CHECK(members.count == 2);
             CHECK([members[0][@"id"] isEqual:@"wxid_a"] && [members[1][@"id"] isEqual:@"wxid_b"]);
@@ -114,12 +114,12 @@ int main(void) {
         CHECK(!rows); // Explicit connect is required before reading.
         SRWeChatReader *r = reader(@"8.0.79"); CHECK([r connect:NULL]); rows = [r groups:NULL];
         SRSelection *selection = [[SRSelection alloc] initWithRows:rows excludedIDs:[NSSet setWithObject:@"source@chatroom"] selectedIDs:NSSet.set];
-        CHECK(selection.rows.count == 2000);
+        CHECK(selection.rows.count == 12345);
         [selection selectFirst:200]; CHECK(selection.selectedRows.count == 200);
-        CHECK([selection rowsMatching:@"group-1999"].count == 1);
+        CHECK([selection rowsMatching:@"group-12344"].count == 1);
         CHECK(selection.selectedRows.count == 200);
-        [selection selectFirst:NSUIntegerMax]; CHECK(selection.selectedRows.count == 2000);
-        [selection toggle:@"source@chatroom"]; CHECK(selection.selectedRows.count == 2000);
+        [selection selectFirst:NSUIntegerMax]; CHECK(selection.selectedRows.count == 12345);
+        [selection toggle:@"source@chatroom"]; CHECK(selection.selectedRows.count == 12345);
         [selection selectFirst:100]; CHECK(selection.selectedRows.count == 100);
 
         NSMutableDictionary *draft = [SRConfiguration emptyDraft]; CHECK([SRConfiguration validateDraft:draft error:NULL]);
@@ -131,7 +131,7 @@ int main(void) {
         draft[@"rules"] = @[rule]; draft[@"minimum"] = @9; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
         draft[@"minimum"] = @10; draft[@"types"] = @[@"video"]; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
         draft[@"types"] = @[@"image"]; CHECK([SRConfiguration validateDraft:draft error:NULL]);
-        puts("PASS: guarded runtime calls, mock reader contracts, account isolation, 2000-row selection and draft validation");
+        puts("PASS: guarded runtime calls, mock reader contracts, account isolation, 12345-row selection and draft validation");
     }
     return 0;
 }
