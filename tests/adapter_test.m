@@ -33,13 +33,32 @@
 @end
 
 static FakeManager *fixture;
+static Class sessionType;
+static id sessionFixture;
+@interface FakeSessions : NSObject
+@property(nonatomic, strong) id usernames;
+@property(nonatomic, copy) void (^onRead)(void);
+- (id)GetUserNamesOnSessionList;
+@end
+@implementation FakeSessions
+- (id)GetUserNamesOnSessionList { if (self.onRead) self.onRead(); return self.usernames; }
+@end
+@interface WrongSessions : NSObject
+- (double)GetUserNamesOnSessionList;
+@end
+@implementation WrongSessions
+- (double)GetUserNamesOnSessionList { abort(); }
+@end
 @interface FakeCenter : NSObject
 + (id)defaultCenter;
 - (id)getService:(Class)type;
 @end
 @implementation FakeCenter
 + (id)defaultCenter { return [[self alloc] init]; }
-- (id)getService:(Class)type { CHECK(type == FakeManager.class); return fixture; }
+- (id)getService:(Class)type {
+    if (type == FakeManager.class) return fixture;
+    CHECK(type == sessionType); return sessionFixture;
+}
 @end
 
 @interface WrongABI : NSObject
@@ -65,8 +84,58 @@ static SRWeChatReader *reader(NSString *version) {
         if ([name isEqual:@"MMServiceCenter"]) return FakeCenter.class;
         if ([name isEqual:@"CContactMgr"]) return FakeManager.class;
         if ([name isEqual:@"CContact"]) return FakeContact.class;
+        if ([name isEqual:@"MMNewSessionMgr"]) return sessionType;
         return Nil;
     }];
+}
+
+static void testPartialGroupLists(void) {
+    FakeManager *original = fixture;
+    fixture = [[FakeManager alloc] init]; fixture.myself = contact(@"wxid_me", @"Me");
+    NSMutableArray *contacts = [NSMutableArray array], *identifiers = [NSMutableArray array];
+    NSMutableDictionary *byName = [NSMutableDictionary dictionary];
+    for (int i = 0; i < 4; i++) {
+        NSString *identifier = [NSString stringWithFormat:@"saved-%d@chatroom", i];
+        FakeContact *value = contact(identifier, @"Saved"); [contacts addObject:value]; byName[identifier] = value;
+    }
+    [identifiers addObject:@"saved-0@chatroom"];
+    for (int i = 0; i < 240; i++) {
+        NSString *identifier = [NSString stringWithFormat:@"session-%d@chatroom", i];
+        [identifiers addObject:identifier]; byName[identifier] = contact(identifier, @"Session");
+    }
+    [identifiers addObjectsFromArray:@[@"session-1@chatroom", @"wxid_person", @4, @" bad@chatroom", @"@chatroom", @"unresolved@chatroom", @"unresolved@chatroom", @"mismatch@chatroom"]];
+    byName[@"mismatch@chatroom"] = contact(@"other@chatroom", @"Wrong");
+    fixture.contacts = contacts; fixture.byName = byName;
+    FakeSessions *sessions = [[FakeSessions alloc] init]; sessions.usernames = identifiers;
+    sessionType = FakeSessions.class; sessionFixture = sessions;
+    for (NSString *version in @[@"8.0.76", @"8.0.79"]) {
+        SRWeChatReader *r = reader(version); CHECK([r connect:NULL]);
+        NSArray *rows = [r groups:NULL]; CHECK(rows.count == 244);
+        NSSet *ids = [NSSet setWithArray:[rows valueForKey:@"id"]]; CHECK(ids.count == rows.count);
+        CHECK([ids containsObject:@"session-239@chatroom"] && ![ids containsObject:@"unresolved@chatroom"] && ![ids containsObject:@"other@chatroom"]);
+        NSDictionary *report = r.diagnostics[@"groupRead"];
+        CHECK([report[@"contacts"][@"ordinaryGroupCount"] isEqual:@4]);
+        CHECK([report[@"sessions"][@"ordinaryGroupCount"] isEqual:@243]);
+        CHECK([report[@"sessions"][@"unresolvedGroupCount"] isEqual:@2]);
+        CHECK([report[@"sessions"][@"invalidItemCount"] isEqual:@1]);
+        CHECK([report[@"mergedGroupCount"] isEqual:@244] && ![report[@"completeJoinedGroupListConfirmed"] boolValue]);
+        NSString *diagnostics = r.diagnostics.description;
+        for (NSString *secret in @[@"wxid_me", @"saved-0", @"session-239", @"unresolved@", @"Wrong"])
+            CHECK(![diagnostics containsString:secret]);
+        sessions.usernames = [NSSet setWithArray:identifiers]; CHECK([r groups:NULL].count == 244);
+        fixture.invalidResult = YES; CHECK([r groups:NULL].count == 241);
+        sessions.usernames = @{}; CHECK(![r groups:NULL]); fixture.invalidResult = NO;
+        CHECK([r groups:NULL].count == 4);
+        sessions.usernames = identifiers;
+        sessions.onRead = ^{ fixture.myself = contact(@"wxid_new", @"Changed"); };
+        CHECK(![r groups:NULL]); CHECK([r.diagnostics[@"groupRead"][@"state"] isEqual:@"not_read"]);
+        sessions.onRead = nil; fixture.myself = contact(@"wxid_me", @"Me");
+    }
+    sessionType = WrongSessions.class; sessionFixture = [[WrongSessions alloc] init];
+    SRWeChatReader *r = reader(@"8.0.79"); CHECK([r connect:NULL]); CHECK([r groups:NULL].count == 4);
+    sessionType = FakeSessions.class; sessionFixture = nil;
+    CHECK([r groups:NULL].count == 4 && [r.diagnostics[@"groupRead"][@"sessions"][@"state"] isEqual:@"service_unavailable"]);
+    sessionType = Nil; sessionFixture = nil; fixture = original;
 }
 
 int main(void) {
@@ -109,6 +178,7 @@ int main(void) {
         CHECK(![reader(@"8.0.80") connect:NULL]);
         SRWeChatReader *missing = [[SRWeChatReader alloc] initWithVersion:@"8.0.79" classResolver:^Class(__unused NSString *name) { return Nil; }];
         CHECK(![missing connect:NULL]);
+        testPartialGroupLists();
 
         NSArray *rows = [reader(@"8.0.79") groups:NULL];
         CHECK(!rows); // Explicit connect is required before reading.
@@ -131,7 +201,7 @@ int main(void) {
         draft[@"rules"] = @[rule]; draft[@"minimum"] = @9; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
         draft[@"minimum"] = @10; draft[@"types"] = @[@"video"]; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
         draft[@"types"] = @[@"image"]; CHECK([SRConfiguration validateDraft:draft error:NULL]);
-        puts("PASS: guarded runtime calls, mock reader contracts, account isolation, 12345-row selection and draft validation");
+        puts("PASS: guarded runtime, four-contact/session union, dedup/account/privacy checks, 12345-row selection and drafts");
     }
     return 0;
 }

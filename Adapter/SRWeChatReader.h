@@ -11,7 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 /* Returned IDs are native usernames, never inferred from a nickname. */
 - (nullable NSArray<NSDictionary *> *)groups:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)membersOfGroup:(NSString *)group error:(NSError **)error;
-/* Contains version/signature information only; no member IDs or message content. */
+/* Version/signatures and aggregate source counts only; no IDs or message content. */
 - (NSDictionary *)diagnostics;
 @end
 NS_ASSUME_NONNULL_END

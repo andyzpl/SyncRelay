@@ -2,6 +2,7 @@
 
 Imports are intercepted with synthetic values. Unsupported calls stop the model.
 The text-route mode stops at AddMsg and does not invoke any real messaging API.
+The session-source mode models empty home sessions and stops at a local username getter.
 """
 import argparse
 import collections
@@ -18,7 +19,7 @@ SOURCE_HASH = '0a11bacae2a0131b0ccbdf20ce49f9374bcd50c0d054fc290e9ba9e3b725eb43'
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--entry', required=True, type=lambda value: int(value, 0))
-    parser.add_argument('--mode', choices=('registration', 'text-route'), default='registration')
+    parser.add_argument('--mode', choices=('registration', 'text-route', 'session-source'), default='registration')
     parser.add_argument('--binary', type=Path, default=ROOT / 'analysis/rootfs/Library/MobileSubstrate/DynamicLibraries/MikotoHelper.dylib')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
@@ -27,6 +28,8 @@ def main():
         parser.error('This evidence model is pinned to the supplied 2.5.0 ARM64 dylib hash')
     if args.mode == 'text-route' and args.entry != 0x272D588:
         parser.error('Synthetic text-route inputs are defined only for entry 0x272d588')
+    if args.mode == 'session-source' and args.entry != 0x32CD560:
+        parser.error('Synthetic session-source inputs are defined only for entry 0x32cd560')
     sys.path.insert(0, str(ROOT / 'analysis/python-libs'))
     import lief
     from unicorn import Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE
@@ -57,6 +60,7 @@ def main():
     next_object, next_string = heap + 0x100000, heap + 0x200000
     calls, registrations, messages, problems = collections.Counter(), [], [], []
     stopped_at_send = False
+    stopped_at_session = False
     for binding in binary.bindings:
         if not binding.has_symbol:
             continue
@@ -92,6 +96,17 @@ def main():
         labels[address] = label
         return address
 
+    def object_label(address):
+        if address in labels:
+            return labels[address]
+        try:
+            _isa, flags, pointer, length = struct.unpack('<QQQQ', machine.mem_read(address, 32))
+            if flags == 0x7C8 and length < 512:
+                return bytes(machine.mem_read(pointer, length)).decode('utf-8', 'replace')
+        except UcError:
+            pass
+        return hex(address)
+
     def string_pointer(value):
         nonlocal next_string
         if value not in strings:
@@ -110,9 +125,12 @@ def main():
                                 (UC_ARM64_REG_X3, object_token('synthetic-target@chatroom')),
                                 (UC_ARM64_REG_X4, 0)):
             machine.reg_write(register, value)
+    elif args.mode == 'session-source':
+        machine.reg_write(UC_ARM64_REG_X0, object_token('synthetic-galaxy-controller'))
+        machine.reg_write(UC_ARM64_REG_X1, string_pointer('candidateItemsFromHomeSessions'))
 
     def imported_call(uc, pc, _size, _data):
-        nonlocal stopped_at_send
+        nonlocal stopped_at_send, stopped_at_session
         if pc == sentinel:
             uc.emu_stop()
             return
@@ -145,6 +163,33 @@ def main():
             result = x0
         elif name == '_objc_release':
             result = 0
+        elif name == '_memset' and args.mode == 'session-source':
+            if x2 > 4096 or not stack <= x0 <= stack + 0x400000 - x2:
+                raise RuntimeError('memset is outside the bounded synthetic stack')
+            uc.mem_write(x0, bytes([x1 & 255]) * x2)
+            result = x0
+        elif name == '_objc_msgSend' and args.mode == 'session-source':
+            selector, receiver = cstring(x1), object_label(x0)
+            messages.append({'caller': hex(caller), 'receiver': receiver, 'selector': selector,
+                             'arg1': object_label(x2), 'arg2': object_label(x3)})
+            if selector == 'GetUserNamesOnSessionList':
+                stopped_at_session = True
+                uc.emu_stop()
+                return
+            if not x0:
+                result = 0
+            elif selector == 'getMMContextWithServiceName:':
+                result = object_token('service:' + object_label(x2))
+            elif selector in ('array', 'dictionary', 'arrayWithObjects:count:', 'topSessions', 'normalSessions'):
+                result = object_token('synthetic-empty-collection')
+            elif selector in ('count', 'countByEnumeratingWithState:objects:count:'):
+                result = 0
+            elif selector == 'respondsToSelector:':
+                result = 0
+            else:
+                problems.append({'unsupportedSelector': selector, 'receiver': receiver, 'caller': hex(caller)})
+                uc.emu_stop()
+                return
         elif name == '_objc_msgSend' and args.mode == 'text-route':
             selector = labels.get(x1, cstring(x1))
             receiver = labels.get(x0, hex(x0))
@@ -179,16 +224,29 @@ def main():
 
     machine.hook_add(UC_HOOK_CODE, imported_call)
     try:
+        if args.mode == 'session-source':
+            machine.emu_start(0x32E4740, sentinel, timeout=15000000, count=1000000)
+            if machine.reg_read(UC_ARM64_REG_PC) != sentinel or problems:
+                raise RuntimeError('Galaxy string/registration initializer did not complete')
+            machine.reg_write(UC_ARM64_REG_SP, stack + 0x3F0000)
+            machine.reg_write(UC_ARM64_REG_LR, sentinel)
+            machine.reg_write(UC_ARM64_REG_X0, object_token('synthetic-galaxy-controller'))
+            machine.reg_write(UC_ARM64_REG_X1, string_pointer('candidateItemsFromHomeSessions'))
         machine.emu_start(args.entry, sentinel, timeout=15000000, count=1000000)
     except (UcError, RuntimeError) as error:
         problems.append({'error': str(error), 'pc': hex(machine.reg_read(UC_ARM64_REG_PC))})
     end_pc = machine.reg_read(UC_ARM64_REG_PC)
-    completed = (end_pc == sentinel or stopped_at_send) and not problems
+    completed = (end_pc == sentinel or stopped_at_send or stopped_at_session) and not problems
     report = {'sourceSHA256': SOURCE_HASH, 'entry': hex(args.entry), 'mode': args.mode,
               'completedModel': completed, 'endPC': hex(end_pc), 'stoppedAtSendBoundary': stopped_at_send,
+              'stoppedAtSessionReadBoundary': stopped_at_session,
               'calls': dict(calls), 'registrations': registrations, 'messages': messages, 'problems': problems,
               'model': 'Offline ARM64 emulation; imports stubbed and classes assumed present. No real iOS, networking, registration or sending.',
-              'limits': {'instructionCount': 1000000, 'timeoutSeconds': 15, 'imageMiB': 128}}
+              'assumptions': (['Initializer 0x32e4740 decodes local strings; registration imports are inert.',
+                               'Home session collections are synthetic empty collections; service objects are tokens.',
+                               'Execution stops before GetUserNamesOnSessionList returns; no group contents or completeness modeled.']
+                              if args.mode == 'session-source' else []),
+              'limits': {'instructionCountPerPhase': 1000000, 'timeoutSecondsPerPhase': 15, 'imageMiB': 128}}
     output = args.output or ROOT / 'analysis/reports' / f'offline-{args.mode}-{args.entry:x}.json'
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

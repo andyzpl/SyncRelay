@@ -24,7 +24,7 @@ __attribute__((constructor)) static void SRInitialize(void) {
                     return;
                 }
                 dispatch_async(dispatch_get_main_queue(), ^{ SRInstallPanelEntry(SRRepository); });
-                NSLog(@"[SyncRelay] 0.2.0 settings ready. Receive capture is manual; sending is disabled.");
+                NSLog(@"[SyncRelay] 0.2.1 initialized. Native settings entry is guarded; floating entry is opt-in. Sending is disabled.");
             }
         });
     }

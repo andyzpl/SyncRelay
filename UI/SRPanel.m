@@ -5,9 +5,11 @@
 #import "Core/SRGroupPlanner.h"
 #import "Core/SRSourceMessage.h"
 #import "Core/SRSourceCapture.h"
+#import "Core/SREntryPreferences.h"
 #import "Adapter/SRWeChatReader.h"
 #import "Adapter/SRWeChatReceiver.h"
 #import "Adapter/SRWeChatSendProbe.h"
+#import "Adapter/SRWeChatSettingsEntry.h"
 #import "SRPlanScreens.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -136,6 +138,8 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRSourceCapture *capture;
+@property(nonatomic, strong) SREntryPreferences *entryPreferences;
+@property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
 @property(nonatomic, strong) NSMutableDictionary *draft;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSString *status;
@@ -147,7 +151,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @implementation SRPanel
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"同步转发";
+    self.title = @"SyncRelay 转发";
     self.navigationController.navigationBar.prefersLargeTitles = YES;
     self.tableView.rowHeight = UITableViewAutomaticDimension; self.tableView.estimatedRowHeight = 64;
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
@@ -196,7 +200,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (void)refresh {
     if ([self.capture.status[@"state"] isEqual:@"waiting"] && ![self.receiver.diagnostics[@"armed"] boolValue]) [self.capture cancel];
     self.navigationItem.rightBarButtonItem.enabled = self.ready;
-    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.0 · 文字捕获候选 / 发送未启用";
+    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.1 · 文字捕获候选 / 发送未启用";
     [self.tableView reloadData];
 }
 - (void)changed {
@@ -226,7 +230,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 4;
+    if (section == 0) return 5;
     if (section == 1) return 4;
     if (section == 2) return 1;
     if (section == 4) return 3;
@@ -260,6 +264,13 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
             cell.textLabel.text = armed ? @"停止手动发送观察" : @"只读观察一次手动文字发送";
             cell.detailTextLabel.text = armed ? @"观察中 · 120 秒到期或切后台停止；结果见适配诊断" : @"只选一个测试群，由你手动发文字；插件不代发";
         }
+        if (path.row == 4) {
+            cell.textLabel.text = @"开启悬浮入口";
+            cell.detailTextLabel.text = @"默认关闭；始终可从 我 → 设置 → SyncRelay 转发 进入";
+            UISwitch *toggle = [[UISwitch alloc] init]; toggle.on = self.entryPreferences.floatingEntryEnabled;
+            [toggle addTarget:self action:@selector(floatingEntryChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryType = UITableViewCellAccessoryNone; cell.accessoryView = toggle; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        }
     } else if (path.section == 1) {
         if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"选择消息来源群"; }
         else if (path.row == 1) { cell.textLabel.text = @"指定发送者"; cell.detailTextLabel.text = [NSString stringWithFormat:@"已选 %lu 人 · 查看 wxid", (unsigned long)[self.draft[@"senders"] count]]; }
@@ -288,6 +299,9 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     }
     if (path.section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
     return cell;
+}
+- (void)floatingEntryChanged:(UISwitch *)toggle {
+    self.entryPreferences.floatingEntryEnabled = toggle.on;
 }
 - (void)typeChanged:(UISwitch *)toggle {
     if (![self checkAccount]) { [self refresh]; return; }
@@ -480,6 +494,8 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 }
 - (void)showDiagnostics {
     NSMutableDictionary *report = [[self.reader diagnostics] mutableCopy];
+    report[@"settingsEntry"] = self.settingsEntry.diagnostics;
+    report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
     report[@"manualSendObservation"] = self.sendProbe.diagnostics;
     report[@"iOS"] = UIDevice.currentDevice.systemVersion;
@@ -594,6 +610,8 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRWeChatReader *identityReader;
+@property(nonatomic, strong) SREntryPreferences *entryPreferences;
+@property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
 @property(nonatomic, weak) UINavigationController *presented;
 @end
 @implementation SREntry
@@ -627,6 +645,10 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
         }];
 }
 - (void)install {
+    [self.settingsEntry install:NULL];
+    if (!self.entryPreferences.floatingEntryEnabled) {
+        [self.button removeFromSuperview]; self.button = nil; return;
+    }
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     NSString *title = self.capture.preview ? @"预览" : ([self.sendProbe.diagnostics[@"armed"] boolValue] ? @"观察" : @"同步");
     [self.button setTitle:title forState:UIControlStateNormal];
@@ -642,7 +664,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
             button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
             button.titleLabel.adjustsFontForContentSizeCategory = YES;
             button.backgroundColor = UIColor.secondarySystemBackgroundColor; button.layer.cornerRadius = 22;
-            button.accessibilityLabel = @"打开 SyncRelay 同步转发设置";
+            button.accessibilityLabel = @"打开 SyncRelay 转发";
             [button addTarget:self action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
             button.translatesAutoresizingMaskIntoConstraints = NO; [window addSubview:button];
             [NSLayoutConstraint activateConstraints:@[
@@ -655,22 +677,37 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     }
 }
 - (void)open {
+    [self openFromController:nil];
+}
+- (void)openFromController:(UIViewController *)controller {
+    if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     if (self.presented.presentingViewController) return;
-    UIViewController *presenter = ((UIWindow *)self.button.superview).rootViewController;
+    UIViewController *presenter = controller;
+    if (!presenter) for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.isKeyWindow && window.windowLevel == UIWindowLevelNormal) { presenter = window.rootViewController; break; }
+        }
+        if (presenter) break;
+    }
     while (presenter.presentedViewController) presenter = presenter.presentedViewController;
     if (!presenter || presenter.isBeingDismissed || presenter.isBeingPresented || [presenter isKindOfClass:UIAlertController.class]) return;
     SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleInsetGrouped]; panel.store = self.store;
     panel.capture = self.capture; panel.receiver = self.receiver;
     panel.sendProbe = self.sendProbe;
+    panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
     __weak typeof(self) weakSelf = self;
-    panel.didClose = ^{ weakSelf.button.hidden = NO; };
+    panel.didClose = ^{ weakSelf.presented = nil; [weakSelf install]; };
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:panel];
     navigation.modalPresentationStyle = UIModalPresentationFullScreen;
     self.presented = navigation;
     self.button.hidden = YES;
     [presenter presentViewController:navigation animated:YES completion:nil];
 }
-- (void)windowChanged:(__unused NSNotification *)notification { [self install]; }
+- (void)windowChanged:(__unused NSNotification *)notification {
+    if (NSThread.isMainThread) [self install];
+    else dispatch_async(dispatch_get_main_queue(), ^{ [self install]; });
+}
 - (void)resigningActive:(__unused NSNotification *)notification {
     [self.sendProbe cancelForInactivity];
     [self.receiver stop];
@@ -684,10 +721,16 @@ void SRInstallPanelEntry(SRStore *store) {
     static SREntry *entry;
     if (entry) return;
     entry = [[SREntry alloc] init]; entry.store = store;
+    entry.entryPreferences = [[SREntryPreferences alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+    NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
+    __weak SREntry *weakEntry = entry;
+    entry.settingsEntry = [[SRWeChatSettingsEntry alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
+        open:^(id controller) { if ([controller isKindOfClass:UIViewController.class]) [weakEntry openFromController:controller]; }];
     [entry prepareCapture];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIWindowDidBecomeKeyNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SRRelayStateChangedNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SREntryPreferencesChangedNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(resigningActive:) name:UIApplicationWillResignActiveNotification object:nil];
     [entry install];
 }
