@@ -207,7 +207,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (void)refresh {
     if ([self.capture.status[@"state"] isEqual:@"waiting"] && ![self.receiver.diagnostics[@"armed"] boolValue]) [self.capture cancel];
     self.navigationItem.rightBarButtonItem.enabled = self.ready;
-    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.2 · 文字捕获候选 / 发送未启用";
+    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.3 · 支持本人文字候选 / 发送未启用";
     [self.tableView reloadData];
 }
 - (void)changed {
@@ -250,7 +250,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     if (section == 0) return self.status;
     if (section == 1) return @"所有草稿规则共用母群、发送者和消息类型，只需设置一次。接收为待真机核对的文字候选；图片接收和真实发送未启用。";
     if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。随机节拍不代表平台允许或保证发送成功。";
-    if (section == 4) return @"手动等待后可关闭面板回母群；仅观察其他成员的文字接收回调，不主动读取历史，不支持本人消息或图片媒体。离开前台/锁屏会取消等待，回前台不自动重启。预览确认只建立计划，不发送。";
+    if (section == 4) return @"手动等待后可关闭面板回母群；支持指定成员（含本人）的文字候选，必须取得服务器消息 ID。不读取历史，不支持图片媒体。本人发送观察仍需真机验证。离开前台/锁屏取消等待；预览确认只建立计划，不发送。";
     return @"只需搜索并勾选要排除的群，其他群自动按 100/200 个分配。母群和已分配群自动排除；不足按实际数量生成，不建空规则。生成/保存不会发送。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
@@ -294,7 +294,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@–%@ 秒 / 次", self.draft[@"minimum"], self.draft[@"maximum"]];
     } else if (path.section == 3) {
         NSArray *rules = self.draft[@"rules"];
-        if (path.row == 0) { cell.textLabel.text = @"搜索并排除群聊"; cell.detailTextLabel.text = [NSString stringWithFormat:@"已排除 %lu 个 · 不必逐个选择转发目标", (unsigned long)[self.draft[@"excludedGroups"] count]]; }
+        if (path.row == 0) { cell.textLabel.text = @"搜索并排除群聊"; cell.detailTextLabel.text = [NSString stringWithFormat:@"手动排除 %lu 个 · 母群始终自动排除", (unsigned long)[self.draft[@"excludedGroups"] count]]; }
         else if (path.row == 1) { cell.textLabel.text = @"自动分配规则"; cell.detailTextLabel.text = @"设置 100 群/条、200 群/条各生成多少条"; }
         else if (path.row == 2) { cell.textLabel.text = @"手动选择并分组（可选）"; cell.detailTextLabel.text = @"全选会拆成每条不超过 200 群，不合成大批次"; }
         else { NSDictionary *rule = rules[path.row - 3]; cell.textLabel.text = rule[@"name"]; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群 · 共用统一条件 · 点击查看或移除", (unsigned long)[rule[@"targets"] count]]; }
@@ -318,7 +318,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     if (!types.count) { toggle.on = YES; SRAlert(self, @"至少保留一种类型", @"请选择文字、图片或两者。"); return; }
     self.draft[@"types"] = types; [self changed];
 }
-- (void)picker:(NSString *)title rows:(NSArray *)rows selected:(NSArray *)selected excluded:(NSSet *)excluded multiple:(BOOL)multiple excluding:(BOOL)excluding completion:(void (^)(NSArray *))completion {
+- (SRPicker *)picker:(NSString *)title rows:(NSArray *)rows selected:(NSArray *)selected excluded:(NSSet *)excluded multiple:(BOOL)multiple excluding:(BOOL)excluding completion:(void (^)(NSArray *))completion {
     SRPicker *picker = [[SRPicker alloc] initWithStyle:UITableViewStyleInsetGrouped];
     picker.title = title; picker.multiple = multiple; picker.excluding = excluding;
     NSString *note = [self.reader.warnings componentsJoinedByString:@"\n"];
@@ -327,6 +327,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     __weak typeof(self) weakSelf = self;
     picker.completion = ^(NSArray *chosen) { if ([weakSelf checkAccount]) completion(chosen); };
     [self.navigationController pushViewController:picker animated:YES];
+    return picker;
 }
 - (void)chooseSource {
     NSError *error = nil; NSArray *groups = [self.reader groups:&error];
@@ -353,11 +354,18 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     NSString *group = self.draft[@"sourceGroup"][@"id"];
     if (!group) { SRAlert(self, @"先选择母群", @"发送者必须从母群的成员中选择。"); return; }
     NSError *error = nil; NSArray *members = [self.reader membersOfGroup:group error:&error];
-    if (!members) { SRAlert(self, @"无法读取成员", error.localizedDescription); return; }
+    if (![self checkAccount]) return;
+    NSMutableArray *senderRows = [NSMutableArray arrayWithObject:@{@"id": self.account, @"name": @"我（当前登录账号）"}];
+    for (NSDictionary *member in members) if (![member[@"id"] isEqual:self.account]) [senderRows addObject:member];
+    NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
     __weak typeof(self) weakSelf = self;
-    [self picker:@"指定发送者 · wxid" rows:members selected:self.draft[@"senders"] excluded:NSSet.set multiple:YES excluding:NO completion:^(NSArray *chosen) {
+    SRPicker *picker = [self picker:@"指定发送者 · wxid" rows:senderRows selected:self.draft[@"senders"] excluded:NSSet.set multiple:YES excluding:NO completion:^(NSArray *chosen) {
+        if (![weakSelf checkDraft:snapshot account:account]) return;
         weakSelf.draft[@"senders"] = chosen; [weakSelf changed];
     }];
+    picker.note = members ? @"“我”使用已核对的当前登录账号 wxid，不按昵称识别。其他来源成员来自微信本地群记录。" :
+        [NSString stringWithFormat:@"暂时只能选择本人：%@。当前账号 wxid 已核对；其他成员需打开母群后重试。", error.localizedDescription ?: @"成员列表尚不可读"];
+    [picker refresh];
 }
 - (void)addRule {
     if (![self.draft[@"sourceGroup"] count]) { SRAlert(self, @"先选择母群", @"目标群必须排除母群。"); return; }
@@ -388,7 +396,8 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     // Keep excluded IDs that have temporarily disappeared from the local group list.
     NSMutableArray *rows = [groups mutableCopy]; [rows addObjectsFromArray:previous];
     __weak typeof(self) weakSelf = self;
-    [self picker:@"搜索群聊 · 勾选排除" rows:rows selected:previous excluded:NSSet.set multiple:YES excluding:YES completion:^(NSArray *chosen) {
+    NSSet *automatic = snapshot[@"sourceGroup"][@"id"] ? [NSSet setWithObject:snapshot[@"sourceGroup"][@"id"]] : NSSet.set;
+    [self picker:@"母群已自动排除 · 额外排除" rows:rows selected:previous excluded:automatic multiple:YES excluding:YES completion:^(NSArray *chosen) {
         if (![weakSelf checkDraft:snapshot account:account]) return;
         NSError *failure = nil;
         NSDictionary *candidate = [SRGroupPlanner configurationBySettingExcludedGroups:chosen inDraft:snapshot error:&failure];
@@ -566,11 +575,8 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     if ([state isEqual:@"preview"]) { [self showCapture]; return; }
     if (self.dirty) { SRAlert(self, @"请先保存草稿", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
     if (![self.draft[@"types"] containsObject:@"text"]) { SRAlert(self, @"图片捕获尚未开放", @"当前候选只能核对文字，不能猜测图片媒体路径。图片配置会保留，但本轮不能仅等待图片。"); return; }
-    BOOL otherSender = NO;
-    for (NSDictionary *sender in self.draft[@"senders"]) if (![sender[@"id"] isEqual:self.account]) otherSender = YES;
-    if (!otherSender) { SRAlert(self, @"请选择母群的其他来源成员", @"当前接收候选不把本人发送或回显当作收到的新消息。请先核对来源 wxid。"); return; }
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群文字？" message:@"仅观察指定母群和 wxid，锁定进入接收回调的第一条匹配文字后停止。候选尚未真机验证，可能包含离线补同步，请核对预览；切后台会取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群文字？" message:@"仅观察指定母群和 wxid，锁定第一条具有服务器消息 ID 的匹配文字后停止，支持本人作为来源。候选尚未真机验证，可能包含离线补同步，请核对预览；切后台会取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         if (![self checkDraft:snapshot account:account]) return;

@@ -5,6 +5,15 @@
 #include <string.h>
 
 @class SRReceiveTap;
+@interface SRPendingOwnText : NSObject
+@property(nonatomic, strong) id wrap;
+@property(nonatomic, weak) id manager;
+@property(nonatomic, copy) NSString *text;
+@property(nonatomic, copy) NSNumber *localID;
+@end
+@implementation SRPendingOwnText
+@end
+
 @interface SRWeChatReceiver ()
 @property(nonatomic, copy) NSString *version;
 @property(nonatomic, copy) Class (^resolver)(NSString *);
@@ -16,12 +25,18 @@
 @property(nonatomic) BOOL armed;
 @property(nonatomic) NSUInteger generation;
 @property(nonatomic, strong) SRReceiveTap *tap;
+@property(nonatomic, strong) SRReceiveTap *outgoingTap;
+@property(nonatomic, strong) SRPendingOwnText *pendingOutgoing;
+@property(nonatomic, copy) NSString *ownTextState;
+@property(nonatomic) NSUInteger queuedOutgoing;
 - (void)observeSession:(id)session wrap:(id)wrap;
+- (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap;
+- (void)pollOutgoing:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
 @end
 
 @interface SRReceiveTap : NSObject
 @property(nonatomic) IMP original;
-@property(nonatomic, weak) SRWeChatReceiver *listener;
+@property(atomic, weak) SRWeChatReceiver *listener;
 @end
 @implementation SRReceiveTap
 @end
@@ -43,7 +58,7 @@ static BOOL SRReceiveSignature(Method method) {
             if (type[0] != '@' || type[1] == '?') return NO;
         }
         return YES;
-    } @catch (__unused NSException *exception) { return NO; }
+    } @catch (__unused id exception) { return NO; }
 }
 static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
     Method method = type ? class_getInstanceMethod(type, NSSelectorFromString(name)) : NULL;
@@ -53,7 +68,7 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
         const char *result = SRReceiveType(signature.methodReturnType);
         if (signature.numberOfArguments != 2 || !result[0]) return NO;
         return integer ? strchr("iIqQlLsScC", result[0]) != NULL : (result[0] == '@' && result[1] != '?');
-    } @catch (__unused NSException *exception) { return NO; }
+    } @catch (__unused id exception) { return NO; }
 }
 
 @implementation SRWeChatReceiver
@@ -75,7 +90,7 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
         return [self fail:@"A stable account and source group are required" error:error];
     @synchronized(self) { if (self.armed) return [self fail:@"Stop the current capture before arming again" error:error]; }
     @try { if (![self.currentAccount() isEqual:account]) return [self fail:@"Account changed before capture" error:error]; }
-    @catch (__unused NSException *exception) { return [self fail:@"Cannot verify the current account" error:error]; }
+    @catch (__unused id exception) { return [self fail:@"Cannot verify the current account" error:error]; }
     Class manager = self.resolver(@"CMessageMgr"); SEL selector = NSSelectorFromString(@"AsyncOnAddMsg:MsgWrap:");
     Method method = manager ? class_getInstanceMethod(manager, selector) : NULL;
     if (!SRReceiveSignature(method)) return [self fail:@"Receive entry is absent or is not void(object, object)" error:error];
@@ -94,7 +109,7 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
             IMP replacement = imp_implementationWithBlock(^(id object, id session, id wrap) {
                 ((void (*)(id, SEL, id, id))installed.original)(object, selector, session, wrap);
                 // Never let optional observation exceptions change WeChat's receive behavior.
-                @try { [installed.listener observeSession:session wrap:wrap]; } @catch (__unused NSException *exception) { }
+                @try { [installed.listener observeSession:session wrap:wrap]; } @catch (__unused id exception) { }
             });
             if (!class_addMethod(manager, selector, replacement, method_getTypeEncoding(method)))
                 tap.original = method_setImplementation(class_getInstanceMethod(manager, selector), replacement);
@@ -102,7 +117,29 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
         }
         @synchronized(self) {
             self.account = account; self.group = group; self.problem = nil; self.generation++;
+            self.pendingOutgoing = nil; self.queuedOutgoing = 0; self.ownTextState = @"unavailable";
             self.tap = tap; self.armed = YES; tap.listener = self;
+        }
+        // Optional outgoing observation. Never invoke AddMsg ourselves.
+        SEL outgoingSelector = NSSelectorFromString(@"AddMsg:MsgWrap:");
+        Method outgoingMethod = class_getInstanceMethod(manager, outgoingSelector);
+        if (SRReceiveSignature(outgoingMethod)) {
+            NSString *outgoingKey = [NSString stringWithFormat:@"%p:AddMsg", manager];
+            SRReceiveTap *outgoing = SRTaps()[outgoingKey];
+            if (!outgoing) {
+                outgoing = [[SRReceiveTap alloc] init]; outgoing.original = method_getImplementation(outgoingMethod);
+                SRReceiveTap *installed = outgoing;
+                IMP replacement = imp_implementationWithBlock(^(id object, id session, id wrap) {
+                    ((void (*)(id, SEL, id, id))installed.original)(object, outgoingSelector, session, wrap);
+                    @try { [installed.listener observeOutgoingManager:object session:session wrap:wrap]; } @catch (__unused id exception) { }
+                });
+                if (!class_addMethod(manager, outgoingSelector, replacement, method_getTypeEncoding(outgoingMethod)))
+                    outgoing.original = method_setImplementation(class_getInstanceMethod(manager, outgoingSelector), replacement);
+                SRTaps()[outgoingKey] = outgoing;
+            }
+            if (!outgoing.listener || outgoing.listener == self) {
+                self.outgoingTap = outgoing; outgoing.listener = self; self.ownTextState = @"waiting";
+            }
         }
     }
     return YES;
@@ -116,7 +153,12 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
     if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) return;
     NSString *from = SRReadString(wrap, @"m_nsFromUsr"), *to = SRReadString(wrap, @"m_nsToUsr");
     NSString *sender = SRReadString(wrap, @"m_nsRealChatUsr");
-    if (![from isEqual:group] || ![to isEqual:account] || !sender.length || [sender isEqual:account] ||
+    BOOL outgoing = [from isEqual:account] && [to isEqual:group];
+    if (outgoing) {
+        if (sender.length && ![sender isEqual:account]) return;
+        sender = account;
+    }
+    if ((!outgoing && (![from isEqual:group] || ![to isEqual:account])) || !sender.length ||
         [sender hasSuffix:@"@chatroom"] ||
         [sender rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) return;
     NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
@@ -139,16 +181,88 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
             }
             @synchronized(receiver) { if (!receiver.armed || receiver.generation != generation) return; }
             receiver.received(message);
-        } @catch (__unused NSException *exception) {
+        } @catch (__unused id exception) {
             [receiver stop]; [receiver fail:@"Receive callback failed; capture stopped" error:NULL];
         }
     });
+}
+- (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap {
+    NSString *account, *group; NSUInteger generation;
+    @synchronized(self) {
+        if (!self.armed) return;
+        account = self.account; group = self.group; generation = self.generation;
+    }
+    if (![session isKindOfClass:NSString.class] || ![session isEqual:group] ||
+        ![SRReadString(wrap, @"m_nsFromUsr") isEqual:account] ||
+        ![SRReadString(wrap, @"m_nsToUsr") isEqual:group] ||
+        ![SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@1]) return;
+    NSString *text = [SRReadString(wrap, @"m_nsContent") copy];
+    if (!text.length) return;
+    SRPendingOwnText *pending = [[SRPendingOwnText alloc] init];
+    pending.wrap = wrap; pending.manager = manager; pending.text = text;
+    pending.localID = SRReadUnsignedInteger(wrap, @"m_uiMesLocalID", NULL);
+    @synchronized(self) {
+        if (!self.armed || self.generation != generation || self.pendingOutgoing || self.queuedOutgoing >= 16) return;
+        self.queuedOutgoing++;
+    }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SRWeChatReceiver *receiver = weakSelf;
+        if (!receiver) return;
+        @synchronized(receiver) {
+            if (!receiver.armed || receiver.generation != generation) return;
+            receiver.queuedOutgoing--;
+            if (receiver.pendingOutgoing) return;
+            receiver.pendingOutgoing = pending; receiver.ownTextState = @"awaiting_server_id";
+        }
+        [receiver pollOutgoing:pending group:group account:account generation:generation remaining:30];
+    });
+}
+- (BOOL)ownWrap:(id)wrap matchesPending:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account {
+    NSString *sender = SRReadString(wrap, @"m_nsRealChatUsr");
+    return [SRReadString(wrap, @"m_nsFromUsr") isEqual:account] && [SRReadString(wrap, @"m_nsToUsr") isEqual:group] &&
+        [SRReadString(wrap, @"m_nsContent") isEqual:pending.text] && (!sender.length || [sender isEqual:account]) &&
+        [SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@1] &&
+        (!pending.localID.unsignedLongLongValue || [SRReadUnsignedInteger(wrap, @"m_uiMesLocalID", NULL) isEqual:pending.localID]);
+}
+- (void)pollOutgoing:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining {
+    @synchronized(self) { if (!self.armed || self.generation != generation || self.pendingOutgoing != pending) return; }
+    @try {
+        if (![self.currentAccount() isEqual:account]) { [self stop]; return; }
+        if (![self ownWrap:pending.wrap matchesPending:pending group:group account:account]) {
+            self.pendingOutgoing = nil; self.ownTextState = @"conflict";
+            [self fail:@"Own message fields changed; no source was captured" error:NULL]; return;
+        }
+        id wrap = pending.wrap;
+        // Some hosts replace the wrap after sending. Only read back its exact, observed local ID.
+        if (!SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL).unsignedLongLongValue && pending.localID.unsignedLongLongValue) {
+            id stored = SRReadObjectWithObjectAndUnsignedInteger(pending.manager, @"GetMsg:LocalID:", group, pending.localID, NULL);
+            if (stored && [self ownWrap:stored matchesPending:pending group:group account:account]) wrap = stored;
+        }
+        if (SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL).unsignedLongLongValue) {
+            if (![self.currentAccount() isEqual:account]) { [self stop]; return; }
+            [self observeSession:group wrap:wrap]; self.pendingOutgoing = nil; self.ownTextState = @"source_candidate"; return;
+        }
+        if (!remaining) {
+            self.pendingOutgoing = nil; self.ownTextState = @"timed_out";
+            [self fail:@"Own text has no server message ID after 30 seconds; no source was captured" error:NULL]; return;
+        }
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            [weakSelf pollOutgoing:pending group:group account:account generation:generation remaining:remaining - 1];
+        });
+    } @catch (__unused id exception) {
+        self.pendingOutgoing = nil; self.ownTextState = @"error"; [self fail:@"Own text observation failed" error:NULL];
+    }
 }
 - (void)stop {
     @synchronized(SRTaps()) {
         @synchronized(self) {
             self.armed = NO; self.generation++;
             if (self.tap.listener == self) self.tap.listener = nil;
+            if (self.outgoingTap.listener == self) self.outgoingTap.listener = nil;
+            self.pendingOutgoing = nil;
+            self.queuedOutgoing = 0;
             self.account = nil; self.group = nil;
         }
     }
@@ -157,9 +271,13 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
     @synchronized(self) {
         Class manager = self.resolver(@"CMessageMgr"), wrap = self.resolver(@"CMessageWrap");
         NSMutableArray *methods = [NSMutableArray arrayWithObject:SRDescribeInstanceMethod(manager, @"AsyncOnAddMsg:MsgWrap:")];
-        for (NSString *name in @[@"m_nsFromUsr", @"m_nsToUsr", @"m_nsRealChatUsr", @"m_uiMessageType", @"m_n64MesSvrID", @"m_nsContent"])
+        [methods addObject:SRDescribeInstanceMethod(manager, @"AddMsg:MsgWrap:")];
+        [methods addObject:SRDescribeInstanceMethod(manager, @"GetMsg:LocalID:")];
+        for (NSString *name in @[@"m_nsFromUsr", @"m_nsToUsr", @"m_nsRealChatUsr", @"m_uiMessageType", @"m_n64MesSvrID", @"m_nsContent", @"m_uiMesLocalID"])
             [methods addObject:SRDescribeInstanceMethod(wrap, name)];
         return @{@"wechatVersion": self.version, @"armed": @(self.armed), @"installed": @(self.tap != nil),
+            @"ownTextHookAvailable": @(self.outgoingTap != nil), @"ownTextPending": @(self.pendingOutgoing != nil),
+            @"ownTextState": self.ownTextState ?: @"idle",
             @"textOnlyCandidate": @YES, @"sendingEnabled": @NO, @"problem": self.problem ?: @"", @"methods": methods};
     }
 }

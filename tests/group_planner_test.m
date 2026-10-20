@@ -53,6 +53,13 @@ int main(void) {
         CHECK([preview[@"shortfallCount"] isEqual:@0] && [preview[@"remainingCount"] isEqual:@0]);
         NSDictionary *candidate = preview[@"configuration"];
         CHECK(targetIDs(candidate).count == 3000);
+        // Automatic source exclusion does not depend on the manual exclusion list.
+        NSDictionary *sourceOnly = [SRGroupPlanner previewWithRows:@[original[@"sourceGroup"]]
+            draft:original recipe:recipe error:NULL];
+        CHECK(sourceOnly && [sourceOnly[@"assignedCount"] isEqual:@0]);
+        NSMutableDictionary *conflicting = [candidate mutableCopy];
+        conflicting[@"sourceGroup"] = candidate[@"rules"][0][@"targets"][0];
+        CHECK(![SRConfiguration validateDraft:conflicting error:NULL]);
         for (NSUInteger i = 0; i < 20; i++) CHECK([candidate[@"rules"][i][@"targets"] count] == (i < 10 ? 100 : 200));
         for (NSString *key in @[@"sourceGroup", @"senders", @"types", @"minimum", @"maximum"])
             CHECK([candidate[key] isEqual:original[key]]);

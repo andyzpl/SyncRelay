@@ -15,15 +15,28 @@
 @property(nonatomic, copy) NSString *m_nsContent;
 @property(nonatomic) unsigned int m_uiMessageType;
 @property(nonatomic) unsigned long long m_n64MesSvrID;
+@property(nonatomic) unsigned int m_uiMesLocalID;
 @end
 @implementation ReceiveWrap
 @end
 @interface ReceiveManager : NSObject
 @property(nonatomic) NSUInteger calls;
+@property(nonatomic) BOOL raiseOriginal;
+@property(nonatomic, strong) ReceiveWrap *stored;
+@property(nonatomic, copy) NSString *lookupGroup;
+@property(nonatomic) unsigned int lookupLocalID;
 - (void)AsyncOnAddMsg:(id)session MsgWrap:(id)wrap;
+- (void)AddMsg:(id)session MsgWrap:(id)wrap;
+- (id)GetMsg:(NSString *)group LocalID:(unsigned int)localID;
 @end
 @implementation ReceiveManager
 - (void)AsyncOnAddMsg:(__unused id)session MsgWrap:(__unused id)wrap { self.calls++; }
+- (void)AddMsg:(__unused id)session MsgWrap:(__unused id)wrap {
+    self.calls++; if (self.raiseOriginal) @throw @"OriginalOutgoingException";
+}
+- (id)GetMsg:(NSString *)group LocalID:(unsigned int)localID {
+    self.lookupGroup = group; self.lookupLocalID = localID; return self.stored;
+}
 @end
 @interface InvalidReceiveManager : NSObject
 - (id)AsyncOnAddMsg:(id)session MsgWrap:(id)wrap;
@@ -34,6 +47,11 @@
 @interface InheritedReceiveManager : ReceiveManager
 @end
 @implementation InheritedReceiveManager
+@end
+@interface ThrowingReceiveWrap : ReceiveWrap
+@end
+@implementation ThrowingReceiveWrap
+- (NSString *)m_nsContent { @throw @"OptionalGetterException"; }
 @end
 @interface ScalarTraps : NSObject
 - (double)floating;
@@ -57,7 +75,7 @@ static ReceiveWrap *wrap(void) {
     ReceiveWrap *value = [[ReceiveWrap alloc] init];
     value.m_nsFromUsr = @"mother@chatroom"; value.m_nsToUsr = @"wxid_account";
     value.m_nsRealChatUsr = @"wxid_sender"; value.m_nsContent = @"original message";
-    value.m_uiMessageType = 1; value.m_n64MesSvrID = 9007199254740993ULL; return value;
+    value.m_uiMessageType = 1; value.m_n64MesSvrID = 9007199254740993ULL; value.m_uiMesLocalID = 42; return value;
 }
 static void pump(void) { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, false); }
 static NSMutableDictionary *draft(void) {
@@ -107,8 +125,6 @@ int main(void) {
             ReceiveWrap *bad = wrap(); [bad setValue:@"wrong@chatroom" forKey:key];
             [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:bad];
         }
-        ReceiveWrap *selfMessage = wrap(); selfMessage.m_nsRealChatUsr = current;
-        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:selfMessage];
         ReceiveWrap *missingSender = wrap(); missingSender.m_nsRealChatUsr = nil;
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:missingSender];
         ReceiveWrap *localOnly = wrap(); localOnly.m_n64MesSvrID = 0;
@@ -157,6 +173,80 @@ int main(void) {
         [subclass AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
         CHECK(subclass.calls == 1 && received.count == 4); [inherited stop];
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump(); CHECK(received.count == 4);
+        // Own messages use the same selected-wxid filter and freeze only with a server ID.
+        NSMutableDictionary *ownDraft = draft();
+        ownDraft[@"senders"] = @[@{@"id": current, @"name": @"Me"}];
+        weakReceiver = receiver;
+        CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
+        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        ReceiveWrap *own = wrap(); own.m_nsFromUsr = current; own.m_nsToUsr = @"mother@chatroom";
+        own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
+        before = manager.calls;
+        [manager AddMsg:@"wrong@chatroom" MsgWrap:own]; pump(); CHECK(!capture.preview);
+        [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); CHECK(!capture.preview);
+        CHECK(manager.calls == before + 2);
+        own.m_n64MesSvrID = 123456789;
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.2, false);
+        CHECK([capture.preview[@"sender"] isEqual:current]);
+        CHECK([capture.preview[@"messageID"] isEqual:@"svr:123456789"]);
+        [capture cancel];
+        CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
+        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        ReceiveWrap *synced = wrap(); synced.m_nsRealChatUsr = current;
+        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:synced]; pump();
+        CHECK([capture.preview[@"sender"] isEqual:current]);
+        NSDictionary *firstOwn = capture.preview;
+        [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); CHECK([capture.preview isEqual:firstOwn]);
+        [capture cancel];
+        CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
+        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        own.m_n64MesSvrID = 0;
+        [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump();
+        [receiver stop]; [capture cancel];
+        CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
+        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        own.m_n64MesSvrID = 777;
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.2, false); CHECK(!capture.preview);
+        own.m_n64MesSvrID = 0;
+        [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump();
+        current = @"wxid_switched"; own.m_n64MesSvrID = 888;
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.2, false);
+        CHECK(!capture.preview && ![receiver.diagnostics[@"armed"] boolValue]);
+        [capture cancel]; current = @"wxid_account";
+        CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
+        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        own.m_n64MesSvrID = 0;
+        ReceiveWrap *stored = wrap(); stored.m_nsFromUsr = current; stored.m_nsToUsr = @"mother@chatroom";
+        stored.m_nsRealChatUsr = nil; stored.m_n64MesSvrID = 9007199254740995ULL;
+        manager.stored = stored;
+        [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); pump();
+        CHECK([capture.preview[@"messageID"] isEqual:@"svr:9007199254740995"]);
+        CHECK([manager.lookupGroup isEqual:@"mother@chatroom"] && manager.lookupLocalID == 42);
+
+        // Wrong local ID or changed body cannot be accepted via exact-ID readback.
+        [capture cancel];
+        CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
+        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        stored.m_uiMesLocalID = 99;
+        [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); CHECK(!capture.preview);
+        stored.m_uiMesLocalID = 42; stored.m_nsContent = @"different text";
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.2, false); CHECK(!capture.preview);
+        own.m_nsContent = @"mutated before confirmation";
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.2, false);
+        CHECK(!capture.preview && ![receiver.diagnostics[@"ownTextPending"] boolValue]);
+        CHECK([receiver.diagnostics[@"ownTextState"] isEqual:@"conflict"]);
+        own.m_nsContent = @"original message"; manager.stored = nil;
+        // Optional observation catches arbitrary Objective-C objects, but never host exceptions.
+        ThrowingReceiveWrap *throwing = [[ThrowingReceiveWrap alloc] init];
+        throwing.m_nsFromUsr = current; throwing.m_nsToUsr = @"mother@chatroom"; throwing.m_uiMessageType = 1;
+        [manager AddMsg:@"mother@chatroom" MsgWrap:throwing]; pump(); CHECK(!capture.preview);
+        manager.raiseOriginal = YES; BOOL propagated = NO;
+        @try { [manager AddMsg:@"mother@chatroom" MsgWrap:own]; }
+        @catch (id exception) { propagated = [exception isEqual:@"OriginalOutgoingException"]; }
+        CHECK(propagated); manager.raiseOriginal = NO; pump(); CHECK(!capture.preview);
+        NSString *ownDiagnostics = receiver.diagnostics.description;
+        for (NSString *secret in @[@"wxid_account", @"mother@chatroom", @"original message", @"9007199254740995"])
+            CHECK(![ownDiagnostics containsString:secret]);
         [receiver stop]; [capture cancel]; receiver = nil; replacement = nil; inherited = nil; makeReceiver = nil; capture = nil; store = nil;
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive candidate, original hook chain, exact server IDs, wxid/text filters, frozen preview and account/generation cancellation");
