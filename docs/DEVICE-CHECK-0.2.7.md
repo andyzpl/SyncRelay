@@ -6,7 +6,15 @@
 
 0.2.7 将用户可见“草稿”改为“设置/规则”，按钮“保存”、反馈“已保存”，保持原有保存语义。插件自己的导航栏统一不透明，不影响微信其他页面，仍需手机视觉核对。
 
-包含 0.2.6 的严格 runtime 声明消息字符串读取和方向子格式 2。上一轮 0.2.6 因 GitHub 未分配 ARM hosted runner 而失败，无安装包；本轮改用标准 Intel macOS runner，仍生成 arm64/arm64e 普通 DEB。构建身份、产物及校验结果在实际完成后补录，未下载核验前不宣称有包。
+包含 0.2.6 的严格 runtime 声明消息字符串读取和方向子格式 2。上一轮 0.2.6 因 GitHub 未分配 ARM hosted runner 而失败，无安装包；本轮改用标准 Intel macOS runner，生成 arm64/arm64e 普通 DEB。
+
+已构建并下载独立核验：
+
+- 编译源码 `a9445759ba07a16e60c740438becd8260ac2caf2`；[私有 Actions 39469338784](https://github.com/andyzpl/SyncRelay/actions/runs/39469338784)，job `118788979434`，artifact `12285858145`。后续文档 HEAD 不改变包内身份。
+- 普通包 `dist/0.2.7-test-39469338784/andyz.syncrelay_0.2.7_iphoneos-arm.deb`，158344 字节；SHA-256 `49ba337d125b7bba4725eef80a844687fc9912dc8d41d2a1c0d92747eea8b616`。
+- 54 项本地双架构语法、14 项本地及 CI Python 测试、CI 28 条核心 PASS、普通包构建/检查/上传通过。两项 UI 测试仅为源码契约，不是渲染测试。
+- 下载核对 ZIP digest、DEB 校验和及 md5sums、包身份、仅自身 dylib/plist、仅微信主进程过滤、arm64/arm64e、每个 slice 的提交/run/版本/方向及声明读取标记/导航设置标记、签名载荷及系统依赖。同目录保存 `ci-provenance.json`、`SHA256SUMS` 和本清单副本 `PHONE-TEST.md`。
+- CI 有上游 Theos 的 obsolete `-multiply_defined` 链接警告及 artifact action 的 Node 弃用提示，均未使步骤失败；未将其称作无警告构建。手机视觉、实际字段读取及两版兼容尚未验证。
 
 ## 手机步骤
 
