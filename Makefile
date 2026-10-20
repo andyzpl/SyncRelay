@@ -1,0 +1,16 @@
+ARCHS = arm64 arm64e
+TARGET = iphone:clang:15.6:15.0
+THEOS_PACKAGE_COMPRESSION_TYPE = xz
+FINALPACKAGE = 1
+DEBUG = 0
+
+include $(THEOS)/makefiles/common.mk
+
+TWEAK_NAME = SyncRelay
+SyncRelay_FILES = Tweak/SRBootstrap.m Core/SRStore.m Core/SRPacing.c
+SyncRelay_CFLAGS = -fobjc-arc -Wall -Wextra -Werror -I$(THEOS_PROJECT_DIR)
+SyncRelay_FRAMEWORKS = Foundation UIKit
+SyncRelay_LIBRARIES = sqlite3
+
+include $(THEOS_MAKE_PATH)/tweak.mk
+

@@ -1,0 +1,10 @@
+Package: andyz.syncrelay
+Name: SyncRelay (Development)
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: Development foundation for manual WeChat relay batches. Sending and UI are not enabled.
+Maintainer: andyz
+Author: andyz
+Section: Tweaks
+Depends: firmware (>= 15.0)
+

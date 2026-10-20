@@ -1,0 +1,76 @@
+name: Build SyncRelay development DEB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      THEOS_REV: cfba89a53a05b4a1b822121158acc3669c20602f
+      SDK_REV: 0222fd5413cf4b9af096f37b4621afa2688572f7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test production core on macOS
+        run: |
+          set -euo pipefail
+          clang -std=c11 -Wall -Wextra -Werror -I. Core/SRPacing.c tests/pacing_test.c -o "$RUNNER_TEMP/pacing-test"
+          "$RUNNER_TEMP/pacing-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/store-test"
+          "$RUNNER_TEMP/store-test"
+      - name: Install build tools
+        run: |
+          brew install make dpkg ldid
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+      - name: Set up pinned toolchain (same revisions as OwnHide)
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/syncrelay-theos"
+          git init "$dest"
+          git -C "$dest" remote add origin https://github.com/roothide/theos.git
+          git -C "$dest" fetch --depth=1 origin "$THEOS_REV"
+          git -C "$dest" checkout --detach FETCH_HEAD
+          git -C "$dest" submodule update --init --recursive
+          sdk="$RUNNER_TEMP/syncrelay-sdks"
+          git init "$sdk"
+          git -C "$sdk" remote add origin https://github.com/theos/sdks.git
+          git -C "$sdk" fetch --depth=1 origin "$SDK_REV"
+          git -C "$sdk" checkout --detach FETCH_HEAD
+          test -d "$sdk/iPhoneOS15.6.sdk"
+          cp -R "$sdk/iPhoneOS15.6.sdk" "$dest/sdks/"
+          echo "THEOS=$dest" >> "$GITHUB_ENV"
+      - name: Build ordinary DEB (not a RootHide conversion)
+        run: |
+          set -euo pipefail
+          make package FINALPACKAGE=1 DEBUG=0
+      - name: Verify package contents
+        run: |
+          set -euo pipefail
+          mkdir -p dist "$RUNNER_TEMP/package-check"
+          count=$(find packages -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
+          test "$count" = 1
+          deb=$(find packages -maxdepth 1 -name '*.deb')
+          dpkg-deb -I "$deb"
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/package-check"
+          dylib="$RUNNER_TEMP/package-check/Library/MobileSubstrate/DynamicLibraries/SyncRelay.dylib"
+          test -f "$dylib"
+          test -f "$RUNNER_TEMP/package-check/Library/MobileSubstrate/DynamicLibraries/SyncRelay.plist"
+          lipo -info "$dylib"
+          lipo -verify_arch arm64 arm64e "$dylib"
+          otool -L "$dylib"
+          cp "$deb" dist/
+          shasum -a 256 dist/*.deb > dist/SHA256SUMS
+          printf 'Development foundation only. No UI or WeChat sending.\n' > dist/DEVELOPMENT-NOTICE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SyncRelay-development-deb
+          path: dist/
+          if-no-files-found: error
+
