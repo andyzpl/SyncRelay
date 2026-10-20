@@ -76,6 +76,14 @@ static ProbeWrap *wrap(void) {
     return value;
 }
 static void pump(void) { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, false); }
+static void onBackground(void (^block)(void)) {
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    // dispatch_sync may run a global-queue block inline on the calling main thread.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        CHECK(!NSThread.isMainThread); block(); dispatch_semaphore_signal(done);
+    });
+    CHECK(dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
+}
 static NSDictionary *last(SRWeChatSendProbe *probe) { return [probe.diagnostics[@"samples"] lastObject]; }
 
 int main(void) {
@@ -110,7 +118,7 @@ int main(void) {
         CHECK(![probe armForAccount:current targetGroup:@"not-a-group" error:NULL]);
         CHECK(![probe armForAccount:@"another-account" targetGroup:@"target@chatroom" error:NULL]);
         __block BOOL backgroundArm = YES;
-        dispatch_sync(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ backgroundArm = [probe armForAccount:current targetGroup:@"target@chatroom" error:NULL]; });
+        onBackground(^{ backgroundArm = [probe armForAccount:current targetGroup:@"target@chatroom" error:NULL]; });
         CHECK(!backgroundArm);
         CHECK([probe armForAccount:current targetGroup:@"target@chatroom" error:NULL]);
         CHECK(![probe armForAccount:current targetGroup:@"target@chatroom" error:NULL]);
@@ -125,7 +133,7 @@ int main(void) {
         CHECK(threw); manager.raises = NO; pump(); CHECK([probe.diagnostics[@"observedOutgoing"] isEqual:@0]);
 
         ProbeWrap *original = wrap(); manager.readback = original; calls = manager.calls;
-        dispatch_sync(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ [manager AddMsg:@"target@chatroom" MsgWrap:original]; });
+        onBackground(^{ [manager AddMsg:@"target@chatroom" MsgWrap:original]; });
         pump(); CHECK(manager.calls == calls + 1 && [probe.diagnostics[@"observedOutgoing"] isEqual:@1]);
         CHECK([probe.diagnostics[@"samples"][0][@"source"] isEqual:@"after_add"] && [last(probe)[@"localIDPresent"] boolValue]);
         original.m_n64MesSvrID = 9007199254740999ULL; original.m_uiStatus = 2;
