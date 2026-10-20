@@ -95,6 +95,9 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id), started_at REAL NOT NULL, ended_at REAL, state TEXT NOT NULL, message_id TEXT, reason TEXT)",
             @"CREATE TABLE IF NOT EXISTS configurations(account TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL)",
             @"CREATE TABLE IF NOT EXISTS source_claims(account TEXT NOT NULL, source_group TEXT NOT NULL, message_id TEXT NOT NULL, plan_id TEXT NOT NULL UNIQUE REFERENCES plans(id), PRIMARY KEY(account,source_group,message_id))",
+            @"CREATE INDEX IF NOT EXISTS plans_by_account ON plans(account)",
+            @"CREATE INDEX IF NOT EXISTS runs_by_rule ON runs(rule_id)",
+            @"CREATE INDEX IF NOT EXISTS allocations_by_rule ON allocations(rule_id)",
             @"PRAGMA user_version=3"
         ];
         for (NSString *sql in schema) [self query:sql values:@[]];
@@ -304,6 +307,77 @@ static void SRRequire(BOOL condition, NSString *message) {
 - (NSArray *)rulesForPlan:(NSString *)plan error:(NSError **)error {
     return [self perform:^id{
         return [self query:@"SELECT id,name,position,minimum,maximum FROM rules WHERE plan_id=? ORDER BY position" values:@[plan]];
+    } transaction:NO error:error];
+}
+- (NSArray *)plansForAccount:(NSString *)account limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid account or page range");
+        return [self query:@"SELECT p.id,p.source_group,(SELECT COUNT(*) FROM rules r WHERE r.plan_id=p.id) AS ruleCount,(SELECT COUNT(*) FROM allocations a WHERE a.plan_id=p.id) AS targetCount FROM plans p WHERE p.account=? ORDER BY p.rowid DESC LIMIT ? OFFSET ?"
+            values:@[account, @(limit), @(offset)]];
+    } transaction:NO error:error];
+}
+- (NSDictionary *)plan:(NSString *)plan account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && plan.length, @"Account and plan are required");
+        NSMutableDictionary *row = [[self query:@"SELECT * FROM plans WHERE id=? AND account=?" values:@[plan, account]].firstObject mutableCopy];
+        SRRequire(row != nil, @"Plan is unavailable for this account");
+        for (NSString *key in @[@"senders", @"types", @"snapshot"]) {
+            id value = [NSJSONSerialization JSONObjectWithData:[row[key] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+            SRRequire(value != nil, @"Stored plan content is unreadable"); row[key] = value;
+        }
+        SRRequire([row[@"senders"] isKindOfClass:NSArray.class] && [row[@"types"] isKindOfClass:NSArray.class] &&
+            [row[@"snapshot"] isKindOfClass:NSDictionary.class], @"Stored plan content has an invalid shape");
+        return row;
+    } transaction:NO error:error];
+}
+- (NSDictionary *)runCard:(NSDictionary *)row {
+    NSMutableDictionary *card = [row mutableCopy];
+    [card removeObjectForKey:@"snapshot"]; [card removeObjectForKey:@"account"];
+    NSMutableDictionary *counts = [@{@"pending": @0, @"submitting": @0, @"confirmed": @0, @"failed": @0, @"uncertain": @0, @"cancelled": @0} mutableCopy];
+    for (NSDictionary *count in [self query:@"SELECT state,COUNT(*) AS count FROM deliveries WHERE run_id=? GROUP BY state" values:@[row[@"id"]]])
+        counts[count[@"state"]] = count[@"count"];
+    card[@"counts"] = counts;
+    return card;
+}
+- (NSArray *)ruleCardsForPlan:(NSString *)plan account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && plan.length && [self query:@"SELECT id FROM plans WHERE id=? AND account=?" values:@[plan, account]].count,
+            @"Plan is unavailable for this account");
+        NSArray *rules = [self query:@"SELECT r.*,(SELECT COUNT(*) FROM allocations a WHERE a.rule_id=r.id) AS targetCount FROM rules r WHERE r.plan_id=? ORDER BY r.position" values:@[plan]];
+        BOOL occupied = [self query:@"SELECT id FROM runs WHERE account=? AND state IN ('running','paused','awaiting_resume') LIMIT 1" values:@[account]].count > 0;
+        NSMutableArray *cards = [NSMutableArray array]; BOOL precedingEnded = YES;
+        for (NSDictionary *rule in rules) {
+            NSMutableDictionary *card = [rule mutableCopy];
+            NSDictionary *latest = [self query:@"SELECT id,rule_id,state,started_at,ended_at,minimum,maximum FROM runs WHERE rule_id=? ORDER BY rowid DESC LIMIT 1" values:@[rule[@"id"]]].firstObject;
+            card[@"latestRun"] = latest ? [self runCard:latest] : (id)NSNull.null;
+            card[@"accountOccupied"] = @(occupied);
+            // An unlock is only a display hint. startRule still rechecks in its transaction.
+            card[@"initialUnlocked"] = @(precedingEnded && !latest);
+            BOOL endedOnce = [self query:@"SELECT id FROM runs WHERE rule_id=? AND state IN ('completed','ended') LIMIT 1" values:@[rule[@"id"]]].count > 0;
+            precedingEnded = precedingEnded && endedOnce;
+            [cards addObject:card];
+        }
+        return cards;
+    } transaction:NO error:error];
+}
+- (NSArray *)historyForRule:(NSString *)rule account:(NSString *)account limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && rule.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid account or page range");
+        SRRequire([self query:@"SELECT r.id FROM rules r JOIN plans p ON p.id=r.plan_id WHERE r.id=? AND p.account=?" values:@[rule, account]].count,
+            @"Rule is unavailable for this account");
+        NSMutableArray *cards = [NSMutableArray array];
+        for (NSDictionary *row in [self query:@"SELECT id,rule_id,state,started_at,ended_at,minimum,maximum FROM runs WHERE rule_id=? ORDER BY rowid DESC LIMIT ? OFFSET ?" values:@[rule, @(limit), @(offset)]])
+            [cards addObject:[self runCard:row]];
+        return cards;
+    } transaction:NO error:error];
+}
+- (NSArray *)exceptionsForRun:(NSString *)run account:(NSString *)account limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && run.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid account or page range");
+        SRRequire([self query:@"SELECT id FROM runs WHERE id=? AND account=?" values:@[run, account]].count,
+            @"Run is unavailable for this account");
+        return [self query:@"SELECT id,target,position,state,reason,attempt_id,message_id FROM deliveries WHERE run_id=? AND state IN ('failed','uncertain','cancelled') ORDER BY position LIMIT ? OFFSET ?"
+            values:@[run, @(limit), @(offset)]];
     } transaction:NO error:error];
 }
 @end

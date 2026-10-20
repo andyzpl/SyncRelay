@@ -50,4 +50,10 @@
     }
 }
 - (void)cancel { @synchronized(self) { self.waiting = NO; self.captured = nil; self.configuration = nil; self.account = nil; } }
+- (NSDictionary *)status {
+    @synchronized(self) {
+        return @{@"state": self.captured ? @"preview" : (self.waiting ? @"waiting" : @"idle"),
+            @"account": self.account ?: (id)NSNull.null, @"configuration": self.configuration ?: @{}};
+    }
+}
 @end

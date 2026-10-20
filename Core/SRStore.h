@@ -35,5 +35,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)createPlanFromConfiguration:(NSDictionary *)configuration envelope:(NSDictionary *)envelope
                                           account:(NSString *)account error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)rulesForPlan:(NSString *)plan error:(NSError **)error;
+/* Account-scoped UI projections. Read operations never create or resume runs. */
+- (nullable NSArray<NSDictionary *> *)plansForAccount:(NSString *)account limit:(NSUInteger)limit
+                                             offset:(NSUInteger)offset error:(NSError **)error;
+- (nullable NSDictionary *)plan:(NSString *)plan account:(NSString *)account error:(NSError **)error;
+- (nullable NSArray<NSDictionary *> *)ruleCardsForPlan:(NSString *)plan account:(NSString *)account error:(NSError **)error;
+- (nullable NSArray<NSDictionary *> *)historyForRule:(NSString *)rule account:(NSString *)account
+                                            limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
+- (nullable NSArray<NSDictionary *> *)exceptionsForRun:(NSString *)run account:(NSString *)account
+                                               limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

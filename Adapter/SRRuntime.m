@@ -73,6 +73,38 @@ NSString *SRReadString(id target, NSString *selector) {
     id result = SRReadObject(target, selector, @[], NULL);
     return [result isKindOfClass:NSString.class] ? result : nil;
 }
+NSNumber *SRReadUnsignedInteger(id target, NSString *name, NSError **error) {
+    @try {
+        SEL selector = NSSelectorFromString(name);
+        NSMethodSignature *signature = [target respondsToSelector:selector] ? [target methodSignatureForSelector:selector] : nil;
+        const char *type = signature ? SRType(signature.methodReturnType) : "";
+        if (!signature || signature.numberOfArguments != 2 || !type[0] || !strchr("iIqQlLsScC", type[0]))
+            @throw @"Incompatible integer getter";
+        NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+        invocation.target = target; invocation.selector = selector; [invocation invoke];
+        switch (type[0]) {
+#define SR_SIGNED_RESULT(encoding, ctype) \
+            case encoding: { ctype value = 0; [invocation getReturnValue:&value]; return value < 0 ? nil : @((unsigned long long)value); }
+#define SR_UNSIGNED_RESULT(encoding, ctype) \
+            case encoding: { ctype value = 0; [invocation getReturnValue:&value]; return @((unsigned long long)value); }
+            SR_SIGNED_RESULT('i', int)
+            SR_UNSIGNED_RESULT('I', unsigned int)
+            SR_SIGNED_RESULT('q', long long)
+            SR_UNSIGNED_RESULT('Q', unsigned long long)
+            SR_SIGNED_RESULT('l', long)
+            SR_UNSIGNED_RESULT('L', unsigned long)
+            SR_SIGNED_RESULT('s', short)
+            SR_UNSIGNED_RESULT('S', unsigned short)
+            SR_SIGNED_RESULT('c', signed char)
+            SR_UNSIGNED_RESULT('C', unsigned char)
+#undef SR_SIGNED_RESULT
+#undef SR_UNSIGNED_RESULT
+        }
+    } @catch (__unused id exception) { }
+    if (error) *error = [NSError errorWithDomain:@"SyncRelay.Runtime" code:2
+        userInfo:@{NSLocalizedDescriptionKey: @"Integer getter is absent or has an incompatible signature"}];
+    return nil;
+}
 NSDictionary *SRDescribeMethod(id target, NSString *selector) {
     @try {
         SEL sel = NSSelectorFromString(selector);

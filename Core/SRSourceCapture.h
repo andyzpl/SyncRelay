@@ -8,6 +8,8 @@ NS_ASSUME_NONNULL_BEGIN
 /* A match stops listening and waits for explicit confirmation. Never creates a run. */
 - (BOOL)offerEnvelope:(NSDictionary *)envelope;
 - (nullable NSString *)confirmForCurrentAccount:(NSString *)account error:(NSError **)error;
+/* Includes the frozen configuration so preview never describes a newer edited draft. */
+- (NSDictionary *)status;
 - (void)cancel;
 @end
 NS_ASSUME_NONNULL_END

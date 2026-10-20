@@ -24,9 +24,11 @@ for arch in ('arm64', 'arm64e'):
              '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror']
     for file in ('Core/SRStore.m', 'Core/SRConfiguration.m', 'Core/SRSelection.m', 'Core/SRGroupPlanner.m',
                  'Core/SRSourceMessage.m', 'Core/SRSourceCapture.m', 'Core/SRRunner.m',
-                 'Adapter/SRRuntime.m', 'Adapter/SRWeChatReader.m', 'UI/SRPanel.m',
+                 'Adapter/SRRuntime.m', 'Adapter/SRWeChatReader.m', 'Adapter/SRWeChatReceiver.m',
+                 'UI/SRPanel.m', 'UI/SRPlanScreens.m',
                  'Tweak/SRBootstrap.m', 'tests/store_test.m', 'tests/adapter_test.m',
-                 'tests/relay_pipeline_test.m', 'tests/group_planner_test.m'):
+                 'tests/relay_pipeline_test.m', 'tests/group_planner_test.m',
+                 'tests/receive_test.m', 'tests/plan_queries_test.m'):
         unit = index.parse(str(root / file), args=flags)
         diagnostics = [str(d) for d in unit.diagnostics]
         passed = not any(d.severity >= cindex.Diagnostic.Warning for d in unit.diagnostics)

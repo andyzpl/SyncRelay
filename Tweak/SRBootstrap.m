@@ -2,7 +2,7 @@
 #import "Core/SRStore.h"
 #import "UI/SRPanel.h"
 
-/* Read-only adapter/settings entry. No private send API or automatic execution. */
+/* Manual receive candidate/settings entry. No private send API or automatic execution. */
 static SRStore *SRRepository;
 
 __attribute__((constructor)) static void SRInitialize(void) {
@@ -24,7 +24,7 @@ __attribute__((constructor)) static void SRInitialize(void) {
                     return;
                 }
                 dispatch_async(dispatch_get_main_queue(), ^{ SRInstallPanelEntry(SRRepository); });
-                NSLog(@"[SyncRelay] 0.2.0 settings ready. Sending is disabled.");
+                NSLog(@"[SyncRelay] 0.2.0 settings ready. Receive capture is manual; sending is disabled.");
             }
         });
     }

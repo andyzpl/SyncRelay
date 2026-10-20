@@ -4,7 +4,10 @@
 #import "Core/SRConfiguration.h"
 #import "Core/SRGroupPlanner.h"
 #import "Core/SRSourceMessage.h"
+#import "Core/SRSourceCapture.h"
 #import "Adapter/SRWeChatReader.h"
+#import "Adapter/SRWeChatReceiver.h"
+#import "SRPlanScreens.h"
 #include <errno.h>
 #include <stdlib.h>
 
@@ -129,6 +132,8 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @interface SRPanel : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRWeChatReader *reader;
+@property(nonatomic, strong) SRWeChatReceiver *receiver;
+@property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) NSMutableDictionary *draft;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSString *status;
@@ -148,12 +153,25 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     self.reader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
     self.draft = [SRConfiguration emptyDraft];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(captureChanged:) name:SRRelayStateChangedNotification object:nil];
     [self loadAccount];
 }
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (self.ready && ![self.reader verifyAccount:self.account error:NULL]) {
+        self.ready = NO; self.status = @"账号无法核对或已经改变，请重新读取。旧草稿没有写入新账号。";
+        [self.receiver stop]; [self.capture cancel];
+    }
+    [self refresh];
+}
+- (void)captureChanged:(__unused NSNotification *)notification { [self refresh]; }
 - (void)loadAccount {
     NSError *error = nil;
     self.ready = [self.reader connect:&error];
     self.account = self.reader.accountID;
+    id captureAccount = self.capture.status[@"account"];
+    if (captureAccount != NSNull.null && ![captureAccount isEqual:self.account]) { [self.receiver stop]; [self.capture cancel]; }
     self.draft = [SRConfiguration emptyDraft];
     if (self.ready) {
         NSDictionary *saved = [self.store configurationForAccount:self.account error:&error];
@@ -167,17 +185,27 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     NSError *error = nil;
     if (!self.ready || ![self.reader verifyAccount:self.account error:&error]) {
         self.ready = NO;
+        [self.receiver stop]; [self.capture cancel];
         self.status = error.localizedDescription ?: @"请先重新读取账号";
         [self refresh]; SRAlert(self, @"操作已停止", self.status); return NO;
     }
     return YES;
 }
 - (void)refresh {
+    if ([self.capture.status[@"state"] isEqual:@"waiting"] && ![self.receiver.diagnostics[@"armed"] boolValue]) [self.capture cancel];
     self.navigationItem.rightBarButtonItem.enabled = self.ready;
-    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.0 · 只读适配与配置草稿";
+    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.0 · 文字捕获候选 / 发送未启用";
     [self.tableView reloadData];
 }
-- (void)changed { self.dirty = YES; [self refresh]; }
+- (void)changed {
+    self.dirty = YES;
+    if ([self.capture.status[@"state"] isEqual:@"waiting"]) {
+        [self.receiver stop]; [self.capture cancel];
+        self.status = @"草稿已修改，旧的源消息等待已取消；保存后需重新手动等待。发送仍未启用。";
+        [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+    }
+    [self refresh];
+}
 - (void)close {
     if (!self.dirty) { [self dismissViewControllerAnimated:YES completion:self.didClose]; return; }
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"放弃未保存的修改？" message:@"已经保存的草稿不会被删除。" preferredStyle:UIAlertControllerStyleAlert];
@@ -194,20 +222,22 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     self.dirty = NO; [self refresh];
     SRAlert(self, @"草稿已保存", @"下次打开会恢复该账号的统一转发条件、排除群和规则分组。保存不会创建发送任务。" );
 }
-- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 4; }
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 3;
     if (section == 1) return 4;
     if (section == 2) return 1;
+    if (section == 4) return 3;
     return [self.draft[@"rules"] count] + 3;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @[@"适配状态", @"统一转发条件", @"统一发送节拍", @"自动分组与规则"][section];
+    return @[@"适配状态", @"统一转发条件", @"统一发送节拍", @"自动分组与规则", @"单条内容与计划"][section];
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) return self.status;
-    if (section == 1) return @"本计划所有规则共用母群、发送者和消息类型，只需设置一次。发送者按 wxid 匹配。本版尚未接入微信捕获或发送。";
+    if (section == 1) return @"所有草稿规则共用母群、发送者和消息类型，只需设置一次。接收为待真机核对的文字候选；图片接收和真实发送未启用。";
     if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。随机节拍不代表平台允许或保证发送成功。";
+    if (section == 4) return @"手动等待后可关闭面板回母群；仅观察其他成员的文字接收回调，不主动读取历史，不支持本人消息或图片媒体。离开前台/锁屏会取消等待，回前台不自动重启。预览确认只建立计划，不发送。";
     return @"只需搜索并勾选要排除的群，其他群自动按 100/200 个分配。母群和已分配群自动排除；不足按实际数量生成，不建空规则。生成/保存不会发送。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
@@ -237,12 +267,17 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     } else if (path.section == 2) {
         cell.textLabel.text = @"随机间隔";
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@–%@ 秒 / 次", self.draft[@"minimum"], self.draft[@"maximum"]];
-    } else {
+    } else if (path.section == 3) {
         NSArray *rules = self.draft[@"rules"];
         if (path.row == 0) { cell.textLabel.text = @"搜索并排除群聊"; cell.detailTextLabel.text = [NSString stringWithFormat:@"已排除 %lu 个 · 不必逐个选择转发目标", (unsigned long)[self.draft[@"excludedGroups"] count]]; }
         else if (path.row == 1) { cell.textLabel.text = @"自动分配规则"; cell.detailTextLabel.text = @"设置 100 群/条、200 群/条各生成多少条"; }
         else if (path.row == 2) { cell.textLabel.text = @"手动选择并分组（可选）"; cell.detailTextLabel.text = @"全选会拆成每条不超过 200 群，不合成大批次"; }
         else { NSDictionary *rule = rules[path.row - 3]; cell.textLabel.text = rule[@"name"]; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群 · 共用统一条件 · 点击查看或移除", (unsigned long)[rule[@"targets"] count]]; }
+    } else {
+        NSString *state = self.capture.status[@"state"];
+        if (path.row == 0) { cell.textLabel.text = [state isEqual:@"waiting"] ? @"取消等待源消息" : @"等待一条母群文字"; cell.detailTextLabel.text = @"先保存草稿，再手动开始等待；不会发送"; }
+        if (path.row == 1) { cell.textLabel.text = @"预览并确认源消息"; cell.detailTextLabel.text = [state isEqual:@"preview"] ? @"已锁定一条 · 使用捕获时的冻结配置，可放弃" : ([state isEqual:@"waiting"] ? @"正在等待匹配的群、wxid 和文字类型" : @"尚无待确认内容"); }
+        if (path.row == 2) { cell.textLabel.text = @"已确认内容计划与历史"; cell.detailTextLabel.text = @"查看规则状态、真实完成时间和异常群；只读"; }
     }
     if (path.section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
     return cell;
@@ -271,10 +306,14 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     __weak typeof(self) weakSelf = self;
     [self picker:@"选择母群" rows:groups selected:@[] excluded:NSSet.set multiple:NO excluding:NO completion:^(NSArray *chosen) {
         if ([chosen[0][@"id"] isEqual:weakSelf.draft[@"sourceGroup"][@"id"]]) return;
-        void (^apply)(void) = ^{ weakSelf.draft[@"sourceGroup"] = chosen[0]; weakSelf.draft[@"senders"] = @[]; weakSelf.draft[@"rules"] = @[]; [weakSelf changed]; };
+        void (^apply)(void) = ^{
+            [weakSelf.receiver stop]; [weakSelf.capture cancel];
+            weakSelf.draft[@"sourceGroup"] = chosen[0]; weakSelf.draft[@"senders"] = @[]; weakSelf.draft[@"rules"] = @[];
+            [weakSelf changed]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+        };
         if ([weakSelf.draft[@"rules"] count] || [weakSelf.draft[@"senders"] count]) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"更换母群？" message:@"将清空当前发送者和目标分组，避免沿用错误来源。保存前不会改变旧草稿。" preferredStyle:UIAlertControllerStyleAlert];
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"更换母群？" message:@"将清空当前发送者和目标分组，并取消未确认的捕获，避免沿用错误来源。已有内容计划和保存前的旧草稿不变。" preferredStyle:UIAlertControllerStyleAlert];
                 [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
                 [alert addAction:[UIAlertAction actionWithTitle:@"更换并清空" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) { apply(); }]];
                 [weakSelf presentViewController:alert animated:YES completion:nil];
@@ -434,6 +473,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 }
 - (void)showDiagnostics {
     NSMutableDictionary *report = [[self.reader diagnostics] mutableCopy];
+    report[@"receiveCandidate"] = self.receiver.diagnostics;
     report[@"iOS"] = UIDevice.currentDevice.systemVersion;
     report[@"wechatBuild"] = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown";
     NSString *text = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:NULL] encoding:NSUTF8StringEncoding];
@@ -445,6 +485,45 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
         UIPasteboard.generalPasteboard.string = text;
     }]];
     [self.navigationController pushViewController:viewer animated:YES];
+}
+- (BOOL (^)(void))planVerifier {
+    SRWeChatReader *reader = self.reader; NSString *account = self.account;
+    SRSourceCapture *capture = self.capture; SRWeChatReceiver *receiver = self.receiver;
+    return ^BOOL {
+        if ([reader verifyAccount:account error:NULL]) return YES;
+        [receiver stop]; [capture cancel];
+        [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; return NO;
+    };
+}
+- (void)showCapture {
+    if (![self.capture.status[@"state"] isEqual:@"preview"]) { SRAlert(self, @"还没有源消息预览", @"请先手动开始等待，再由指定成员在母群发送一条新文字。"); return; }
+    [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier]) animated:YES];
+}
+- (void)beginCapture {
+    NSString *state = self.capture.status[@"state"];
+    if ([state isEqual:@"waiting"]) {
+        [self.receiver stop]; [self.capture cancel];
+        [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; return;
+    }
+    if ([state isEqual:@"preview"]) { [self showCapture]; return; }
+    if (self.dirty) { SRAlert(self, @"请先保存草稿", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
+    if (![self.draft[@"types"] containsObject:@"text"]) { SRAlert(self, @"图片捕获尚未开放", @"当前候选只能核对文字，不能猜测图片媒体路径。图片配置会保留，但本轮不能仅等待图片。"); return; }
+    BOOL otherSender = NO;
+    for (NSDictionary *sender in self.draft[@"senders"]) if (![sender[@"id"] isEqual:self.account]) otherSender = YES;
+    if (!otherSender) { SRAlert(self, @"请选择母群的其他来源成员", @"当前接收候选不把本人发送或回显当作收到的新消息。请先核对来源 wxid。"); return; }
+    NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条新文字？" message:@"仅观察指定母群和 wxid，锁定第一条符合条件的新文字后停止。接收候选尚未真机验证；切后台会取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        if (![self checkDraft:snapshot account:account]) return;
+        NSError *error = nil;
+        if (![self.capture armForAccount:account configuration:snapshot error:&error]) { SRAlert(self, @"无法开始等待", error.localizedDescription); return; }
+        if (![self.receiver armForAccount:account sourceGroup:snapshot[@"sourceGroup"][@"id"] error:&error]) {
+            [self.capture cancel]; SRAlert(self, @"接收候选不可用", error.localizedDescription); return;
+        }
+        [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+    }]];
+    SRPresentAlert(self, alert);
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
@@ -460,6 +539,11 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     if (path.section == 1 && path.row == 0) [self chooseSource];
     if (path.section == 1 && path.row == 1) [self chooseSenders];
     if (path.section == 2) [self editInterval];
+    if (path.section == 4) {
+        if (path.row == 0) [self beginCapture];
+        if (path.row == 1) [self showCapture];
+        if (path.row == 2) [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, [self planVerifier]) animated:YES];
+    }
     if (path.section == 3) {
         if (path.row == 0) [self chooseExclusions];
         else if (path.row == 1) [self autoGroup];
@@ -472,11 +556,38 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @interface SREntry : NSObject
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) UIButton *button;
+@property(nonatomic, strong) SRSourceCapture *capture;
+@property(nonatomic, strong) SRWeChatReceiver *receiver;
+@property(nonatomic, strong) SRWeChatReader *identityReader;
 @property(nonatomic, weak) UINavigationController *presented;
 @end
 @implementation SREntry
+- (void)prepareCapture {
+    NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
+    self.capture = [[SRSourceCapture alloc] initWithStore:self.store];
+    self.identityReader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
+    __weak typeof(self) weakSelf = self;
+    self.receiver = [[SRWeChatReceiver alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
+        currentAccount:^NSString * {
+            SREntry *entry = weakSelf; if (!entry) return nil;
+            NSString *current = [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
+            id expected = entry.capture.status[@"account"];
+            if (expected != NSNull.null && ![expected isEqual:current]) {
+                [entry.capture cancel]; [entry.receiver stop];
+                [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+            }
+            return current;
+        } received:^(NSDictionary *message) {
+            SREntry *entry = weakSelf;
+            if ([entry.capture offerEnvelope:message]) {
+                [entry.receiver stop]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+            }
+        }];
+}
 - (void)install {
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    NSString *title = self.capture.preview ? @"预览" : @"同步";
+    [self.button setTitle:title forState:UIControlStateNormal];
     self.button.hidden = self.presented.presentingViewController != nil;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
@@ -485,7 +596,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
             if (self.button.superview == window) return;
             [self.button removeFromSuperview];
             UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-            [button setTitle:@"同步" forState:UIControlStateNormal];
+            [button setTitle:title forState:UIControlStateNormal];
             button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
             button.titleLabel.adjustsFontForContentSizeCategory = YES;
             button.backgroundColor = UIColor.secondarySystemBackgroundColor; button.layer.cornerRadius = 22;
@@ -507,6 +618,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     while (presenter.presentedViewController) presenter = presenter.presentedViewController;
     if (!presenter || presenter.isBeingDismissed || presenter.isBeingPresented || [presenter isKindOfClass:UIAlertController.class]) return;
     SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleInsetGrouped]; panel.store = self.store;
+    panel.capture = self.capture; panel.receiver = self.receiver;
     __weak typeof(self) weakSelf = self;
     panel.didClose = ^{ weakSelf.button.hidden = NO; };
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:panel];
@@ -516,6 +628,11 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     [presenter presentViewController:navigation animated:YES completion:nil];
 }
 - (void)windowChanged:(__unused NSNotification *)notification { [self install]; }
+- (void)resigningActive:(__unused NSNotification *)notification {
+    [self.receiver stop];
+    if ([self.capture.status[@"state"] isEqual:@"waiting"]) [self.capture cancel];
+    [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+}
 @end
 
 void SRInstallPanelEntry(SRStore *store) {
@@ -523,7 +640,10 @@ void SRInstallPanelEntry(SRStore *store) {
     static SREntry *entry;
     if (entry) return;
     entry = [[SREntry alloc] init]; entry.store = store;
+    [entry prepareCapture];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIWindowDidBecomeKeyNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SRRelayStateChangedNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(resigningActive:) name:UIApplicationWillResignActiveNotification object:nil];
     [entry install];
 }
