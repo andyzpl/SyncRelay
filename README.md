@@ -2,11 +2,13 @@
 
 微信母群消息手动分批转发插件，目标环境 iOS 16.0.3、微信 8.0.76 / 8.0.79。
 
-## 当前状态：0.2.1 已打包，等待入口与群列表手机重测
+## 当前状态：0.2.2 设置入口修正版，待构建与手机重测
 
 不是可用的群转发成品，真实转发仍未启用。新版主入口为「我 → 设置 → SyncRelay 转发」，不再强制显示悬浮按钮。面板内“开启悬浮入口”默认关闭，独立保存开关，打开后才显示“同步／预览／观察”（预览优先）；关闭立即移除，重启保持选择。
 成员读取、手动文字接收和发送观察均为带签名检查的候选适配，尚未在两版微信上真机验证；接口不匹配会停止并提示诊断。
-本轮新包：`dist/0.2.1-test-39441160370/andyz.syncrelay_0.2.1_iphoneos-arm.deb`，126876 字节，源码 `d87cd4a`。本地双架构语法检查 48 项通过；[私有 Actions](https://github.com/andyzpl/SyncRelay/actions/runs/39441160370) 25 条 PASS，普通 DEB、arm64/arm64e、包内容检查和上传通过。下载后再次核对包哈希、载荷、注入范围、签名载荷及系统依赖；SHA-256 为 `c9af1bb7698002508cb48e67ba3650a2a564e5dcd770d85028582833e62714fb`。手机表现尚未验证。
+0.2.1 已收到手机反馈：「我 → 设置」找不到入口，不能再把其模拟测试通过当成宿主适配通过。离线核对 Mikoto 的宿主路径后，0.2.2 补充 `m_tableViewMgr` / `WCTableViewNormalCellManager`，保留旧版表路径；增加页面加载/出现及安装较晚时的刷新。原生私有表不匹配时，只在设置列表底部保留同名可点击入口，不强制悬浮、不接管微信的表代理。存储失败也可进入诊断，规则操作停用。实现/证据边界见 `docs/GROUPS-AND-SETTINGS.md`，重测步骤见 `docs/DEVICE-CHECK-0.2.2.md`。修正版构建结果待记录，尚无手机通过结论。
+
+历史 0.2.1 包：`dist/0.2.1-test-39441160370/andyz.syncrelay_0.2.1_iphoneos-arm.deb`，源码 `d87cd4a`。48 项语法、[私有 Actions](https://github.com/andyzpl/SyncRelay/actions/runs/39441160370) 25 条 PASS 和包校验通过；126876 字节，SHA-256 `c9af1bb7698002508cb48e67ba3650a2a564e5dcd770d85028582833e62714fb`。该包入口在用户设备未出现，不能重新交付同一包作为修正版。
 
 首轮 0.2.0 用户反馈只返回 4 个普通群；旧包不会自动具有本轮修正。0.2.1 在原联系人接口之外补充本地会话用户名，按群 ID 合并，并展示脱敏来源计数；真实覆盖范围仍需手机核对，不把本地候选当成全部已加入群。
 
@@ -32,7 +34,7 @@
 
 已找到的一个 `MessageReturn:MessageInfo:Event:` hook 的附加逻辑调用 `changeHeaderFinish`，不能把它误当成已验证的文字发送回执；发送观察不 hook 此入口，也不把服务器 ID 或状态数字直接解释为成功。细节见 `docs/SEND-PROBE.md`。
 
-当前先修正手机反馈的入口与群数量。0.2.1 的重测步骤见 `docs/DEVICE-CHECK-0.2.1.md`；不做 100/200 群实发测试。
+当前优先修正 0.2.1 手机缺失入口，群来源合并维持不变；入口恢复后再核对是否仍只返回 4 群。本轮不做 100/200 群实发测试。
 
 旧 0.2.0 包记录：功能/测试源码 `201bbd4`，打包提交 `c9bec6e`。本地语法 42 项和[私有 Actions](https://github.com/andyzpl/SyncRelay/actions/runs/39434037504) 22 条 PASS；文件 117410 字节，SHA-256 为 `adf7853d7aa0b3141044e1236d21189faa698de5b6ec5cdd0f1c7ca284142461`。后续收到只返回 4 个普通群的反馈，不将旧测试结果视为群读取完整性证明。
 
@@ -62,7 +64,7 @@
 - `Adapter/`：运行时签名检查、只读联系人/成员候选接口、脱敏诊断；没有主动发送 API。
 - `Adapter/SRWeChatReceiver.m`：手动文字接收候选，保留原接收链，只向内存捕获器提供核对后的规范化数据。
 - `Adapter/SRWeChatSendProbe.m`：最长 120 秒的单群手动文字发送观察，保留原链、精确 ID 关联、有限脱敏样本，不读正文或推断送达。
-- `Adapter/SRWeChatSettingsEntry.m`、`Core/SREntryPreferences.m`：微信原生设置行、重载去重与默认关闭的悬浮开关；不替换微信表格代理，不强制悬浮兜底。
+- `Adapter/SRWeChatSettingsEntry.m`、`Core/SREntryPreferences.m`、`UI/SRSettingsFallback.m`：新旧微信设置表、生命周期/晚安装刷新、设置页内恢复入口和默认关闭的悬浮开关；不替换微信表格代理，不强制悬浮兜底。
 - `UI/SRPanel.m`、`UI/SRPlanScreens.m`：原生设置、搜索多选、手动等待、单条确认、计划/规则/历史/异常只读页面及适配诊断。
 - `Tweak/SRBootstrap.m`：仅在微信主进程初始化存储和设置入口，不注入扩展进程。
 - `tests/`：直接调用生产核心的测试。模拟确认不是微信真实回执。

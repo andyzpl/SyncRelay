@@ -7,10 +7,11 @@
 
 @interface NativeTable : NSObject
 @property(nonatomic) NSUInteger reloads;
+@property(nonatomic) BOOL throws;
 - (void)reloadData;
 @end
 @implementation NativeTable
-- (void)reloadData { self.reloads++; }
+- (void)reloadData { self.reloads++; if (self.throws) @throw @"TableRefreshError"; }
 @end
 
 @interface NativeCell : NSObject
@@ -75,6 +76,11 @@
 @end
 @implementation InheritedSettings
 @end
+@interface FutureSettings : NativeSettings
+@end
+@implementation FutureSettings
+- (void)reloadTableData { [super reloadTableData]; }
+@end
 @interface WrongSettings : NSObject
 - (id)reloadTableData;
 @end
@@ -125,11 +131,96 @@
 - (void *)sections { abort(); }
 @end
 
+@interface ManagerCellFactory : NSObject
++ (id)normalCellForSel:(SEL)action target:(id)target title:(NSString *)title rightValue:(NSString *)value accessoryType:(NSInteger)accessory;
+@end
+@implementation ManagerCellFactory
++ (id)normalCellForSel:(SEL)action target:(id)target title:(NSString *)title rightValue:(NSString *)value accessoryType:(NSInteger)accessory {
+    CHECK(accessory == 1 && [value isEqual:@""]);
+    return [NativeCellFactory normalCellForSel:action target:target title:title];
+}
+@end
+@interface ManagerSection : NativeSection
++ (id)defaultSection;
+- (id)getAllCells;
+- (void)insertCell:(id)cell At:(int)index;
+@end
+@implementation ManagerSection
++ (id)defaultSection { return [self sectionInfoDefaut]; }
+- (id)getAllCells { return self.cells; }
+- (void)insertCell:(id)cell At:(int)index { CHECK(index == 0); [self.cells insertObject:cell atIndex:0]; }
+@end
+@interface ManagerSettings : NSObject
+@property(nonatomic, strong) NativeTableInfo *m_tableViewMgr;
+@property(nonatomic) NSUInteger loads;
+@property(nonatomic) NSUInteger appearances;
+@property(nonatomic) BOOL animated;
+@property(nonatomic) BOOL throws;
+- (void)viewDidLoad;
+- (void)viewWillAppear:(BOOL)animated;
+- (void)viewDidAppear:(BOOL)animated;
+@end
+@implementation ManagerSettings
+- (void)viewDidLoad {
+    self.loads++; self.m_tableViewMgr = [[NativeTableInfo alloc] init];
+    ManagerSection *section = [ManagerSection defaultSection]; [section addCell:[[NativeCell alloc] init]];
+    [self.m_tableViewMgr.sections addObject:section];
+}
+- (void)viewWillAppear:(BOOL)animated { self.appearances++; self.animated = animated; }
+- (void)viewDidAppear:(BOOL)animated {
+    self.appearances++; self.animated = animated;
+    if (self.throws) @throw [NSException exceptionWithName:@"AppearanceError" reason:@"Private host data" userInfo:nil];
+}
+@end
+@interface ManagerIvarSettings : NSObject { @public id m_tableViewMgr; }
+- (void)reloadTableData;
+@end
+@implementation ManagerIvarSettings
+- (void)reloadTableData { }
+@end
+@interface WrongAppearanceSettings : NSObject
+- (void)viewDidAppear:(void *)argument;
+@end
+@implementation WrongAppearanceSettings
+- (void)viewDidAppear:(__unused void *)argument { abort(); }
+@end
+@interface WrongExtendedCellFactory : NSObject
++ (id)normalCellForSel:(SEL)action target:(id)target title:(id)title rightValue:(id)value accessoryType:(NSInteger *)accessory;
+@end
+@implementation WrongExtendedCellFactory
++ (id)normalCellForSel:(__unused SEL)action target:(__unused id)target title:(__unused id)title rightValue:(__unused id)value accessoryType:(__unused NSInteger *)accessory { abort(); }
+@end
+@interface NoopSection : ManagerSection
+@end
+@implementation NoopSection
+- (void)insertCell:(__unused id)cell At:(__unused int)index { }
+@end
+@interface NoopTableInfo : NativeTableInfo
+@end
+@implementation NoopTableInfo
+- (void)addSection:(__unused id)section { }
+@end
+@interface NoopSettings : NSObject
+@property(nonatomic, strong) NativeTableInfo *m_tableViewMgr;
+- (void)reloadTableData;
+@end
+@implementation NoopSettings
+- (void)reloadTableData { }
+@end
+
 static SRWeChatSettingsEntry *entry(NSString *version, Class controller, Class cell, void (^open)(id)) {
     return [[SRWeChatSettingsEntry alloc] initWithVersion:version classResolver:^Class(NSString *name) {
         if ([name isEqual:@"NewSettingViewController"]) return controller;
         if ([name isEqual:@"MMTableViewCellInfo"]) return cell;
         if ([name isEqual:@"MMTableViewSectionInfo"]) return NativeSection.class;
+        return Nil;
+    } open:open];
+}
+static SRWeChatSettingsEntry *managerEntry(Class controller, Class cell, void (^open)(id)) {
+    return [[SRWeChatSettingsEntry alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
+        if ([name isEqual:@"NewSettingViewController"]) return controller;
+        if ([name isEqual:@"WCTableViewNormalCellManager"]) return cell;
+        if ([name isEqual:@"WCTableViewSectionManager"]) return ManagerSection.class;
         return Nil;
     } open:open];
 }
@@ -154,8 +245,12 @@ int main(void) {
         testPreferences();
         __block NSUInteger opens = 0; __block __weak id opened;
         void (^open)(id) = ^(id controller) { opens++; opened = controller; };
-        CHECK(![entry(@"8.0.80", NativeSettings.class, NativeCellFactory.class, open) install:NULL]);
+        SRWeChatSettingsEntry *future = entry(@"8.0.80", FutureSettings.class, NativeCellFactory.class, open);
+        CHECK([future install:NULL] && ![future.diagnostics[@"messagingVersionAllowlisted"] boolValue]);
+        FutureSettings *futureHost = [[FutureSettings alloc] init]; [futureHost reloadTableData];
+        CHECK(futureHost.m_tableViewInfo.sections.count == 2);
         CHECK(![entry(@"8.0.79", WrongSettings.class, NativeCellFactory.class, open) install:NULL]);
+        CHECK(![managerEntry(WrongAppearanceSettings.class, ManagerCellFactory.class, open) install:NULL]);
         CHECK(![entry(@"8.0.79", Nil, NativeCellFactory.class, open) install:NULL]);
 
         SRWeChatSettingsEntry *settings = entry(@"8.0.79", NativeSettings.class, NativeCellFactory.class, open);
@@ -183,6 +278,55 @@ int main(void) {
         InheritedSettings *child = [[InheritedSettings alloc] init]; [child reloadTableData];
         CHECK(child.originalCalls == 1 && child.m_tableViewInfo.sections.count == 2);
 
+        // NewSettingViewController's modern manager has no legacy table getter or reload hook.
+        SRWeChatSettingsEntry *manager = managerEntry(ManagerSettings.class, ManagerCellFactory.class, open);
+        __block NSUInteger updates = 0; __block BOOL nativePresent = NO;
+        manager.updated = ^(id controller, BOOL present) { CHECK([controller isKindOfClass:ManagerSettings.class]); updates++; nativePresent = present; };
+        CHECK([manager install:NULL]);
+        ManagerSettings *modern = [[ManagerSettings alloc] init]; [modern viewDidLoad];
+        CHECK(modern.loads == 1 && modern.m_tableViewMgr.sections.count == 1 && nativePresent && updates == 1);
+        [modern viewWillAppear:YES]; [modern viewDidAppear:NO];
+        CHECK(modern.appearances == 2 && !modern.animated && modern.m_tableViewMgr.sections.count == 1 && updates == 3);
+        NativeCell *modernCell = [modern.m_tableViewMgr.sections.lastObject cells][0];
+        CHECK([modern.m_tableViewMgr.sections.lastObject cells].count == 2);
+        NSUInteger modernBefore = opens; [modernCell tap]; CHECK(opens == modernBefore + 1 && opened == modern);
+        CHECK([manager.diagnostics[@"tableSource"] isEqual:@"m_tableViewMgr"]);
+        CHECK([manager.diagnostics[@"hooks"] containsObject:@"viewDidAppear:"]);
+        [[modern.m_tableViewMgr.sections.lastObject cells] removeObjectAtIndex:0];
+        [modern viewDidAppear:YES]; CHECK([modern.m_tableViewMgr.sections.lastObject cells].count == 2);
+        CHECK(modern.m_tableViewMgr.table.reloads == 2);
+        [[modern.m_tableViewMgr.sections.lastObject cells] removeObjectAtIndex:0]; modern.m_tableViewMgr.table.throws = YES;
+        [modern viewDidAppear:NO]; CHECK([manager.diagnostics[@"state"] isEqual:@"row_restore_failed"]);
+        modern.m_tableViewMgr.table.throws = NO; [modern viewDidAppear:NO];
+        CHECK(nativePresent && [manager.diagnostics[@"state"] isEqual:@"row_present"] && modern.m_tableViewMgr.table.reloads == 4);
+        modern.throws = YES; NSUInteger beforeException = updates; BOOL appearanceThrew = NO;
+        @try { [modern viewDidAppear:YES]; } @catch (NSException *exception) { appearanceThrew = [exception.name isEqual:@"AppearanceError"]; }
+        CHECK(appearanceThrew && updates == beforeException && ![manager.diagnostics.description containsString:@"Private host"]);
+        modern.throws = NO;
+        // A UIKit recovery callback can run on failure, but cannot recursively append or escape exceptions.
+        __weak SRWeChatSettingsEntry *weakManager = manager;
+        manager.updated = ^(id controller, BOOL present) { nativePresent = present; CHECK(![weakManager refreshController:controller]); @throw @"RecoveryError"; };
+        modern.m_tableViewMgr = nil; [modern viewDidAppear:NO];
+        CHECK(!nativePresent && [manager.diagnostics[@"state"] isEqual:@"optional_recovery_entry_exception"]);
+        manager.updated = nil;
+        modern.m_tableViewMgr = [[NativeTableInfo alloc] init]; CHECK([manager refreshController:modern]);
+        CHECK(![manager refreshController:host] && modern.m_tableViewMgr.sections.count == 1);
+
+        // Install after a settings page has already loaded; explicitly refresh the visible instance.
+        __block BOOL classLoaded = NO;
+        SRWeChatSettingsEntry *late = [[SRWeChatSettingsEntry alloc] initWithVersion:@"unknown" classResolver:^Class(NSString *name) {
+            if ([name isEqual:@"NewSettingViewController"]) return classLoaded ? ManagerIvarSettings.class : Nil;
+            if ([name isEqual:@"WCTableViewNormalCellManager"]) return ManagerCellFactory.class;
+            if ([name isEqual:@"WCTableViewSectionManager"]) return ManagerSection.class;
+            return Nil;
+        } open:open];
+        ManagerIvarSettings *lateHost = [[ManagerIvarSettings alloc] init]; lateHost->m_tableViewMgr = [[NativeTableInfo alloc] init];
+        [lateHost reloadTableData]; CHECK(![late install:NULL]);
+        classLoaded = YES; CHECK([late install:NULL] && [late refreshController:lateHost]);
+        CHECK([lateHost->m_tableViewMgr sections].count == 1);
+        for (int i = 0; i < 20; i++) { CHECK([late install:NULL]); [lateHost reloadTableData]; }
+        CHECK([lateHost->m_tableViewMgr sections].count == 1 && [late.diagnostics[@"refreshCount"] unsignedIntegerValue] == 21);
+
         SRWeChatSettingsEntry *ivars = entry(@"8.0.79", IvarSettings.class, NativeCellFactory.class, open);
         CHECK([ivars install:NULL]);
         IvarSettings *ivarHost = [[IvarSettings alloc] init]; IvarTableInfo *tableInfo = [[IvarTableInfo alloc] init]; ivarHost->_m_tableViewInfo = tableInfo;
@@ -205,10 +349,23 @@ int main(void) {
         CHECK([badCell.diagnostics[@"state"] isEqual:@"incompatible_table_methods"] && wrongMutation.sections.count == 0);
         factoryHost->_m_tableViewInfo = [[PointerSections alloc] init]; [factoryHost reloadTableData];
         CHECK([badCell.diagnostics[@"state"] isEqual:@"section_list_unavailable"]);
+        // Reuse the retired hook only after releasing its owner; the wrong integer ABI is never invoked.
+        late = nil;
+        SRWeChatSettingsEntry *badExtended = managerEntry(ManagerIvarSettings.class, WrongExtendedCellFactory.class, open);
+        CHECK([badExtended install:NULL]); lateHost->m_tableViewMgr = [[NativeTableInfo alloc] init];
+        [lateHost reloadTableData]; CHECK([badExtended.diagnostics[@"state"] isEqual:@"cell_factory_unavailable"]);
+        SRWeChatSettingsEntry *noop = managerEntry(NoopSettings.class, ManagerCellFactory.class, open);
+        CHECK([noop install:NULL]); NoopSettings *noopHost = [[NoopSettings alloc] init];
+        noopHost.m_tableViewMgr = [[NativeTableInfo alloc] init];
+        NoopSection *noopSection = [NoopSection defaultSection]; [noopHost.m_tableViewMgr.sections addObject:noopSection];
+        CHECK(![noop refreshController:noopHost] && [noop.diagnostics[@"state"] isEqual:@"insert_not_confirmed"]);
+        CHECK(![noop refreshController:noopHost] && [noop.diagnostics[@"state"] isEqual:@"row_restore_failed"] && noopSection.cells.count == 0);
+        noopHost.m_tableViewMgr = [[NoopTableInfo alloc] init];
+        CHECK(![noop refreshController:noopHost] && [noop.diagnostics[@"state"] isEqual:@"append_not_confirmed"]);
         dispatch_semaphore_t done = dispatch_semaphore_create(0);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ CHECK(!NSThread.isMainThread && ![settings install:NULL]); dispatch_semaphore_signal(done); });
         CHECK(dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
-        puts("PASS: native settings entry, original-chain preservation, dedup/ivar guards, weak actions and default-off preferences");
+        puts("PASS: modern/legacy settings rows, lifecycle/late installation, recovery callbacks, ABI/original-chain guards and opt-in floating entry");
     }
     return 0;
 }

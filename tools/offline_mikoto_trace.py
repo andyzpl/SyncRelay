@@ -3,12 +3,14 @@
 Imports are intercepted with synthetic values. Unsupported calls stop the model.
 The text-route mode stops at AddMsg and does not invoke any real messaging API.
 The session-source mode models empty home sessions and stops at a local username getter.
+The settings-strings mode only decodes four audited local string ranges, with no imported calls.
 """
 import argparse
 import collections
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 import sys
 
@@ -19,7 +21,7 @@ SOURCE_HASH = '0a11bacae2a0131b0ccbdf20ce49f9374bcd50c0d054fc290e9ba9e3b725eb43'
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--entry', required=True, type=lambda value: int(value, 0))
-    parser.add_argument('--mode', choices=('registration', 'text-route', 'session-source'), default='registration')
+    parser.add_argument('--mode', choices=('registration', 'text-route', 'session-source', 'settings-strings'), default='registration')
     parser.add_argument('--binary', type=Path, default=ROOT / 'analysis/rootfs/Library/MobileSubstrate/DynamicLibraries/MikotoHelper.dylib')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
@@ -30,6 +32,15 @@ def main():
         parser.error('Synthetic text-route inputs are defined only for entry 0x272d588')
     if args.mode == 'session-source' and args.entry != 0x32CD560:
         parser.error('Synthetic session-source inputs are defined only for entry 0x32cd560')
+    settings_ranges = {
+        0x5B823C8: (None, {'legacySettingsClass': 0x60FFDD0, 'otherSettingsClass': 0x60FFE20,
+                         'managerSettingsClass': 0x60FFE60}),
+        0x5BC1BC8: (0x5BC1DAC, {'legacyTableIvar': 0x6100E80}),
+        0x5BC3BFC: (0x5BC3D34, {'managerTableIvar': 0x6100F5F}),
+        0x5BC4238: (0x5BC436C, {'managerTableIvar': 0x6100F9B}),
+    }
+    if args.mode == 'settings-strings' and args.entry not in settings_ranges:
+        parser.error('Settings decoding is restricted to four audited string-initialization entries')
     sys.path.insert(0, str(ROOT / 'analysis/python-libs'))
     import lief
     from unicorn import Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE
@@ -61,6 +72,7 @@ def main():
     calls, registrations, messages, problems = collections.Counter(), [], [], []
     stopped_at_send = False
     stopped_at_session = False
+    stopped_at_settings_strings = False
     for binding in binary.bindings:
         if not binding.has_symbol:
             continue
@@ -130,7 +142,11 @@ def main():
         machine.reg_write(UC_ARM64_REG_X1, string_pointer('candidateItemsFromHomeSessions'))
 
     def imported_call(uc, pc, _size, _data):
-        nonlocal stopped_at_send, stopped_at_session
+        nonlocal stopped_at_send, stopped_at_session, stopped_at_settings_strings
+        if args.mode == 'settings-strings' and pc == settings_ranges[args.entry][0]:
+            stopped_at_settings_strings = True
+            uc.emu_stop()
+            return
         if pc == sentinel:
             uc.emu_stop()
             return
@@ -141,7 +157,15 @@ def main():
         x0, x1, x2, x3 = (uc.reg_read(register) for register in
                           (UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3))
         caller = uc.reg_read(UC_ARM64_REG_LR)
-        if name in ('_objc_getClass', '_objc_getMetaClass', '_sel_registerName'):
+        if args.mode == 'settings-strings':
+            # Decode only; stop before the constructor's first Objective-C call.
+            if args.entry == 0x5B823C8 and name == '_objc_msgSend' and caller == 0x5BA9E04:
+                stopped_at_settings_strings = True
+            else:
+                problems.append({'unexpectedImportInStringDecoder': name, 'caller': hex(caller)})
+            uc.emu_stop()
+            return
+        elif name in ('_objc_getClass', '_objc_getMetaClass', '_sel_registerName'):
             prefix = 'meta:' if name == '_objc_getMetaClass' else ''
             result = object_token(prefix + cstring(x0))
         elif name in ('_class_replaceMethod', '_class_addMethod', '_MSHookMessageEx'):
@@ -236,12 +260,28 @@ def main():
     except (UcError, RuntimeError) as error:
         problems.append({'error': str(error), 'pc': hex(machine.reg_read(UC_ARM64_REG_PC))})
     end_pc = machine.reg_read(UC_ARM64_REG_PC)
-    completed = (end_pc == sentinel or stopped_at_send or stopped_at_session) and not problems
+    completed = (end_pc == sentinel or stopped_at_send or stopped_at_session or stopped_at_settings_strings) and not problems
+    table_class_strings = []
+    if args.entry in (0x34F8D0C, 0x33D8EA0) and args.mode == 'registration':
+        for section in sections:
+            if section.name != '__data':
+                continue
+            content = bytes(machine.mem_read(section.virtual_address, section.size))
+            for match in re.finditer(rb'(?:MM|WC)TableView[A-Za-z]{1,60}\x00', content):
+                table_class_strings.append({'address': hex(section.virtual_address + match.start()),
+                                            'text': match[0][:-1].decode('ascii')})
     report = {'sourceSHA256': SOURCE_HASH, 'entry': hex(args.entry), 'mode': args.mode,
               'completedModel': completed, 'endPC': hex(end_pc), 'stoppedAtSendBoundary': stopped_at_send,
               'stoppedAtSessionReadBoundary': stopped_at_session,
+              'stoppedAtSettingsStringBoundary': stopped_at_settings_strings,
+              'settingsStrings': ({key: {'address': hex(address), 'text': cstring(address)}
+                                   for key, address in settings_ranges[args.entry][1].items()}
+                                  if stopped_at_settings_strings else {}),
+              'decodedTableClasses': table_class_strings,
               'calls': dict(calls), 'registrations': registrations, 'messages': messages, 'problems': problems,
-              'model': 'Offline ARM64 emulation; imports stubbed and classes assumed present. No real iOS, networking, registration or sending.',
+              'model': ('Offline string decoding only; stops before the first imported call or at an audited decoder boundary. No gates or host methods run.'
+                        if args.mode == 'settings-strings' else
+                        'Offline ARM64 emulation; imports stubbed and classes assumed present. No real iOS, networking, registration or sending.'),
               'assumptions': (['Initializer 0x32e4740 decodes local strings; registration imports are inert.',
                                'Home session collections are synthetic empty collections; service objects are tokens.',
                                'Execution stops before GetUserNamesOnSessionList returns; no group contents or completeness modeled.']

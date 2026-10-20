@@ -11,6 +11,7 @@
 #import "Adapter/SRWeChatSendProbe.h"
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "SRPlanScreens.h"
+#import "SRSettingsFallback.h"
 #include <errno.h>
 #include <stdlib.h>
 
@@ -140,6 +141,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
+@property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, strong) NSMutableDictionary *draft;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSString *status;
@@ -174,6 +176,11 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (void)captureChanged:(__unused NSNotification *)notification { [self refresh]; }
 - (void)loadAccount {
     NSError *error = nil;
+    if (!self.store) {
+        self.ready = NO; self.draft = [SRConfiguration emptyDraft]; self.dirty = NO;
+        self.status = @"本地存储初始化或恢复失败；仅可查看诊断和修改入口开关，规则操作已停用。请完全退出微信后重开。";
+        [self refresh]; return;
+    }
     self.ready = [self.reader connect:&error];
     self.account = self.reader.accountID;
     id captureAccount = self.capture.status[@"account"];
@@ -200,7 +207,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (void)refresh {
     if ([self.capture.status[@"state"] isEqual:@"waiting"] && ![self.receiver.diagnostics[@"armed"] boolValue]) [self.capture cancel];
     self.navigationItem.rightBarButtonItem.enabled = self.ready;
-    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.1 · 文字捕获候选 / 发送未启用";
+    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.2 · 文字捕获候选 / 发送未启用";
     [self.tableView reloadData];
 }
 - (void)changed {
@@ -495,6 +502,8 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (void)showDiagnostics {
     NSMutableDictionary *report = [[self.reader diagnostics] mutableCopy];
     report[@"settingsEntry"] = self.settingsEntry.diagnostics;
+    report[@"settingsFooterRecoveryActive"] = @(self.settingsFooterActive);
+    report[@"storageReady"] = @(self.store != nil);
     report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
     report[@"manualSendObservation"] = self.sendProbe.diagnostics;
@@ -612,9 +621,26 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @property(nonatomic, strong) SRWeChatReader *identityReader;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
+@property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, weak) UINavigationController *presented;
 @end
 @implementation SREntry
+- (void)refreshVisibleSettings {
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (!window.isKeyWindow || window.windowLevel != UIWindowLevelNormal || !window.rootViewController) continue;
+            UIViewController *visible = window.rootViewController;
+            for (NSUInteger depth = 0; visible && depth < 24; depth++) {
+                if (visible.presentedViewController) visible = visible.presentedViewController;
+                else if ([visible isKindOfClass:UINavigationController.class]) visible = ((UINavigationController *)visible).visibleViewController;
+                else if ([visible isKindOfClass:UITabBarController.class]) visible = ((UITabBarController *)visible).selectedViewController;
+                else { if (visible.viewIfLoaded.window) [self.settingsEntry refreshController:visible]; break; }
+            }
+        }
+    }
+}
 - (void)prepareCapture {
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     self.capture = [[SRSourceCapture alloc] initWithStore:self.store];
@@ -646,6 +672,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 }
 - (void)install {
     [self.settingsEntry install:NULL];
+    [self refreshVisibleSettings];
     if (!self.entryPreferences.floatingEntryEnabled) {
         [self.button removeFromSuperview]; self.button = nil; return;
     }
@@ -696,6 +723,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     panel.capture = self.capture; panel.receiver = self.receiver;
     panel.sendProbe = self.sendProbe;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
+    panel.settingsFooterActive = self.settingsFooterActive;
     __weak typeof(self) weakSelf = self;
     panel.didClose = ^{ weakSelf.presented = nil; [weakSelf install]; };
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:panel];
@@ -726,7 +754,13 @@ void SRInstallPanelEntry(SRStore *store) {
     __weak SREntry *weakEntry = entry;
     entry.settingsEntry = [[SRWeChatSettingsEntry alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
         open:^(id controller) { if ([controller isKindOfClass:UIViewController.class]) [weakEntry openFromController:controller]; }];
-    [entry prepareCapture];
+    entry.settingsEntry.updated = ^(id controller, BOOL present) {
+        if (![controller isKindOfClass:UIViewController.class]) return;
+        weakEntry.settingsFooterActive = SRUpdateSettingsFallback(controller, present, ^(UIViewController *host) {
+            [weakEntry openFromController:host];
+        });
+    };
+    if (store) [entry prepareCapture];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIWindowDidBecomeKeyNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SRRelayStateChangedNotification object:nil];

@@ -153,7 +153,7 @@
     Class manager = self.resolver(@"CContactMgr");
     Class contact = self.resolver(@"CContact");
     Class sessions = self.resolver(@"MMNewSessionMgr");
-    return @{@"pluginVersion": @"0.2.1", @"wechatVersion": self.version,
+    return @{@"pluginVersion": @"0.2.2", @"wechatVersion": self.version,
         @"supportedReadCandidate": @([@[@"8.0.76", @"8.0.79"] containsObject:self.version]),
         @"centerClassPresent": @(center != Nil), @"contactClassPresent": @(manager != Nil),
         @"accountReadable": @(self.accountID.length > 0), @"sendingEnabled": @NO,
