@@ -23,8 +23,12 @@ jobs:
           set -euo pipefail
           clang -std=c11 -Wall -Wextra -Werror -I. Core/SRPacing.c tests/pacing_test.c -o "$RUNNER_TEMP/pacing-test"
           "$RUNNER_TEMP/pacing-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/store-test"
-          "$RUNNER_TEMP/store-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/store-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReader.m Core/SRSelection.m Core/SRConfiguration.m Core/SRPacing.c tests/adapter_test.m -framework Foundation -o "$RUNNER_TEMP/adapter-test"
+          for pass in 1 2 3; do
+            "$RUNNER_TEMP/store-test"
+            "$RUNNER_TEMP/adapter-test"
+          done
       - name: Install build tools
         run: |
           brew install make dpkg ldid
@@ -67,7 +71,7 @@ jobs:
           otool -L "$dylib"
           cp "$deb" dist/
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
-          printf 'Development foundation only. No UI or WeChat sending.\n' > dist/DEVELOPMENT-NOTICE.txt
+          printf 'Read-only adapter/settings development build. WeChat sending is disabled. Device compatibility not yet verified.\n' > dist/DEVELOPMENT-NOTICE.txt
       - uses: actions/upload-artifact@v4
         with:
           name: SyncRelay-development-deb

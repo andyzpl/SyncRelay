@@ -2,23 +2,28 @@
 
 微信母群消息手动分批转发插件，目标环境 iOS 16.0.3、微信 8.0.76 / 8.0.79。
 
-## 当前状态：0.1.0 开发骨架
+## 当前状态：0.2.0 读取适配与配置草稿
 
-本版本不是可用的群转发成品，没有设置入口、成员读取、消息捕获或发送能力。
-注入后只创建独立 SQLite 数据库并将中断批次恢复为待手动继续；不会向任何群发消息。
+不是可用的群转发成品，尚无消息捕获或发送能力。注入并打开微信后，右下方“同步”按钮进入设置。
+成员读取是带签名检查的候选适配，尚未在两版微信上真机验证；接口不匹配会停止并提示诊断。
 
-2026-10-20：私有 Actions 完整编译、核心运行测试、双架构和包路径检查通过。
-构建记录：https://github.com/andyzpl/SyncRelay/actions/runs/39413145780
-源码提交：`fe63575aff2d09d3fbce9de1822499232e3e593b`。产物与 SHA-256 见开发进度文档。
+本轮增加母群选择、成员原始 wxid 显示/多选、文字/图片开关、随机间隔编辑、100/200/全选可选目标、分组去重与按账号保存草稿。
+保存草稿不会创建发送批次；没有开始/重新执行按钮。草稿与已运行记录分离，数据库升级保留旧执行历史。
+
+设备验证步骤见 `docs/DEVICE-CHECK-0.2.0.md`。历次构建结果、产物与 SHA-256 见开发进度文档。
 
 已编写的模块：
 
 - `Core/SRStore.m`：计划、互斥分组、独立执行批次、持久化状态、暂停/恢复、重新执行、结果关联。
 - `Core/SRPacing.c`：至少 10 秒的随机节拍计算，单调时钟输入，恢复时不补发错过节拍。
-- `Tweak/SRBootstrap.m`：仅在微信主进程初始化存储，不注入扩展进程。
+- `Core/SRConfiguration.m`、`Core/SRSelection.m`：草稿校验、完整列表批量选择、来源群与重复目标排除。
+- `Adapter/`：运行时签名检查、只读联系人/成员候选接口、脱敏诊断；没有发送 API。
+- `UI/SRPanel.m`：原生设置、搜索多选、草稿保存、适配诊断。
+- `Tweak/SRBootstrap.m`：仅在微信主进程初始化存储和设置入口，不注入扩展进程。
 - `tests/`：直接调用生产核心的测试。模拟确认不是微信真实回执。
 
-尚未实现：微信适配、wxid 列表、来源/类型过滤、界面、实际调度循环、失败补发 UI/策略、媒体缓存、常亮与设备验收。
+尚未实现：实际消息捕获与来源/类型过滤、发送适配、执行控制界面、实际调度循环、失败补发 UI/策略、媒体缓存、常亮与设备验收。
+群枚举当前只调用候选 `getContactList:contactType:` 的 `(1,0)` 参数，不能保证覆盖全部已加入群；成员来自本地群成员字段，不能保证为实时完整名单。界面显示该限制。
 `SRStore` 的 claim 是存储层操作；接入发送器时必须先经过节拍、单账号身份和适配可用性检查。
 传入 confirmed 只说明调用方声称已验证结果；未来适配器必须提供实际确认依据，消息 ID 本身不证明服务器已接收。
 
@@ -35,8 +40,10 @@ macOS 本地核心测试：
 ```sh
 clang -std=c11 -Wall -Wextra -Werror -I. Core/SRPacing.c tests/pacing_test.c -o /tmp/sr-pacing
 /tmp/sr-pacing
-clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o /tmp/sr-store
+clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o /tmp/sr-store
 /tmp/sr-store
+clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReader.m Core/SRSelection.m Core/SRConfiguration.m Core/SRPacing.c tests/adapter_test.m -framework Foundation -o /tmp/sr-adapter
+/tmp/sr-adapter
 ```
 
 完整需求和真实进度见 `开发需求与进度.md`。两版微信兼容性目前均未真机验证。

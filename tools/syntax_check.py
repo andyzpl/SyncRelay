@@ -22,7 +22,9 @@ for arch in ('arm64', 'arm64e'):
              '-isystem', str(sdk / 'usr/include/pthread'),
              '-F', str(sdk / 'System/Library/Frameworks'), '-I', str(root),
              '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror']
-    for file in ('Core/SRStore.m', 'Tweak/SRBootstrap.m', 'tests/store_test.m'):
+    for file in ('Core/SRStore.m', 'Core/SRConfiguration.m', 'Core/SRSelection.m',
+                 'Adapter/SRRuntime.m', 'Adapter/SRWeChatReader.m', 'UI/SRPanel.m',
+                 'Tweak/SRBootstrap.m', 'tests/store_test.m', 'tests/adapter_test.m'):
         unit = index.parse(str(root / file), args=flags)
         diagnostics = [str(d) for d in unit.diagnostics]
         passed = not any(d.severity >= cindex.Diagnostic.Warning for d in unit.diagnostics)

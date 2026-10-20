@@ -27,5 +27,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)endRun:(NSString *)run error:(NSError **)error;
 - (nullable NSDictionary *)summaryForRun:(NSString *)run error:(NSError **)error;
 - (nullable NSArray<NSString *> *)allocatedTargetsForPlan:(NSString *)plan error:(NSError **)error;
+/* Configuration drafts do not create plans, runs or deliveries. */
+- (nullable NSDictionary *)configurationForAccount:(NSString *)account error:(NSError **)error;
+- (BOOL)saveConfiguration:(NSDictionary *)configuration account:(NSString *)account error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

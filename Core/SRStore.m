@@ -1,5 +1,6 @@
 #import "SRStore.h"
 #import "SRPacing.h"
+#import "SRConfiguration.h"
 #import <sqlite3.h>
 
 @interface SRStore () {
@@ -77,7 +78,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         [self query:@"PRAGMA journal_mode=WAL" values:@[]];
         [self query:@"PRAGMA synchronous=FULL" values:@[]];
         NSInteger version = [[self query:@"PRAGMA user_version" values:@[]].firstObject[@"user_version"] integerValue];
-        SRRequire(version == 0 || version == 1, @"Unsupported database schema; do not downgrade");
+        SRRequire(version >= 0 && version <= 2, @"Unsupported database schema; do not downgrade");
         return @YES;
     } transaction:NO error:error];
     if (!setup) return nil;
@@ -91,7 +92,8 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), target TEXT NOT NULL, position INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','submitting','confirmed','failed','uncertain','cancelled')), attempt_id TEXT, message_id TEXT, reason TEXT, UNIQUE(run_id,target))",
             @"CREATE INDEX IF NOT EXISTS delivery_queue ON deliveries(run_id,state,position)",
             @"CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id), started_at REAL NOT NULL, ended_at REAL, state TEXT NOT NULL, message_id TEXT, reason TEXT)",
-            @"PRAGMA user_version=1"
+            @"CREATE TABLE IF NOT EXISTS configurations(account TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL)",
+            @"PRAGMA user_version=2"
         ];
         for (NSString *sql in schema) [self query:sql values:@[]];
         return @YES;
@@ -253,5 +255,26 @@ static void SRRequire(BOOL condition, NSString *message) {
     return [self perform:^id{
         return [[self query:@"SELECT target FROM allocations WHERE plan_id=? ORDER BY target" values:@[plan]] valueForKey:@"target"];
     } transaction:NO error:error];
+}
+
+- (NSDictionary *)configurationForAccount:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length > 0, @"Account ID required");
+        NSDictionary *row = [self query:@"SELECT payload FROM configurations WHERE account=?" values:@[account]].firstObject;
+        if (!row) return [SRConfiguration emptyDraft];
+        NSDictionary *draft = [NSJSONSerialization JSONObjectWithData:[row[@"payload"] dataUsingEncoding:NSUTF8StringEncoding]
+            options:0 error:NULL];
+        SRRequire([SRConfiguration validateDraft:draft error:NULL], @"Stored configuration is invalid; not overwritten");
+        return draft;
+    } transaction:NO error:error];
+}
+
+- (BOOL)saveConfiguration:(NSDictionary *)configuration account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length > 0 && [SRConfiguration validateDraft:configuration error:NULL], @"Invalid configuration or account");
+        [self query:@"INSERT INTO configurations(account,payload,updated_at) VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at"
+            values:@[account, [self json:configuration], @(NSDate.date.timeIntervalSince1970)]];
+        return @YES;
+    } transaction:YES error:error] != nil;
 }
 @end

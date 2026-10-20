@@ -1,7 +1,8 @@
 #import <Foundation/Foundation.h>
 #import "Core/SRStore.h"
+#import "UI/SRPanel.h"
 
-/* Development bootstrap only: no private send API or automatic execution. */
+/* Read-only adapter/settings entry. No private send API or automatic execution. */
 static SRStore *SRRepository;
 
 __attribute__((constructor)) static void SRInitialize(void) {
@@ -22,7 +23,8 @@ __attribute__((constructor)) static void SRInitialize(void) {
                     NSLog(@"[SyncRelay] Recovery failed; sender disabled.");
                     return;
                 }
-                NSLog(@"[SyncRelay] 0.1.0 development store ready. UI and sending are not enabled.");
+                dispatch_async(dispatch_get_main_queue(), ^{ SRInstallPanelEntry(SRRepository); });
+                NSLog(@"[SyncRelay] 0.2.0 settings ready. Sending is disabled.");
             }
         });
     }

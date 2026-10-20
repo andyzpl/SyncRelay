@@ -1,5 +1,7 @@
 #import <Foundation/Foundation.h>
 #import "Core/SRStore.h"
+#import "Core/SRConfiguration.h"
+#import <sqlite3.h>
 #include <assert.h>
 
 static NSUInteger count(NSDictionary *summary, NSString *state) {
@@ -15,6 +17,14 @@ int main(void) {
         NSError *error = nil;
         SRStore *store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store && !error);
+        NSMutableDictionary *draft = [SRConfiguration emptyDraft];
+        draft[@"maximum"] = @30;
+        assert([store saveConfiguration:draft account:@"account" error:&error]);
+        assert([store configurationForAccount:@"other-account" error:&error][@"maximum"] != nil);
+        assert([[store configurationForAccount:@"other-account" error:&error][@"maximum"] isEqual:@20]);
+        draft[@"minimum"] = @5;
+        assert(![store saveConfiguration:draft account:@"account" error:NULL]);
+        assert([[store configurationForAccount:@"account" error:&error][@"minimum"] isEqual:@10]);
         NSString *plan = [store createPlanForAccount:@"account" sourceGroup:@"source@chatroom"
             senders:@[@"wxid_sender"] types:@[@"text", @"image"] sourceSnapshot:@{@"id": @"source-message", @"text": @"test"} error:&error];
         assert(plan);
@@ -40,6 +50,7 @@ int main(void) {
         assert(![store claimNextForRun:run error:NULL]);
         store = nil;
         store = [[SRStore alloc] initWithPath:path error:&error];
+        assert([[store configurationForAccount:@"account" error:&error][@"maximum"] isEqual:@30]);
         assert([store recoverInterruptedRuns:&error]);
         NSDictionary *summary = [store summaryForRun:run error:&error];
         assert([summary[@"state"] isEqual:@"awaiting_resume"]);
@@ -80,6 +91,15 @@ int main(void) {
         assert(![[store summaryForRun:secondRun error:&error][@"state"] isEqual:@"completed"]);
         assert([store endRun:secondRun error:&error]);
         assert(count([store summaryForRun:run error:&error], @"confirmed") == 2000);
+        store = nil;
+        sqlite3 *legacy = NULL;
+        assert(sqlite3_open(path.fileSystemRepresentation, &legacy) == SQLITE_OK);
+        assert(sqlite3_exec(legacy, "DROP TABLE configurations; PRAGMA user_version=1;", NULL, NULL, NULL) == SQLITE_OK);
+        assert(sqlite3_close(legacy) == SQLITE_OK);
+        store = [[SRStore alloc] initWithPath:path error:&error];
+        assert(store);
+        assert(count([store summaryForRun:run error:&error], @"confirmed") == 2000);
+        assert([store saveConfiguration:[SRConfiguration emptyDraft] account:@"account" error:&error]);
         store = nil;
         assert([NSFileManager.defaultManager removeItemAtPath:directory error:nil]);
         puts("PASS: SQLite fan-out, allocation rollback, serial execution, recovery, replay and late callbacks");
