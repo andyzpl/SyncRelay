@@ -10,8 +10,22 @@
 - (void)AddMsg:(id)session MsgWrap:(id)wrap { (void)session; (void)wrap; }
 @end
 @interface FakeMessageWrap : NSObject
+- (NSString *)m_nsFromUsr;
+- (NSString *)m_nsToUsr;
+- (NSString *)m_nsContent;
+- (unsigned int)m_uiMessageType;
+- (unsigned int)m_uiMesLocalID;
+- (long long)m_n64MesSvrID;
+- (unsigned int)m_uiStatus;
 @end
 @implementation FakeMessageWrap
+- (NSString *)m_nsFromUsr { return nil; }
+- (NSString *)m_nsToUsr { return nil; }
+- (NSString *)m_nsContent { return nil; }
+- (unsigned int)m_uiMessageType { return 0; }
+- (unsigned int)m_uiMesLocalID { return 0; }
+- (long long)m_n64MesSvrID { return 0; }
+- (unsigned int)m_uiStatus { return 0; }
 @end
 @interface WrongMessageMgr : NSObject
 - (id)AddMsg:(id)session MsgWrap:(id)wrap;

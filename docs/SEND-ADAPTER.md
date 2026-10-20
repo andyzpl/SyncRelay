@@ -8,7 +8,7 @@
 
 ## 当前契约
 
-- 仅允许微信 `8.0.76` / `8.0.79`，并校验 `CMessageMgr AddMsg:MsgWrap:` 为 `void(object, object)` 且 `CMessageWrap` 类存在；未知类或签名直接阻断。尚未假定任何未由设备证据确认的构造器或 setter ABI。
+- 仅允许微信 `8.0.76` / `8.0.79`，并校验 `CMessageMgr AddMsg:MsgWrap:` 为 `void(object, object)`，以及 `CMessageWrap` 的已观察字符串/整数 getter 编码；未知类或签名直接阻断。尚未假定任何未由设备证据确认的构造器或 setter ABI。
 - `prepareForAccount:targetGroup:sourceSnapshot:confirmed:error:` 必须在主线程调用，`confirmed` 必须为真，源快照必须来自当前账号、母群且类型为 `text`；目标群必须是一个不同于母群的稳定 `@chatroom` ID。
 - 源快照通过 JSON 冻结，提交时再次逐字比对；目标、状态或快照改变会进入 `uncertain`，不改用其他消息或群。
 - 一个适配器实例只允许一次提交；重复提交明确返回 `uncertain`，不会自动重试。

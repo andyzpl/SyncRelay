@@ -16,6 +16,7 @@
 @property(nonatomic, copy) NSString *problem;
 @property(nonatomic, copy) NSString *outcome;
 @property(nonatomic) BOOL abiValidated;
+@property(nonatomic) BOOL wrapABIValidated;
 @property(nonatomic) BOOL submitted;
 @property(nonatomic) NSUInteger callbackCount;
 @end
@@ -37,6 +38,22 @@ static BOOL SRTextSendABI(Class manager) {
     return signature.numberOfArguments == 4 && !strcmp(SRTextSendType(signature.methodReturnType), "v") &&
         SRTextSendObjectType([signature getArgumentTypeAtIndex:2]) &&
         SRTextSendObjectType([signature getArgumentTypeAtIndex:3]);
+}
+
+static BOOL SRTextSendWrapABI(Class wrap) {
+    if (!wrap) return NO;
+    for (NSString *name in @[@"m_nsFromUsr", @"m_nsToUsr", @"m_nsContent"]) {
+        Method method = class_getInstanceMethod(wrap, NSSelectorFromString(name));
+        NSMethodSignature *signature = method ? [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)] : nil;
+        if (!signature || signature.numberOfArguments != 2 || !SRTextSendObjectType(signature.methodReturnType)) return NO;
+    }
+    for (NSString *name in @[@"m_uiMessageType", @"m_uiMesLocalID", @"m_n64MesSvrID", @"m_uiStatus"]) {
+        Method method = class_getInstanceMethod(wrap, NSSelectorFromString(name));
+        NSMethodSignature *signature = method ? [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)] : nil;
+        const char *type = signature ? SRTextSendType(signature.methodReturnType) : "";
+        if (!signature || signature.numberOfArguments != 2 || !type[0] || type[1] || !strchr("iIqQlLsScC", type[0])) return NO;
+    }
+    return YES;
 }
 
 static BOOL SRTextSendSafeIdentifier(NSString *value, BOOL group) {
@@ -102,12 +119,12 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
         return [self fail:@"Only one confirmed text source snapshot is eligible" error:error];
     Class manager = self.resolver ? self.resolver(@"CMessageMgr") : Nil;
     Class wrap = self.resolver ? self.resolver(@"CMessageWrap") : Nil;
-    if (!manager || !wrap || !SRTextSendABI(manager))
-        return [self fail:@"AddMsg:MsgWrap: is absent or has an incompatible ABI" error:error];
+    if (!manager || !SRTextSendABI(manager) || !SRTextSendWrapABI(wrap))
+        return [self fail:@"CMessageMgr/CMessageWrap has an absent or incompatible ABI" error:error];
     @synchronized (self) {
         if (self.submitted) return [self fail:@"Reset the previous single-target test before preparing again" error:error];
         self.account = account; self.group = group; self.snapshot = frozen;
-        self.abiValidated = YES; self.state = @"prepared"; self.problem = nil;
+        self.abiValidated = YES; self.wrapABIValidated = YES; self.state = @"prepared"; self.problem = nil;
         self.outcome = @"not_determined"; self.callbackCount = 0;
     }
     return YES;
@@ -166,7 +183,7 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
 
 - (void)reset {
     @synchronized (self) {
-        self.account = nil; self.group = nil; self.snapshot = nil; self.abiValidated = NO;
+        self.account = nil; self.group = nil; self.snapshot = nil; self.abiValidated = NO; self.wrapABIValidated = NO;
         self.submitted = NO; self.state = @"idle"; self.problem = nil; self.outcome = @"not_determined"; self.callbackCount = 0;
     }
 }
@@ -175,7 +192,8 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
     @synchronized (self) {
         return @{@"wechatVersion": self.version ?: @"", @"observerOnly": @NO, @"sendingEnabled": @NO,
             @"adapterCandidate": @YES, @"operationInjected": @(self.operation != nil),
-            @"abiValidated": @(self.abiValidated), @"prepared": @(self.snapshot != nil),
+            @"abiValidated": @(self.abiValidated), @"wrapABIValidated": @(self.wrapABIValidated),
+            @"prepared": @(self.snapshot != nil),
             @"submitted": @(self.submitted), @"callbackCount": @(self.callbackCount),
             @"state": self.state ?: @"idle", @"outcome": self.outcome ?: @"not_determined",
             @"problem": self.problem ?: @""};
