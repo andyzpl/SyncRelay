@@ -1,6 +1,7 @@
 #import "SRRuntime.h"
 #import <objc/runtime.h>
 #include <string.h>
+#include <limits.h>
 
 static const char *SRType(const char *type) {
     while (*type && strchr("rnNoORV", *type)) type++;
@@ -103,6 +104,46 @@ NSNumber *SRReadUnsignedInteger(id target, NSString *name, NSError **error) {
     } @catch (__unused id exception) { }
     if (error) *error = [NSError errorWithDomain:@"SyncRelay.Runtime" code:2
         userInfo:@{NSLocalizedDescriptionKey: @"Integer getter is absent or has an incompatible signature"}];
+    return nil;
+}
+id SRReadObjectWithObjectAndUnsignedInteger(id target, NSString *name, id object, NSNumber *integer, NSError **error) {
+    @try {
+        SEL selector = NSSelectorFromString(name);
+        NSMethodSignature *signature = [target respondsToSelector:selector] ? [target methodSignatureForSelector:selector] : nil;
+        const char *result = signature ? SRType(signature.methodReturnType) : "";
+        if (!signature || signature.numberOfArguments != 4 || result[0] != '@' || result[1] == '?') @throw @"Invalid lookup";
+        const char *first = SRType([signature getArgumentTypeAtIndex:2]);
+        const char *type = SRType([signature getArgumentTypeAtIndex:3]);
+        if (first[0] != '@' || first[1] == '?' || ![integer isKindOfClass:NSNumber.class]) @throw @"Invalid lookup arguments";
+        const char *numberType = integer.objCType;
+        if (!numberType[0] || numberType[1] || !strchr("iIqQlLsScC", numberType[0]) ||
+            (strchr("iqlsc", numberType[0]) && integer.longLongValue < 0)) @throw @"Not an unsigned integer";
+        unsigned long long value = integer.unsignedLongLongValue;
+        NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+        invocation.target = target; invocation.selector = selector;
+        __unsafe_unretained id argument = object; [invocation setArgument:&argument atIndex:2];
+        switch (type[0]) {
+#define SR_LOOKUP_INTEGER(encoding, ctype, maximum) \
+            case encoding: { if (type[1] || value > (unsigned long long)(maximum)) @throw @"Integer overflow"; \
+                ctype scalar = (ctype)value; [invocation setArgument:&scalar atIndex:3]; break; }
+            SR_LOOKUP_INTEGER('i', int, INT_MAX)
+            SR_LOOKUP_INTEGER('I', unsigned int, UINT_MAX)
+            SR_LOOKUP_INTEGER('q', long long, LLONG_MAX)
+            SR_LOOKUP_INTEGER('Q', unsigned long long, ULLONG_MAX)
+            SR_LOOKUP_INTEGER('l', long, LONG_MAX)
+            SR_LOOKUP_INTEGER('L', unsigned long, ULONG_MAX)
+            SR_LOOKUP_INTEGER('s', short, SHRT_MAX)
+            SR_LOOKUP_INTEGER('S', unsigned short, USHRT_MAX)
+            SR_LOOKUP_INTEGER('c', signed char, SCHAR_MAX)
+            SR_LOOKUP_INTEGER('C', unsigned char, UCHAR_MAX)
+#undef SR_LOOKUP_INTEGER
+            default: @throw @"Invalid integer lookup argument";
+        }
+        [invocation invoke]; __unsafe_unretained id resultObject = nil;
+        [invocation getReturnValue:&resultObject]; return resultObject;
+    } @catch (__unused id exception) { }
+    if (error) *error = [NSError errorWithDomain:@"SyncRelay.Runtime" code:3
+        userInfo:@{NSLocalizedDescriptionKey: @"Read-only message lookup has an incompatible signature, ID or result"}];
     return nil;
 }
 NSDictionary *SRDescribeMethod(id target, NSString *selector) {

@@ -7,6 +7,7 @@
 #import "Core/SRSourceCapture.h"
 #import "Adapter/SRWeChatReader.h"
 #import "Adapter/SRWeChatReceiver.h"
+#import "Adapter/SRWeChatSendProbe.h"
 #import "SRPlanScreens.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -133,6 +134,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRWeChatReader *reader;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
+@property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) NSMutableDictionary *draft;
 @property(nonatomic, copy) NSString *account;
@@ -224,7 +226,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 3;
+    if (section == 0) return 4;
     if (section == 1) return 4;
     if (section == 2) return 1;
     if (section == 4) return 3;
@@ -252,7 +254,12 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     if (path.section == 0) {
         if (path.row == 0) { cell.textLabel.text = [@"微信 " stringByAppendingString:self.reader.version]; cell.detailTextLabel.text = self.account ?: @"账号 wxid 未读取"; cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleNone; }
         if (path.row == 1) cell.textLabel.text = @"重新读取账号与草稿";
-        if (path.row == 2) { cell.textLabel.text = @"查看适配诊断"; cell.detailTextLabel.text = @"仅版本与接口签名，不含成员或消息内容"; }
+        if (path.row == 2) { cell.textLabel.text = @"查看适配诊断"; cell.detailTextLabel.text = @"版本、接口签名及手动观察摘要；不含 wxid、群 ID 或正文"; }
+        if (path.row == 3) {
+            BOOL armed = [self.sendProbe.diagnostics[@"armed"] boolValue];
+            cell.textLabel.text = armed ? @"停止手动发送观察" : @"只读观察一次手动文字发送";
+            cell.detailTextLabel.text = armed ? @"观察中 · 120 秒到期或切后台停止；结果见适配诊断" : @"只选一个测试群，由你手动发文字；插件不代发";
+        }
     } else if (path.section == 1) {
         if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"选择消息来源群"; }
         else if (path.row == 1) { cell.textLabel.text = @"指定发送者"; cell.detailTextLabel.text = [NSString stringWithFormat:@"已选 %lu 人 · 查看 wxid", (unsigned long)[self.draft[@"senders"] count]]; }
@@ -474,6 +481,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (void)showDiagnostics {
     NSMutableDictionary *report = [[self.reader diagnostics] mutableCopy];
     report[@"receiveCandidate"] = self.receiver.diagnostics;
+    report[@"manualSendObservation"] = self.sendProbe.diagnostics;
     report[@"iOS"] = UIDevice.currentDevice.systemVersion;
     report[@"wechatBuild"] = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown";
     NSString *text = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:NULL] encoding:NSUTF8StringEncoding];
@@ -485,6 +493,30 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
         UIPasteboard.generalPasteboard.string = text;
     }]];
     [self.navigationController pushViewController:viewer animated:YES];
+}
+- (void)beginSendProbe {
+    if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { [self.sendProbe stop]; return; }
+    if (![self checkAccount]) return;
+    if ([self.capture.status[@"state"] isEqual:@"waiting"]) {
+        SRAlert(self, @"请先取消源消息等待", @"手动发送观察与源消息等待分开验证，避免混淆本轮测试。已有预览不会被观察覆盖。"); return;
+    }
+    NSError *error = nil; NSArray *groups = [self.reader groups:&error];
+    if (!groups) { SRAlert(self, @"无法读取测试群", error.localizedDescription); return; }
+    NSString *account = self.account; __weak typeof(self) weakSelf = self;
+    [self picker:@"仅选一个授权测试群" rows:groups selected:@[] excluded:NSSet.set multiple:NO excluding:NO completion:^(NSArray *chosen) {
+        SRPanel *panel = weakSelf; if (!panel) return;
+        NSString *group = chosen.firstObject[@"id"];
+        NSString *instruction = [NSString stringWithFormat:@"关闭面板，120 秒内到“%@”手动发送一条普通文字。请先停用其他自动发消息功能。\n\n插件仅观察原发送入口及本地消息读取，记录 ID 是否关联与原始状态码；不读取正文、不代发、不据此标记发送成功。切后台/锁屏会停止。之后返回适配诊断复制报告。", chosen.firstObject[@"name"]];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"开启只读发送观察？" message:instruction preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"开启观察（不代发）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            if (![panel checkAccount] || ![panel.account isEqual:account]) return;
+            if ([panel.capture.status[@"state"] isEqual:@"waiting"]) { SRAlert(panel, @"先取消源消息等待", @"本次观察未开启。"); return; }
+            NSError *failure = nil;
+            if (![panel.sendProbe armForAccount:account targetGroup:group error:&failure]) SRAlert(panel, @"观察候选不可用", failure.localizedDescription);
+        }]];
+        SRPresentAlert(panel, alert);
+    }];
 }
 - (BOOL (^)(void))planVerifier {
     SRWeChatReader *reader = self.reader; NSString *account = self.account;
@@ -500,6 +532,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier]) animated:YES];
 }
 - (void)beginCapture {
+    if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { SRAlert(self, @"请先停止手动发送观察", @"两种诊断分开进行；停止观察不会发送或修改规则。"); return; }
     NSString *state = self.capture.status[@"state"];
     if ([state isEqual:@"waiting"]) {
         [self.receiver stop]; [self.capture cancel];
@@ -533,6 +566,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
             [self loadAccount];
         }
         if (path.row == 2) [self showDiagnostics];
+        if (path.row == 3) [self beginSendProbe];
         return;
     }
     if (![self checkAccount]) return;
@@ -558,6 +592,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @property(nonatomic, strong) UIButton *button;
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
+@property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRWeChatReader *identityReader;
 @property(nonatomic, weak) UINavigationController *presented;
 @end
@@ -583,10 +618,17 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
                 [entry.receiver stop]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
             }
         }];
+    self.sendProbe = [[SRWeChatSendProbe alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
+        currentAccount:^NSString * {
+            SREntry *entry = weakSelf; if (!entry) return nil;
+            return [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
+        } clock:^double { return NSProcessInfo.processInfo.systemUptime; } changed:^{
+            [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+        }];
 }
 - (void)install {
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
-    NSString *title = self.capture.preview ? @"预览" : @"同步";
+    NSString *title = self.capture.preview ? @"预览" : ([self.sendProbe.diagnostics[@"armed"] boolValue] ? @"观察" : @"同步");
     [self.button setTitle:title forState:UIControlStateNormal];
     self.button.hidden = self.presented.presentingViewController != nil;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -619,6 +661,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     if (!presenter || presenter.isBeingDismissed || presenter.isBeingPresented || [presenter isKindOfClass:UIAlertController.class]) return;
     SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleInsetGrouped]; panel.store = self.store;
     panel.capture = self.capture; panel.receiver = self.receiver;
+    panel.sendProbe = self.sendProbe;
     __weak typeof(self) weakSelf = self;
     panel.didClose = ^{ weakSelf.button.hidden = NO; };
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:panel];
@@ -629,6 +672,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 }
 - (void)windowChanged:(__unused NSNotification *)notification { [self install]; }
 - (void)resigningActive:(__unused NSNotification *)notification {
+    [self.sendProbe cancelForInactivity];
     [self.receiver stop];
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) [self.capture cancel];
     [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
