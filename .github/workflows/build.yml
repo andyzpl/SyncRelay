@@ -1,7 +1,13 @@
-name: Build SyncRelay development DEB
+name: Test SyncRelay and optionally package DEB
 
 on:
   workflow_dispatch:
+    inputs:
+      build_deb:
+        description: 'Build a DEB only when device testing is needed'
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
     paths-ignore: ['**.md']
@@ -30,10 +36,12 @@ jobs:
             "$RUNNER_TEMP/adapter-test"
           done
       - name: Install build tools
+        if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         run: |
           brew install make dpkg ldid
           echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
       - name: Set up pinned toolchain (same revisions as OwnHide)
+        if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         run: |
           set -euo pipefail
           dest="$RUNNER_TEMP/syncrelay-theos"
@@ -51,10 +59,12 @@ jobs:
           cp -R "$sdk/iPhoneOS15.6.sdk" "$dest/sdks/"
           echo "THEOS=$dest" >> "$GITHUB_ENV"
       - name: Build ordinary DEB (not a RootHide conversion)
+        if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         run: |
           set -euo pipefail
           make package FINALPACKAGE=1 DEBUG=0
       - name: Verify package contents
+        if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         run: |
           set -euo pipefail
           mkdir -p dist "$RUNNER_TEMP/package-check"
@@ -73,6 +83,7 @@ jobs:
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
           printf 'Read-only adapter/settings development build. WeChat sending is disabled. Device compatibility not yet verified.\n' > dist/DEVELOPMENT-NOTICE.txt
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         with:
           name: SyncRelay-development-deb
           path: dist/

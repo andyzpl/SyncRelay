@@ -30,7 +30,8 @@
 ## 编译
 
 沿用相邻 OwnHide 项目的私有 GitHub Actions/macOS + 固定版本 Theos/SDK 方式。
-工作流：`.github/workflows/build.yml`。先运行 C 和 Objective-C 核心测试，全部通过后构建普通 DEB，检查 arm64/arm64e slice 并上传私有 Actions artifact。
+工作流：`.github/workflows/build.yml`。日常 push 只运行 C 和 Objective-C 核心测试，不安装 Theos、不生成 DEB。
+只有需要手机验证时，手动触发并明确勾选 `build_deb`，才会在测试通过后构建普通 DEB，检查 arm64/arm64e slice 并上传私有 Actions artifact。该选项默认关闭。
 
 普通包载荷位于 `Library/MobileSubstrate/DynamicLibraries`。不附带安装脚本，不自动重启微信，不发布 GitHub Release。
 包不包含第三方 MikotoHelper 二进制、反汇编输出或本地工具缓存。
