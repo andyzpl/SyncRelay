@@ -14,7 +14,7 @@
 - 普通包 `dist/0.2.7-test-39469338784/andyz.syncrelay_0.2.7_iphoneos-arm.deb`，158344 字节；SHA-256 `49ba337d125b7bba4725eef80a844687fc9912dc8d41d2a1c0d92747eea8b616`。
 - 54 项本地双架构语法、14 项本地及 CI Python 测试、CI 28 条核心 PASS、普通包构建/检查/上传通过。两项 UI 测试仅为源码契约，不是渲染测试。
 - 下载核对 ZIP digest、DEB 校验和及 md5sums、包身份、仅自身 dylib/plist、仅微信主进程过滤、arm64/arm64e、每个 slice 的提交/run/版本/方向及声明读取标记/导航设置标记、签名载荷及系统依赖。同目录保存 `ci-provenance.json`、`SHA256SUMS` 和本清单副本 `PHONE-TEST.md`。
-- CI 有上游 Theos 的 obsolete `-multiply_defined` 链接警告及 artifact action 的 Node 弃用提示，均未使步骤失败；未将其称作无警告构建。手机视觉、实际字段读取及两版兼容尚未验证。
+- CI 有上游 Theos 的 obsolete `-multiply_defined` 链接警告及 artifact action 的 Node 弃用提示，均未使步骤失败；未将其称作无警告构建。构建完成时尚无手机结论，后续本人文字采集结果见本页末尾；手机视觉及两版兼容仍未验证。
 
 ## 手机步骤
 
@@ -35,3 +35,13 @@
 - 原账号隔离、母群自动排除、已确认计划/历史保持不变；报告不得包含正文或原始账号/群/消息 ID。
 
 界面源码检查不等于实际不透明/布局验收；macOS 模拟测试不等于微信手机兼容。维护说明见 `RUNTIME-DIAGNOSTICS.md`。
+
+## 已收到的手机结果（2026-10-21）
+
+- 用户表示抓到消息，随后成功诊断的构建提交/run 与上述包一致；iOS 16.0.3、微信 8.0.79.35。配置已保存，来源包括本人，1 条规则/3 个目标，文字与图片配置均勾选，但本次实际只采集文字。
+- 01:56:34.163 等待启动，01:56:43.354 本人回调，01:56:44.402 接受后停止；最终 `sourceCapture.state = preview`、offered 1、rejected 0、reason 0。本人发送回调到接受约 1.048 秒。
+- from/to 的 runtime 读取状态为 7，fromIsAccount/toIsSource 为 true；旧实例签名状态仍为 2，real sender 为空字符串（6），本人由明确 from/to 方向及当前账号核验，不从空 sender 猜身份。本次验证了声明读取恢复，不证明所有消息/版本均适用。
+- 初始 `receive_no_server_id = 1` 后进入 own_pending，并记录一次精确 ID 回读尝试，最终通过非零服务器 ID 门禁；不是以临时 local ID 冒充服务器 ID。报告无法区分最终 ID 来自原 wrap 更新还是回读对象，不作额外推断。
+- `armed = false`、receiver_stopped 是锁定第一条后的正常停止；previousLaunch 的方向拒绝为旧启动历史。本轮没有方向拒绝、超时或冲突。
+- 报告不含原始 wxid/群 ID/正文，仍需用户核对预览内容；没有确认计划/真实发送验收，手动发送观察仍 idle，sendingEnabled 为 false。群读取为 not_read，3 是配置目标数而非总群数。
+- 此次仅标记“本人文字采集进入预览”通过。顶部视觉、他人成员、母群切换、图片、群池完整性、确认落库、投递回执及 8.0.76 兼容仍未由该报告验证。
