@@ -8,10 +8,20 @@
 #include <errno.h>
 #include <stdlib.h>
 
+static void SRPresentAlert(UIViewController *controller, UIAlertController *alert) {
+    void (^show)(void) = ^{ [controller presentViewController:alert animated:YES completion:nil]; };
+    UIViewController *presented = controller.presentedViewController;
+    if ([presented isKindOfClass:UIAlertController.class]) {
+        // A confirmation can follow an alert action before UIKit has finished dismissing it.
+        if (presented.isBeingDismissed && [presented.transitionCoordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) { show(); }]) return;
+        [presented dismissViewControllerAnimated:YES completion:show];
+    } else show();
+}
+
 static void SRAlert(UIViewController *controller, NSString *title, NSString *message) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
-    [controller presentViewController:alert animated:YES completion:nil];
+    SRPresentAlert(controller, alert);
 }
 
 static NSNumber *SRRuleCount(NSString *text) {
@@ -381,7 +391,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
         if (![self checkDraft:snapshot account:account]) return;
         self.draft = [preview[@"configuration"] mutableCopy]; [self changed];
     }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    SRPresentAlert(self, alert);
 }
 - (void)editInterval {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"随机间隔（秒）" message:@"下限不能小于 10，上限不能小于下限。" preferredStyle:UIAlertControllerStyleAlert];
