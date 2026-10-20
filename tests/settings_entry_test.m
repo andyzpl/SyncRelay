@@ -101,6 +101,11 @@
 @implementation IvarSettings
 - (void)reloadTableData { }
 @end
+@interface FactorySettings : IvarSettings
+@end
+@implementation FactorySettings
+- (void)reloadTableData { }
+@end
 @interface WrongMutationTable : NSObject
 @property(nonatomic, strong) NSArray *sections;
 @property(nonatomic, strong) NativeTable *table;
@@ -190,15 +195,15 @@ int main(void) {
         [orphaned tap]; CHECK(opens == before);
 
         ivarHost->_m_tableViewInfo = @"not a table"; [ivarHost reloadTableData]; CHECK([ivars.diagnostics[@"state"] isEqual:@"section_list_unavailable"]);
-        ivars = nil;
-        SRWeChatSettingsEntry *badCell = entry(@"8.0.79", IvarSettings.class, WrongCellFactory.class, open); CHECK([badCell install:NULL]);
-        ivarHost->_m_tableViewInfo = [[NativeTableInfo alloc] init]; [ivarHost reloadTableData];
+        SRWeChatSettingsEntry *badCell = entry(@"8.0.79", FactorySettings.class, WrongCellFactory.class, open); CHECK([badCell install:NULL]);
+        FactorySettings *factoryHost = [[FactorySettings alloc] init];
+        factoryHost->_m_tableViewInfo = [[NativeTableInfo alloc] init]; [factoryHost reloadTableData];
         CHECK([badCell.diagnostics[@"state"] isEqual:@"cell_factory_unavailable"]);
-        CHECK([ivarHost->_m_tableViewInfo sections].count == 0);
+        CHECK([factoryHost->_m_tableViewInfo sections].count == 0);
         WrongMutationTable *wrongMutation = [[WrongMutationTable alloc] init]; wrongMutation.sections = @[]; wrongMutation.table = [[NativeTable alloc] init];
-        ivarHost->_m_tableViewInfo = wrongMutation; [ivarHost reloadTableData];
+        factoryHost->_m_tableViewInfo = wrongMutation; [factoryHost reloadTableData];
         CHECK([badCell.diagnostics[@"state"] isEqual:@"incompatible_table_methods"] && wrongMutation.sections.count == 0);
-        ivarHost->_m_tableViewInfo = [[PointerSections alloc] init]; [ivarHost reloadTableData];
+        factoryHost->_m_tableViewInfo = [[PointerSections alloc] init]; [factoryHost reloadTableData];
         CHECK([badCell.diagnostics[@"state"] isEqual:@"section_list_unavailable"]);
         dispatch_semaphore_t done = dispatch_semaphore_create(0);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ CHECK(!NSThread.isMainThread && ![settings install:NULL]); dispatch_semaphore_signal(done); });
