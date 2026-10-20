@@ -180,6 +180,11 @@
 @implementation ManagerIvarSettings
 - (void)reloadTableData { }
 @end
+@interface ExtendedFactorySettings : ManagerIvarSettings
+@end
+@implementation ExtendedFactorySettings
+- (void)reloadTableData { }
+@end
 @interface WrongAppearanceSettings : NSObject
 - (void)viewDidAppear:(void *)argument;
 @end
@@ -354,11 +359,11 @@ int main(void) {
         CHECK([badCell.diagnostics[@"state"] isEqual:@"incompatible_table_methods"] && wrongMutation.sections.count == 0);
         factoryHost->_m_tableViewInfo = [[PointerSections alloc] init]; [factoryHost reloadTableData];
         CHECK([badCell.diagnostics[@"state"] isEqual:@"section_list_unavailable"]);
-        // Reuse the retired hook only after releasing its owner; the wrong integer ABI is never invoked.
-        late = nil;
-        SRWeChatSettingsEntry *badExtended = managerEntry(ManagerIvarSettings.class, WrongExtendedCellFactory.class, open);
-        CHECK([badExtended install:NULL]); lateHost->m_tableViewMgr = [[NativeTableInfo alloc] init];
-        [lateHost reloadTableData]; CHECK([badExtended.diagnostics[@"state"] isEqual:@"cell_factory_unavailable"]);
+        // A separate class avoids weak-load autorelease lifetimes affecting hook ownership.
+        SRWeChatSettingsEntry *badExtended = managerEntry(ExtendedFactorySettings.class, WrongExtendedCellFactory.class, open);
+        CHECK([badExtended install:NULL]); ExtendedFactorySettings *extendedHost = [[ExtendedFactorySettings alloc] init];
+        extendedHost->m_tableViewMgr = [[NativeTableInfo alloc] init];
+        [extendedHost reloadTableData]; CHECK([badExtended.diagnostics[@"state"] isEqual:@"cell_factory_unavailable"]);
         SRWeChatSettingsEntry *noop = managerEntry(NoopSettings.class, ManagerCellFactory.class, open);
         CHECK([noop install:NULL]); NoopSettings *noopHost = [[NoopSettings alloc] init];
         noopHost.m_tableViewMgr = [[NativeTableInfo alloc] init];
