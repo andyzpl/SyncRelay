@@ -39,6 +39,21 @@
 | `inactive` 出现在等待开始之后 | 应用曾失活，等待按设计停止 | 保持前台并手动重新等待 |
 | `capture_accepted` / `state = preview` | 冻结了一条匹配源消息 | 用户核对预览，不代表任何目标收到转发 |
 
+### 单群手动发送观察
+
+如果报告包含 `manualSendObservation`，离线解析器会单独输出以下固定证据：
+
+| 代码 | 含义 | 不能据此做什么 |
+| --- | --- | --- |
+| `manual_outgoing_observed` | 原链之后观察到匹配本人 outgoing 回调 | 不能当作插件已发送或成功数 |
+| `manual_local_readback` | 按首条精确 local ID 做了有限回读 | 不能扫描历史或换消息关联 |
+| `manual_server_id_transition` | 样本从无服务器 ID 变为有服务器 ID | 不能解释为服务器已送达 |
+| `manual_status_changed` | 宿主状态数字发生变化 | 不猜数字含义，不映射成功/失败 |
+| `manual_delivery_not_determined` | 观察器按设计不判定送达 | 后续主动发送未知结果必须显示“待核对” |
+| `manual_lookup_miss` / `manual_identity_conflict` / `manual_samples_dropped` | 回读未匹配、身份冲突或样本超限 | 不补发、不放宽 wxid/群校验 |
+
+观察报告若出现 `manual_no_outgoing_observed`，只表示本窗口没有匹配回调；它不是发送失败证明。`observerOnly` 必须为 `true` 且 `sendingEnabled` 必须为 `false`，否则解析器会报 `manual_observation_not_read_only`，该报告不能用于适配放行。
+
 捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束。错误码必须结合事件与模块看，不跨模块猜含义。
 
 ## 方向证据子格式 1 / 2
@@ -66,7 +81,7 @@ before/after 不同只证明这些分类/关系在原方法前后不同；相同
 python tools/diagnose_report.py "诊断文件.json"
 ```
 
-脚本只解析已知格式的 JSON，输出证据和下一步建议；不执行报告内容、不联网，不回显未知的私人字段。未知格式直接提示不支持，不假装自动修复。消息没有被抓到仍需新报告才能定位，不能预先宣称已经修好。
+脚本只解析已知格式的 JSON，输出证据和下一步建议；不执行报告内容、不联网，不回显未知的私人字段。未知格式直接提示不支持，不假装自动修复。消息没有被抓到仍需新报告才能定位，不能预先宣称已经修好。单群手动观察中的样本只转换为固定代码，不回显正文、账号、群 ID 或消息 ID。
 
 维护约定：
 

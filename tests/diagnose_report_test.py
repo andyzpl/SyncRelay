@@ -89,6 +89,51 @@ class ReportTests(unittest.TestCase):
         report['receiveCandidate']['directionSamples'][0]['after']['fromEqualsTo'] = '1'
         self.assertNotIn('direction_same_endpoint', self.codes(report))
 
+    def test_manual_observation_reports_progress_without_claiming_delivery(self):
+        report = self.base()
+        report['manualSendObservation'] = {
+            'observerOnly': True, 'sendingEnabled': False,
+            'state': 'stopped', 'observedOutgoing': 1,
+            'lookupMisses': 0, 'identityConflicts': 0,
+            'droppedSamplesOrCallbacks': 0,
+            'deliveryOutcome': 'not_determined',
+            'samples': [
+                {'source': 'after_add', 'localIDPresent': True,
+                 'serverIDPresent': False, 'statusCode': 1},
+                {'source': 'local_readback', 'localIDPresent': True,
+                 'serverIDPresent': False, 'statusCode': 1},
+                {'source': 'local_readback', 'localIDPresent': True,
+                 'serverIDPresent': True, 'statusCode': 2},
+            ],
+        }
+        self.assertTrue({'manual_outgoing_observed', 'manual_local_readback',
+            'manual_server_id_transition', 'manual_status_changed',
+            'manual_delivery_not_determined'} <= self.codes(report))
+        self.assertNotIn('manual_no_outgoing_observed', self.codes(report))
+
+    def test_manual_observation_errors_are_bounded_and_private(self):
+        report = self.base()
+        report['manualSendObservation'] = {
+            'observerOnly': False, 'sendingEnabled': True,
+            'state': 'stopped', 'observedOutgoing': 0,
+            'lookupMisses': 1, 'identityConflicts': 2,
+            'droppedSamplesOrCallbacks': 3,
+            'deliveryOutcome': 'confirmed',
+            'samples': ['private message', {'source': 'local_readback',
+                'serverIDPresent': False, 'body': 'wxid_secret'}],
+        }
+        codes = self.codes(report)
+        self.assertTrue({'manual_observation_not_read_only', 'manual_no_outgoing_observed',
+            'manual_lookup_miss', 'manual_identity_conflict', 'manual_samples_dropped',
+            'manual_delivery_outcome_unexpected'} <= codes)
+        self.assertNotIn('private', str(analyze(report)))
+        self.assertNotIn('wxid_secret', str(analyze(report)))
+
+    def test_manual_observation_malformed_section(self):
+        report = self.base()
+        report['manualSendObservation'] = 'private observation'
+        self.assertIn('invalid_manual_observation', self.codes(report))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -106,6 +106,64 @@ def analyze(report):
         add('no_callback_observed', 'Waiting is armed, but neither candidate hook has been observed; this is not a compatibility verdict.')
     if capture.get('state') == 'preview':
         add('preview_ready', 'One source is frozen for preview. No relay sending is enabled.')
+
+    # The manual send probe is deliberately observational. Keep its findings
+    # separate from receive-candidate counters so a local/server ID change can
+    # never be interpreted as delivery confirmation.
+    manual = report.get('manualSendObservation')
+    if manual is not None:
+        if not isinstance(manual, dict):
+            add('invalid_manual_observation', 'Manual send observation is not an object.')
+        else:
+            if manual.get('observerOnly') is not True or manual.get('sendingEnabled') is not False:
+                add('manual_observation_not_read_only', 'Manual send observation is not marked as observer-only; do not use it for sending decisions.')
+            samples = manual.get('samples', [])
+            if not isinstance(samples, list):
+                add('manual_samples_invalid', 'Manual send observation samples are not a list.')
+                samples = []
+            else:
+                samples = [sample for sample in samples if isinstance(sample, dict)]
+
+            observed = manual.get('observedOutgoing')
+            if isinstance(observed, (int, float)) and not isinstance(observed, bool) and observed > 0:
+                add('manual_outgoing_observed', 'A matching outgoing callback was observed after the host send path; this is not a send-success count.')
+            elif manual.get('state') in ('stopped', 'expired', 'inactive', 'account_changed'):
+                add('manual_no_outgoing_observed', 'The manual observation ended without a matching outgoing callback.')
+
+            readbacks = [sample for sample in samples if sample.get('source') == 'local_readback']
+            if readbacks:
+                add('manual_local_readback', 'A bounded exact-local-ID readback was attempted; mismatches are not substituted with another message.')
+
+            server_seen_false = False
+            server_transition = False
+            statuses = []
+            for sample in samples:
+                server_present = sample.get('serverIDPresent')
+                if type(server_present) is bool:
+                    if server_present and server_seen_false:
+                        server_transition = True
+                    elif not server_present:
+                        server_seen_false = True
+                status = sample.get('statusCode')
+                if isinstance(status, (int, float)) and not isinstance(status, bool):
+                    statuses.append(status)
+            if server_transition:
+                add('manual_server_id_transition', 'The bounded samples changed from no server ID to a non-zero server ID; this proves association progress, not delivery.')
+            if len(set(statuses)) > 1:
+                add('manual_status_changed', 'The host status code changed during observation; its numeric meaning is not inferred.')
+
+            for key, code, message in (
+                ('lookupMisses', 'manual_lookup_miss', 'An exact local-ID readback did not match; inspect the host readback contract without scanning history.'),
+                ('identityConflicts', 'manual_identity_conflict', 'A local/server ID conflict was observed; do not associate the sample with another message.'),
+                ('droppedSamplesOrCallbacks', 'manual_samples_dropped', 'The bounded observation queue or sample limit was exceeded; the report is incomplete.'),
+            ):
+                value = manual.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                    add(code, message)
+            if manual.get('deliveryOutcome') == 'not_determined':
+                add('manual_delivery_not_determined', 'Delivery remains unknown by design; keep any future active-send result in a pending-verification state.')
+            elif manual.get('deliveryOutcome') is not None:
+                add('manual_delivery_outcome_unexpected', 'The manual observation contains a delivery outcome other than not_determined; do not trust it without a new schema.')
     if not result:
         add('insufficient_evidence', 'No specific cause is proven; reproduce once and export immediately before restarting.')
     return result
