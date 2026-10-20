@@ -76,6 +76,68 @@ static id sessionFixture;
 - (id)objectArgument:(id)value { return value; }
 @end
 
+@interface ReflectedStrings : NSObject
+@property(nonatomic) NSUInteger mode;
+@property(nonatomic, strong) NSMutableString *value;
+- (NSString *)text;
+- (NSString *)empty;
+- (NSString *)absentValue;
+- (id)number;
+- (id (^)(void))blockResult;
+- (void *)rawPointer;
+- (NSString *)throwString;
+@end
+@implementation ReflectedStrings
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    if (selector == NSSelectorFromString(@"forwardOnly")) return [NSMethodSignature signatureWithObjCTypes:"@@:"];
+    if (selector == @selector(text)) {
+        if (self.mode == 1) return nil;
+        if (self.mode == 2) return [NSMethodSignature signatureWithObjCTypes:"v@:"];
+        if (self.mode == 3) return [NSMethodSignature signatureWithObjCTypes:"@@:@"];
+        if (self.mode == 4) @throw @"private reflection exception";
+    }
+    return [super methodSignatureForSelector:selector];
+}
+- (BOOL)respondsToSelector:(SEL)selector {
+    if (selector == NSSelectorFromString(@"forwardOnly")) return YES;
+    return [super respondsToSelector:selector];
+}
+- (void)forwardInvocation:(__unused NSInvocation *)invocation { abort(); }
+- (NSString *)text { return self.value; }
+- (NSString *)empty { return @""; }
+- (NSString *)absentValue { return nil; }
+- (id)number { return @1; }
+- (id (^)(void))blockResult { abort(); }
+- (void *)rawPointer { abort(); }
+- (NSString *)throwString { @throw @"private getter exception"; }
+@end
+
+static void testDeclaredStrings(void) {
+    ReflectedStrings *value = [[ReflectedStrings alloc] init];
+    value.value = [@"stable string" mutableCopy];
+    SRStringReadState state = SRStringReadNoObject;
+    for (NSUInteger mode = 0; mode <= 4; mode++) {
+        value.mode = mode;
+        CHECK([SRReadDeclaredString(value, @"text", &state) isEqual:@"stable string"] && state == SRStringReadValue);
+        if (mode == 1 || mode == 2 || mode == 3) CHECK(!SRReadString(value, @"text"));
+    }
+    NSString *frozen = SRReadDeclaredString(value, @"text", NULL);
+    [value.value appendString:@" changed"]; CHECK([frozen isEqual:@"stable string"]);
+    CHECK(!SRReadDeclaredString(nil, @"text", &state) && state == SRStringReadNoObject);
+    CHECK(!SRReadDeclaredString(value, @"missing", &state) && state == SRStringReadMissing);
+    CHECK(!SRReadDeclaredString(value, @"number", &state) && state == SRStringReadNotString);
+    CHECK(!SRReadDeclaredString(value, @"absentValue", &state) && state == SRStringReadNil);
+    CHECK([SRReadDeclaredString(value, @"empty", &state) isEqual:@""] && state == SRStringReadEmpty);
+    CHECK(!SRReadDeclaredString(value, @"throwString", &state) && state == SRStringReadFailed);
+    CHECK(!SRReadDeclaredString(value, @"blockResult", &state) && state == SRStringReadIncompatible);
+    CHECK(!SRReadDeclaredString(value, @"rawPointer", &state) && state == SRStringReadIncompatible);
+    CHECK(!SRReadDeclaredString(value, @"forwardOnly", &state) && state == SRStringReadMissing);
+    WrongABI *wrong = [[WrongABI alloc] init];
+    for (NSString *name in @[@"scalarReturn", @"pointer:", @"floating:", @"objectArgument:"])
+        CHECK(!SRReadDeclaredString(wrong, name, &state) && state == SRStringReadIncompatible);
+    CHECK(!SRReadDeclaredString(wrong, @"throwsException", &state) && state == SRStringReadFailed);
+}
+
 static FakeContact *contact(NSString *identifier, NSString *name) {
     FakeContact *value = [[FakeContact alloc] init]; value.m_nsUsrName = identifier; value.m_nsNickName = name; return value;
 }
@@ -140,6 +202,7 @@ static void testPartialGroupLists(void) {
 
 int main(void) {
     @autoreleasepool {
+        testDeclaredStrings();
         WrongABI *wrong = [[WrongABI alloc] init];
         CHECK(!SRReadObject(wrong, @"scalarReturn", @[], NULL));
         CHECK(!SRReadObject(wrong, @"pointer:", @[@1], NULL));
@@ -201,7 +264,7 @@ int main(void) {
         draft[@"rules"] = @[rule]; draft[@"minimum"] = @9; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
         draft[@"minimum"] = @10; draft[@"types"] = @[@"video"]; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
         draft[@"types"] = @[@"image"]; CHECK([SRConfiguration validateDraft:draft error:NULL]);
-        puts("PASS: guarded runtime, four-contact/session union, dedup/account/privacy checks, 12345-row selection and drafts");
+        puts("PASS: guarded runtime, declared string ABI with misleading reflection, contact/session union, privacy and 12345-row drafts");
     }
     return 0;
 }

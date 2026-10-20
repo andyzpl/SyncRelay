@@ -45,7 +45,7 @@ class ReportTests(unittest.TestCase):
         report = self.base()
         report['receiveCandidate']['counters'] = {'receive_callback': 1, 'receive_wrong_direction': 1}
         self.assertIn('direction_details_required', self.codes(report))
-        report['receiveCandidate'].update(directionEvidenceSchema=2, directionSamples=[])
+        report['receiveCandidate'].update(directionEvidenceSchema=99, directionSamples=[])
         self.assertIn('direction_details_required', self.codes(report))
 
     def test_pre_post_and_endpoint_relations(self):
@@ -67,6 +67,27 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('private message', str(analyze(report)))
         report['receiveCandidate']['directionSamples'] = []
         self.assertIn('direction_details_missing', self.codes(report))
+
+    def test_phone_style_signature_failure_is_not_id_mismatch(self):
+        report = self.direction(after={'fromState': 2, 'toState': 2, 'senderState': 2,
+            'wrapClassCode': 1, 'messageType': 1, 'fromIsAccount': False, 'toIsAccount': False})
+        self.assertIn('direction_instance_signature_rejected', self.codes(report))
+        self.assertNotIn('direction_account_unmatched', self.codes(report))
+
+    def test_runtime_recovery_schema_and_preview(self):
+        report = self.direction(after={'fromState': 7, 'toState': 7, 'fromInstanceSignatureState': 2,
+            'fromIsAccount': True, 'toIsSource': True})
+        report['receiveCandidate'].update(directionEvidenceSchema=2, counters={'outgoing_callback': 1})
+        report['sourceCapture']['state'] = 'preview'
+        self.assertTrue({'declared_string_read_recovered', 'preview_ready'} <= self.codes(report))
+        self.assertNotIn('direction_getter_failed', self.codes(report))
+
+    def test_integer_boolean_flags(self):
+        report = self.direction(after={'fromState': 7, 'toState': 7, 'fromEqualsTo': 1,
+            'fromIsAccount': 0, 'toIsAccount': 0})
+        self.assertTrue({'direction_same_endpoint', 'direction_account_unmatched'} <= self.codes(report))
+        report['receiveCandidate']['directionSamples'][0]['after']['fromEqualsTo'] = '1'
+        self.assertNotIn('direction_same_endpoint', self.codes(report))
 
 
 if __name__ == '__main__':

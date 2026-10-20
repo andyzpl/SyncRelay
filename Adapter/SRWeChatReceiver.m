@@ -87,36 +87,29 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
     } @catch (__unused id exception) { return NO; }
 }
 
-// Diagnostic states only; raw identifiers never enter a snapshot or trace.
-static NSString *SRDirectionString(id wrap, NSString *name, NSUInteger *state) {
-    *state = 0;
+// Reflection is diagnostic evidence, never a substitute for the declared getter ABI.
+static NSUInteger SRDirectionReflection(id wrap, NSString *name) {
     @try {
-        if (!wrap) return nil;
+        if (!wrap) return 0;
         SEL selector = NSSelectorFromString(name);
-        if (![wrap respondsToSelector:selector]) { *state = 1; return nil; }
+        if (![wrap respondsToSelector:selector]) return 1;
         NSMethodSignature *signature = [wrap methodSignatureForSelector:selector];
         const char *type = signature ? SRReceiveType(signature.methodReturnType) : "";
-        if (!signature || signature.numberOfArguments != 2 || type[0] != '@' || type[1] == '?') {
-            *state = 2; return nil;
-        }
-        NSError *error = nil;
-        id value = SRReadObject(wrap, name, @[], &error);
-        if (error) { *state = 3; return nil; }
-        if (!value) { *state = 4; return nil; }
-        if (![value isKindOfClass:NSString.class]) { *state = 5; return nil; }
-        *state = [value length] ? 7 : 6;
-        return [value copy];
-    } @catch (__unused id exception) { *state = 3; return nil; }
+        return signature && signature.numberOfArguments == 2 && type[0] == '@' && type[1] != '?' ? 7 : 2;
+    } @catch (__unused id exception) { return 3; }
 }
 static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *account, NSString *group) {
-    NSUInteger fromState, toState, senderState;
-    NSString *from = SRDirectionString(wrap, @"m_nsFromUsr", &fromState);
-    NSString *to = SRDirectionString(wrap, @"m_nsToUsr", &toState);
-    NSString *sender = SRDirectionString(wrap, @"m_nsRealChatUsr", &senderState);
+    SRStringReadState fromState, toState, senderState;
+    NSString *from = SRReadDeclaredString(wrap, @"m_nsFromUsr", &fromState);
+    NSString *to = SRReadDeclaredString(wrap, @"m_nsToUsr", &toState);
+    NSString *sender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", &senderState);
     NSUInteger classCode = !wrap ? 0 : (expected && object_getClass(wrap) == expected ? 1 :
         (expected && [wrap isKindOfClass:expected] ? 2 : 3));
     NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
     return @{@"wrapClassCode": @(classCode), @"fromState": @(fromState), @"toState": @(toState), @"senderState": @(senderState),
+        @"fromInstanceSignatureState": @(SRDirectionReflection(wrap, @"m_nsFromUsr")),
+        @"toInstanceSignatureState": @(SRDirectionReflection(wrap, @"m_nsToUsr")),
+        @"senderInstanceSignatureState": @(SRDirectionReflection(wrap, @"m_nsRealChatUsr")),
         @"fromIsAccount": @([from isEqual:account]), @"fromIsSource": @([from isEqual:group]), @"fromIsGroup": @([from hasSuffix:@"@chatroom"]),
         @"toIsAccount": @([to isEqual:account]), @"toIsSource": @([to isEqual:group]), @"toIsGroup": @([to hasSuffix:@"@chatroom"]),
         @"senderIsAccount": @([sender isEqual:account]), @"senderIsSource": @([sender isEqual:group]),
@@ -254,8 +247,8 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     }
     [self note:@"receive_callback"];
     if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) { [self note:@"receive_wrong_session"]; return; }
-    NSString *from = SRReadString(wrap, @"m_nsFromUsr"), *to = SRReadString(wrap, @"m_nsToUsr");
-    NSString *sender = SRReadString(wrap, @"m_nsRealChatUsr");
+    NSString *from = SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL), *to = SRReadDeclaredString(wrap, @"m_nsToUsr", NULL);
+    NSString *sender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", NULL);
     BOOL outgoing = [from isEqual:account] && [to isEqual:group];
     if (outgoing) {
         if (sender.length && ![sender isEqual:account]) { [self note:@"receive_invalid_sender"]; return; }
@@ -270,7 +263,7 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     // Images need verified media preparation; no XML-as-path or temporary/local ID fallback.
     if (![type isEqual:@1]) { [self note:@"receive_not_text"]; return; }
     if (!serverID.unsignedLongLongValue) { [self note:@"receive_no_server_id"]; return; }
-    NSString *content = SRReadString(wrap, @"m_nsContent");
+    NSString *content = SRReadDeclaredString(wrap, @"m_nsContent", NULL);
     if (!content.length) { [self note:@"receive_empty_text"]; return; }
     NSDictionary *message = [SRSourceMessage frozenJSON:@{@"account": account, @"group": group, @"sender": sender,
         @"messageID": [@"svr:" stringByAppendingString:serverID.stringValue], @"type": @"text",
@@ -300,11 +293,11 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     }
     [self note:@"outgoing_callback"];
     if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) { [self note:@"outgoing_wrong_session"]; return; }
-    if (![SRReadString(wrap, @"m_nsFromUsr") isEqual:account] || ![SRReadString(wrap, @"m_nsToUsr") isEqual:group]) {
+    if (![SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL) isEqual:account] || ![SRReadDeclaredString(wrap, @"m_nsToUsr", NULL) isEqual:group]) {
         [self note:@"outgoing_wrong_direction"]; return;
     }
     if (![SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@1]) { [self note:@"outgoing_not_text"]; return; }
-    NSString *text = [SRReadString(wrap, @"m_nsContent") copy];
+    NSString *text = [SRReadDeclaredString(wrap, @"m_nsContent", NULL) copy];
     if (!text.length) return;
     SRPendingOwnText *pending = [[SRPendingOwnText alloc] init];
     pending.wrap = wrap; pending.manager = manager; pending.text = text;
@@ -328,9 +321,9 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     });
 }
 - (BOOL)ownWrap:(id)wrap matchesPending:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account {
-    NSString *sender = SRReadString(wrap, @"m_nsRealChatUsr");
-    return [SRReadString(wrap, @"m_nsFromUsr") isEqual:account] && [SRReadString(wrap, @"m_nsToUsr") isEqual:group] &&
-        [SRReadString(wrap, @"m_nsContent") isEqual:pending.text] && (!sender.length || [sender isEqual:account]) &&
+    NSString *sender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", NULL);
+    return [SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL) isEqual:account] && [SRReadDeclaredString(wrap, @"m_nsToUsr", NULL) isEqual:group] &&
+        [SRReadDeclaredString(wrap, @"m_nsContent", NULL) isEqual:pending.text] && (!sender.length || [sender isEqual:account]) &&
         [SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@1] &&
         (!pending.localID.unsignedLongLongValue || [SRReadUnsignedInteger(wrap, @"m_uiMesLocalID", NULL) isEqual:pending.localID]);
 }
@@ -394,7 +387,8 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
             @"ownTextHookAvailable": @(self.outgoingTap != nil), @"ownTextPending": @(self.pendingOutgoing != nil),
             @"ownTextState": self.ownTextState ?: @"idle",
             @"armedAt": @(self.armedAt), @"lastEventAt": @(self.lastCallbackAt), @"counters": [self.counters copy] ?: @{},
-            @"directionEvidenceSchema": @1, @"directionSampleLimit": @12, @"directionSamples": [self.directionSamples copy] ?: @[],
+            @"directionEvidenceSchema": @2, @"stringReadStrategy": @"declared_runtime", @"directionSampleLimit": @12,
+            @"directionSamples": [self.directionSamples copy] ?: @[],
             @"directionSamplesDropped": @(self.directionDropped),
             @"textOnlyCandidate": @YES, @"sendingEnabled": @NO, @"problem": self.problem ?: @"", @"methods": methods};
     }

@@ -140,8 +140,8 @@ static BOOL SRProbeLookupSignature(id target) {
     [self notify]; return YES;
 }
 - (NSDictionary *)metadata:(id)wrap account:(NSString *)account group:(NSString *)group {
-    if (![wrap isKindOfClass:self.wrapClass] || ![SRReadString(wrap, @"m_nsFromUsr") isEqual:account] ||
-        ![SRReadString(wrap, @"m_nsToUsr") isEqual:group] || ![SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@1]) return nil;
+    if (![wrap isKindOfClass:self.wrapClass] || ![SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL) isEqual:account] ||
+        ![SRReadDeclaredString(wrap, @"m_nsToUsr", NULL) isEqual:group] || ![SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@1]) return nil;
     NSNumber *local = SRReadUnsignedInteger(wrap, @"m_uiMesLocalID", NULL), *server = SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL);
     if (!local || !server) return nil;
     return @{@"local": local, @"server": server, @"statusCode": SRReadUnsignedInteger(wrap, @"m_uiStatus", NULL) ?: (id)NSNull.null};

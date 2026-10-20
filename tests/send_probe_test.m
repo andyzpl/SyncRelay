@@ -18,6 +18,15 @@
 @implementation ProbeWrap
 - (NSString *)m_nsContent { abort(); } // No diagnostic path may read the source body.
 @end
+@interface ReflectedProbeWrap : ProbeWrap
+@end
+@implementation ReflectedProbeWrap
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    if (selector == @selector(m_nsFromUsr) || selector == @selector(m_nsToUsr))
+        return [NSMethodSignature signatureWithObjCTypes:"v@:"];
+    return [super methodSignatureForSelector:selector];
+}
+@end
 @interface ProbeManager : NSObject
 @property(nonatomic) NSUInteger calls;
 @property(nonatomic) NSUInteger lookups;
@@ -194,6 +203,16 @@ int main(void) {
         CHECK([inherited armForAccount:current targetGroup:@"target@chatroom" error:NULL]);
         ProbeInheritedManager *sub = [[ProbeInheritedManager alloc] init]; [sub AddMsg:@"target@chatroom" MsgWrap:wrap()]; pump();
         CHECK(sub.calls == 1 && [inherited.diagnostics[@"observedOutgoing"] isEqual:@1]); [inherited stop];
+        SRWeChatSendProbe *reflected = make(@"8.0.79", ProbeManager.class, ReflectedProbeWrap.class);
+        CHECK([reflected armForAccount:current targetGroup:@"target@chatroom" error:NULL]);
+        ReflectedProbeWrap *reflectedWrap = [[ReflectedProbeWrap alloc] init];
+        reflectedWrap.m_nsFromUsr = current; reflectedWrap.m_nsToUsr = @"target@chatroom";
+        reflectedWrap.m_uiMessageType = 1; reflectedWrap.m_uiMesLocalID = 42;
+        CHECK(!SRReadString(reflectedWrap, @"m_nsFromUsr"));
+        [manager AddMsg:@"target@chatroom" MsgWrap:reflectedWrap]; pump();
+        CHECK([reflected.diagnostics[@"observedOutgoing"] isEqual:@1]);
+        CHECK([reflected.diagnostics[@"deliveryOutcome"] isEqual:@"not_determined"]);
+        [reflected stop];
         CHECK(changes > 0);
         puts("PASS: read-only manual-send probe, preserved original chain, exact lookup IDs, no body/sending/success inference, bounded samples and cancellation");
     }

@@ -12,6 +12,9 @@ def analyze(report):
     def add(code, message):
         result.append({'code': code, 'message': message})
 
+    def flag(value):
+        return bool(value) if type(value) in (bool, int) and value in (0, 1) else None
+
     draft = report.get('draftSummary', {})
     receiver = report.get('receiveCandidate', {})
     capture = report.get('sourceCapture', {})
@@ -43,9 +46,10 @@ def analyze(report):
             add(code, message)
     direction_mismatch = any(isinstance(counters.get(key), (int, float)) and counters[key] > 0
                              for key in ('receive_wrong_direction', 'outgoing_wrong_direction'))
-    if direction_mismatch:
+    if direction_mismatch or receiver.get('directionEvidenceSchema') == 2:
         samples = receiver.get('directionSamples')
-        if type(receiver.get('directionEvidenceSchema')) is not int or receiver['directionEvidenceSchema'] != 1:
+        schema = receiver.get('directionEvidenceSchema')
+        if type(schema) is not int or schema not in (1, 2):
             add('direction_details_required', 'This report has no supported direction evidence; reproduce using a matching diagnostic build.')
         elif not isinstance(samples, list) or not samples:
             add('direction_details_missing', 'No bounded direction sample was completed; export immediately after reproducing.')
@@ -67,19 +71,26 @@ def analyze(report):
                 states = (after.get('fromState'), after.get('toState'))
                 if any(type(state) is int and state in (1, 2, 3, 5) for state in states):
                     evidence.add('direction_getter_failed')
+                if schema == 1 and after.get('fromState') == 2 and after.get('toState') == 2:
+                    evidence.add('direction_instance_signature_rejected')
+                if schema == 2 and any(after.get(field + 'State') == 7 and
+                                      after.get(field + 'InstanceSignatureState') == 2 for field in ('from', 'to', 'sender')):
+                    evidence.add('declared_string_read_recovered')
                 if any(type(state) is int and state in (0, 4, 6) for state in states):
                     evidence.add('direction_endpoint_empty')
                 if states == (7, 7):
-                    if after.get('fromEqualsTo') is True:
+                    if flag(after.get('fromEqualsTo')) is True:
                         evidence.add('direction_same_endpoint')
-                    if after.get('fromIsAccount') is False and after.get('toIsAccount') is False:
+                    if flag(after.get('fromIsAccount')) is False and flag(after.get('toIsAccount')) is False:
                         evidence.add('direction_account_unmatched')
-                    if after.get('fromIsSource') is False and after.get('toIsSource') is False:
+                    if flag(after.get('fromIsSource')) is False and flag(after.get('toIsSource')) is False:
                         evidence.add('direction_source_unmatched')
             for code, message in (
                 ('direction_relationships_changed', 'Pre/post-original direction relationships differ; inspect host-side field changes without accepting pre-call data.'),
                 ('direction_unexpected_wrap', 'A sampled object is not the expected message class or a subclass; inspect its actual getter contract.'),
                 ('direction_getter_failed', 'A sampled endpoint getter is missing, incompatible, failed, or non-string.'),
+                ('direction_instance_signature_rejected', 'Instance-reflection signatures rejected both endpoints before values were read; false relation flags are not ID-mismatch evidence.'),
+                ('declared_string_read_recovered', 'A runtime-validated string getter was read despite incompatible instance-reflection metadata; source identity checks still apply.'),
                 ('direction_endpoint_empty', 'A sampled endpoint is absent, nil, or empty; do not infer an identity.'),
                 ('direction_same_endpoint', 'A sampled from/to pair contains the same non-empty string.'),
                 ('direction_account_unmatched', 'Neither sampled endpoint equals the verified account; inspect account identity and version semantics.'),

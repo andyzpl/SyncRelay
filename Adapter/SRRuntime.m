@@ -1,5 +1,6 @@
 #import "SRRuntime.h"
 #import <objc/runtime.h>
+#import <objc/message.h>
 #include <string.h>
 #include <limits.h>
 
@@ -73,6 +74,37 @@ id SRReadObjectWithIntegers(id target, NSString *selector, NSArray<NSNumber *> *
 NSString *SRReadString(id target, NSString *selector) {
     id result = SRReadObject(target, selector, @[], NULL);
     return [result isKindOfClass:NSString.class] ? result : nil;
+}
+NSString *SRReadDeclaredString(id target, NSString *name, SRStringReadState *state) {
+    SRStringReadState result = SRStringReadNoObject;
+    NSString *string = nil;
+    @try {
+        if (target) {
+            SEL selector = NSSelectorFromString(name);
+            Method method = class_getInstanceMethod(object_getClass(target), selector);
+            result = SRStringReadMissing;
+            if (method) {
+                result = SRStringReadIncompatible;
+                NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+                const char *type = signature ? SRType(signature.methodReturnType) : "";
+                if (signature.numberOfArguments == 2 && type[0] == '@' && type[1] != '?' &&
+                    !strcmp(SRType([signature getArgumentTypeAtIndex:0]), "@") &&
+                    !strcmp(SRType([signature getArgumentTypeAtIndex:1]), ":")) {
+                    // The validated runtime method is authoritative; do not use forwarding metadata.
+                    id value = ((id (*)(id, SEL))objc_msgSend)(target, selector);
+                    result = SRStringReadNil;
+                    if (value) {
+                        result = SRStringReadNotString;
+                        if ([value isKindOfClass:NSString.class]) {
+                            string = [value copy]; result = string.length ? SRStringReadValue : SRStringReadEmpty;
+                        }
+                    }
+                }
+            }
+        }
+    } @catch (__unused id exception) { result = SRStringReadFailed; string = nil; }
+    if (state) *state = result;
+    return string;
 }
 NSNumber *SRReadUnsignedInteger(id target, NSString *name, NSError **error) {
     @try {
