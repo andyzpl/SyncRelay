@@ -143,7 +143,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
-    if (self.kind == SRRecordPreview && section == 2) return @"确认只建立内容计划和目标分组，不发送。所有规则使用同一条已确认内容；之后修改草稿不会改变此计划。";
+    if (self.kind == SRRecordPreview && section == 2) return @"确认只建立内容计划和目标分组，不发送。所有规则使用同一条已确认内容；之后修改设置不会改变此计划。";
     if (self.kind == SRRecordPlan && section == 1) return @"点击规则查看历史及异常。真实发送适配尚未启用，本版不提供可用的开始、继续或重新执行按钮；顺序解锁也不会自动发送。";
     if (self.kind == SRRecordHistory) return @"按执行批次保留历史。完成时间取真实结束记录，不使用当前打开时间；点击批次查看失败、待核对和取消项。";
     if (self.kind == SRRecordExceptions) return @"不逐条列出成功群。待核对不等于失败，不能盲目重试；取消项代表未继续派发，不伪报为成功。";

@@ -17,7 +17,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    # Use the standard Intel image while hosted macOS arm64 capacity is constrained.
+    runs-on: macos-15-intel
     timeout-minutes: 30
     env:
       THEOS_REV: cfba89a53a05b4a1b822121158acc3669c20602f

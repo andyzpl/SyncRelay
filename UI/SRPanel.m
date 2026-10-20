@@ -162,7 +162,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     self.title = @"SyncRelay 转发";
     SRStyleSettingsTable(self);
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"保存草稿" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"保存" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     self.reader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
     self.draft = [SRConfiguration emptyDraft];
@@ -173,7 +173,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     if (self.ready && ![self.reader verifyAccount:self.account error:NULL]) {
-        self.ready = NO; self.status = @"账号无法核对或已经改变，请重新读取。旧草稿没有写入新账号。";
+        self.ready = NO; self.status = @"账号无法核对或已经改变，请重新读取。原账号的设置没有写入新账号。";
         [self.receiver stop]; [self.capture cancel];
     }
     [self refresh];
@@ -219,14 +219,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     self.dirty = YES;
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) {
         [self.receiver stop]; [self.capture cancel];
-        self.status = @"草稿已修改，旧的源消息等待已取消；保存后需重新手动等待。发送仍未启用。";
+        self.status = @"设置已修改，旧的源消息等待已取消；保存后需重新手动等待。发送仍未启用。";
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
     }
     [self refresh];
 }
 - (void)close {
     if (!self.dirty) { [self dismissViewControllerAnimated:YES completion:self.didClose]; return; }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"放弃未保存的修改？" message:@"已经保存的草稿不会被删除。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"放弃未保存的修改？" message:@"已经保存的设置不会被删除。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"放弃并关闭" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) { [self dismissViewControllerAnimated:YES completion:self.didClose]; }]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -240,7 +240,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }
     self.dirty = NO; [self refresh];
     [SRRuntimeLog.shared record:@"draft_saved" facts:[self diagnosticDraft]];
-    SRAlert(self, @"草稿已保存", @"下次打开会恢复该账号的统一转发条件、排除群和规则分组。保存不会创建发送任务。" );
+    SRAlert(self, @"已保存", @"下次打开会恢复该账号的统一转发条件、排除群和规则分组。保存不会创建发送任务。" );
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -257,7 +257,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     section = SRPanelSection(section);
     if (section == 0) return [NSString stringWithFormat:@"SyncRelay %@ · 开发版\n%@", SR_PLUGIN_VERSION, self.status ?: @"真实转发未启用"];
-    if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存草稿”。" : @"所有规则共用来源条件；图片采集尚未启用。";
+    if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存”。" : @"所有规则共用来源条件；图片采集尚未启用。";
     if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。";
     if (section == 4) return @"预览和确认都不会发送；切后台或锁屏会取消等待。";
     return @"母群自动排除，每条最多 200 群；不足按实际数量分组。";
@@ -335,7 +335,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     SRPicker *picker = [[SRPicker alloc] initWithStyle:UITableViewStyleGrouped];
     picker.title = title; picker.multiple = multiple; picker.excluding = excluding;
     NSString *note = [self.reader.warnings componentsJoinedByString:@"\n"];
-    picker.note = excluding ? [@"勾选＝排除。可按群名或原始 ID 搜索；批量菜单支持排除/恢复搜索结果。应用后从草稿规则移除相应群；不会修改已有执行记录。\n" stringByAppendingString:note] : note;
+    picker.note = excluding ? [@"勾选＝排除。可按群名或原始 ID 搜索；批量菜单支持排除/恢复搜索结果。应用后从当前规则移除相应群；不会修改已有执行记录。\n" stringByAppendingString:note] : note;
     picker.selection = [[SRSelection alloc] initWithRows:rows excludedIDs:excluded selectedIDs:[NSSet setWithArray:[selected valueForKey:@"id"]]];
     __weak typeof(self) weakSelf = self;
     picker.completion = ^(NSArray *chosen) { if ([weakSelf checkAccount]) completion(chosen); };
@@ -429,9 +429,9 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         };
         if (!removed) { apply(); return; }
         NSUInteger emptyRules = [snapshot[@"rules"] count] - [candidate[@"rules"] count];
-        NSString *message = [NSString stringWithFormat:@"将从已有草稿规则移除 %lu 个群，并删除 %lu 条空规则。其他群不自动重排；已有执行记录不受影响。",
+        NSString *message = [NSString stringWithFormat:@"将从已有规则移除 %lu 个群，并删除 %lu 条空规则。其他群不自动重排；已有执行记录不受影响。",
             (unsigned long)removed, (unsigned long)emptyRules];
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"应用排除并更新草稿？" message:message preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"应用排除并更新规则？" message:message preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"应用排除" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) { apply(); }]];
         [weakSelf presentViewController:alert animated:YES completion:nil];
@@ -471,7 +471,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     NSDictionary *preview = [SRGroupPlanner previewWithRows:groups draft:snapshot recipe:recipe error:&error];
     if (!preview) { SRAlert(self, @"无法生成分组", error.localizedDescription); return; }
     if (![preview[@"generatedRuleCount"] unsignedIntegerValue]) {
-        SRAlert(self, @"没有新增规则", [NSString stringWithFormat:@"本次要求 %@ 个群，实际可分配 0 个。请检查排除项和已有规则；不生成空规则，原有草稿不变。", preview[@"requestedCount"]]); return;
+        SRAlert(self, @"没有新增规则", [NSString stringWithFormat:@"本次要求 %@ 个群，实际可分配 0 个。请检查排除项和已有规则；不生成空规则，原有设置不变。", preview[@"requestedCount"]]); return;
     }
     NSMutableArray *typeNames = [NSMutableArray array];
     for (NSString *type in snapshot[@"types"]) [typeNames addObject:[type isEqual:@"text"] ? @"文字" : @"图片"];
@@ -479,7 +479,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         snapshot[@"sourceGroup"][@"name"], snapshot[@"sourceGroup"][@"id"], (unsigned long)[snapshot[@"senders"] count], [typeNames componentsJoinedByString:@"、"], snapshot[@"minimum"], snapshot[@"maximum"]];
     for (NSDictionary *batch in preview[@"batches"]) if ([batch[@"count"] unsignedIntegerValue])
         [message appendFormat:@"%@ 群/条 × %@ 条 → 实际 %@ 条、%@ 群\n", batch[@"size"], batch[@"count"], batch[@"generatedCount"], batch[@"assignedCount"]];
-    [message appendFormat:@"\n本次可分配 %@ 群，新增 %@ 条规则、%@ 群。\n不足 %@ 群，末尾不足额 %@ 条；剩余未分配 %@ 群。\n\n母群、排除群、已分配群不会重复选入。群列表仅以当前接口返回为准。\n这里只生成草稿，不发送；后续每条仍需手动开始，不会自动接着执行。",
+    [message appendFormat:@"\n本次可分配 %@ 群，新增 %@ 条规则、%@ 群。\n不足 %@ 群，末尾不足额 %@ 条；剩余未分配 %@ 群。\n\n母群、排除群、已分配群不会重复选入。群列表仅以当前接口返回为准。\n这里只生成规则，需点“保存”保留，不发送；后续每条仍需手动开始，不会自动接着执行。",
         preview[@"availableCount"], preview[@"generatedRuleCount"], preview[@"assignedCount"], preview[@"shortfallCount"], preview[@"partialRuleCount"], preview[@"remainingCount"]];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自动分组预览" message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -594,12 +594,12 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     view.font = SRSettingsFont(17, UIFontTextStyleBody); view.adjustsFontForContentSizeCategory = YES;
     view.textColor = UIColor.labelColor; view.backgroundColor = SRSettingsCellBackground();
     view.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
-    view.text = @"当前版本\n这是开发测试版，真实转发尚未启用。保存草稿、预览或确认内容都不会向目标群发送消息。\n\n"
-        @"来源条件\n所有草稿规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片选项仅保存配置，图片采集尚未启用。\n\n"
+    view.text = @"当前版本\n这是开发测试版，真实转发尚未启用。保存设置、预览或确认内容都不会向目标群发送消息。\n\n"
+        @"来源条件\n所有规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片选项仅保存配置，图片采集尚未启用。\n\n"
         @"群聊与分组\n母群和已分配群自动排除。只需搜索并排除不想转发的群，再按每条 100 或 200 群自动分组；数量不足按实际生成，不建空规则。手动全选也会拆分为每条最多 200 群。\n\n"
-        @"等待源消息\n先保存草稿，再手动开始等待。关闭面板回母群，由指定成员或本人发一条文字；须取得服务器消息 ID 才进入预览。本人候选最多等待确认 30 秒，不用临时本地 ID 替代。\n\n"
+        @"等待源消息\n先保存设置，再手动开始等待。关闭面板回母群，由指定成员或本人发一条文字；须取得服务器消息 ID 才进入预览。本人候选最多等待确认 30 秒，不用临时本地 ID 替代。\n\n"
         @"预览与计划\n第一条匹配内容锁定后停止等待。核对母群、发送者 wxid、类型和完整正文再确认；候选可能包含离线补同步，不能只凭回调时间判断新旧。确认只建立计划，不开始执行任何规则。\n\n"
-        @"暂停采集\n切后台、锁屏或账号改变会取消等待，回前台不自动重启。预览未确认前只保留在内存，退出微信后需重新捕获；已确认计划与历史独立于草稿。\n\n"
+        @"暂停采集\n切后台、锁屏或账号改变会取消等待，回前台不自动重启。预览未确认前只保留在内存，退出微信后需重新捕获；已确认计划与历史独立于当前设置。\n\n"
         @"间隔与发送观察\n随机间隔下限至少 10 秒，上下限相同为固定间隔；随机节拍和小批次不保证平台允许或发送成功。手动发送观察只记录一个测试群的元数据，需你回微信手动发送，120 秒到期或切后台停止，不代发、不读取正文、不判定送达。\n\n"
         @"入口与诊断\n主入口始终是“我 → 设置 → SyncRelay 转发”。悬浮入口默认关闭，可自行开启。诊断包含版本、接口签名及脱敏观察摘要，不含账号 wxid、群 ID、消息 ID 或正文。所有采集候选及页面表现仍需真机验证。";
     viewer.view = view;
@@ -652,7 +652,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; return;
     }
     if ([state isEqual:@"preview"]) { [self showCapture]; return; }
-    if (self.dirty) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @1}]; SRAlert(self, @"请先保存草稿", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
+    if (self.dirty) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @1}]; SRAlert(self, @"请先保存", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
     if (![self.draft[@"types"] containsObject:@"text"]) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @2}]; SRAlert(self, @"图片捕获尚未开放", @"当前候选只能核对文字，不能猜测图片媒体路径。图片配置会保留，但本轮不能仅等待图片。"); return; }
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群文字？" message:@"仅观察指定母群和 wxid，锁定第一条具有服务器消息 ID 的匹配文字后停止，支持本人作为来源。候选尚未真机验证，可能包含离线补同步，请核对预览；切后台会取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];

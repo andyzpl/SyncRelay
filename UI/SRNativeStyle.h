@@ -58,16 +58,21 @@ static inline void SRStyleSettingsNavigation(UINavigationController *navigation,
     UINavigationBarAppearance *appearance = [host.navigationBar.standardAppearance copy];
     if (!appearance) {
         appearance = [[UINavigationBarAppearance alloc] init];
-        [appearance configureWithOpaqueBackground];
-        appearance.backgroundColor = SRSettingsBackground();
-        appearance.shadowColor = UIColor.clearColor;
         appearance.titleTextAttributes = @{NSFontAttributeName: [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold],
             NSForegroundColorAttributeName: UIColor.labelColor};
     }
+    // The host's copied appearance can be transparent, including at the scroll edge.
+    [appearance configureWithOpaqueBackground];
+    appearance.backgroundEffect = nil;
+    appearance.backgroundImage = nil;
+    appearance.backgroundColor = SRSettingsBackground();
+    appearance.shadowColor = UIColor.clearColor;
+    navigation.navigationBar.translucent = NO;
     navigation.navigationBar.prefersLargeTitles = NO;
     navigation.navigationBar.standardAppearance = appearance;
     navigation.navigationBar.scrollEdgeAppearance = [appearance copy];
     navigation.navigationBar.compactAppearance = [appearance copy];
+    navigation.navigationBar.compactScrollEdgeAppearance = [appearance copy];
     navigation.navigationBar.tintColor = host.navigationBar.tintColor ?: UIColor.labelColor;
 }
 

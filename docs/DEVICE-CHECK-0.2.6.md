@@ -6,7 +6,7 @@
 
 0.2.5 已确认母群会话的 CMessageWrap 文字回调到达，但 from/to/real sender 的旧实例反射签名路径全部拒绝（state 2），不是已经读到字符串后判定 ID 错误。0.2.6 对真实存在的消息字符串 getter 按 runtime 方法编码严格校验后派发读取，不再依赖对象自报的反射签名；未知真实 ABI 仍拒绝，不使用 ivar/KVC 或猜 ID。
 
-本地 54 项双架构语法、12 项 Python 解析测试通过。编译源码固定为 `2d27fdd34b227da4778e0572e31ff6686fe64ebe`；[私有构建 39464466046](https://github.com/andyzpl/SyncRelay/actions/runs/39464466046)，job `118772113245`，北京时间 2026-10-21 01:15 派发。本轮检查时仍 queued，核心运行测试/打包尚未开始，未取得 0.2.6 包或哈希。后续只收集核验这次构建，不重复派发；产物路径、哈希和已通过运行结果待实际核验后补录，不用 0.2.5 包冒充新修正。以下为待新包完成后的手机步骤，不是要求现在重测旧包。
+本地 54 项双架构语法、12 项 Python 解析测试通过。编译源码固定为 `2d27fdd34b227da4778e0572e31ff6686fe64ebe`；[私有构建 39464466046](https://github.com/andyzpl/SyncRelay/actions/runs/39464466046)，job `118772113245`，北京时间 2026-10-21 01:15 派发，最终因未能分配 hosted runner 而失败（job cancelled，steps 为空，artifact 0），GitHub 同时提示 macOS ARM 容量不足。核心运行测试/打包都未执行，没有 0.2.6 包或哈希；日志接口返回 404，失败依据为 check-run 注释，不编造编译日志。此修正随 0.2.7 继续验证，改用 Intel macOS runner，步骤以 `DEVICE-CHECK-0.2.7.md` 为准；以下仅保留历史预案，不要求重测旧包。
 
 ## 手机步骤
 

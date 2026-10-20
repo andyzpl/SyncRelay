@@ -22,10 +22,10 @@
         NSDictionary *frozen = [SRSourceMessage frozenJSON:configuration];
         NSString *problem = nil; NSInteger code = 0;
         if (!account.length) { code = 11; problem = @"无法核对当前账号，请先重新读取配置。"; }
-        else if (![SRConfiguration validateDraft:frozen error:NULL]) { code = 12; problem = @"草稿配置无效，请检查来源、间隔和目标群后重新保存。"; }
+        else if (![SRConfiguration validateDraft:frozen error:NULL]) { code = 12; problem = @"当前设置无效，请检查来源、间隔和目标群后重新保存。"; }
         else if (![frozen[@"sourceGroup"] count]) { code = 13; problem = @"尚未选择母群，请先选择消息来源群。"; }
-        else if (![frozen[@"senders"] count]) { code = 14; problem = @"尚未选择来源成员。更换母群后需重新勾选“我”或指定成员，再保存草稿。"; }
-        else if (![frozen[@"rules"] count]) { code = 15; problem = @"尚无目标规则，请先自动分组或手动选择目标群，再保存草稿。"; }
+        else if (![frozen[@"senders"] count]) { code = 14; problem = @"尚未选择来源成员。更换母群后需重新勾选“我”或指定成员，再保存。"; }
+        else if (![frozen[@"rules"] count]) { code = 15; problem = @"尚无目标规则，请先自动分组或手动选择目标群，再保存。"; }
         if (problem) {
             self.lastReason = code;
             if (error) *error = [NSError errorWithDomain:@"SyncRelay.Capture" code:code userInfo:@{NSLocalizedDescriptionKey: problem}];
