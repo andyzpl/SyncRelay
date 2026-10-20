@@ -2,10 +2,10 @@
 
 微信母群消息手动分批转发插件，目标环境 iOS 16.0.3、微信 8.0.76 / 8.0.79。
 
-## 当前状态：0.2.0 源码开发中，文字接收候选与只读计划
+## 当前状态：0.2.0 源码开发中，单条接收与手动发送观察
 
-不是可用的群转发成品，真实发送仍未启用。注入并打开微信后，右下方“同步”按钮进入设置；捕获到待确认内容后入口显示“预览”。
-成员读取和手动文字接收均为带签名检查的候选适配，尚未在两版微信上真机验证；接口不匹配会停止并提示诊断。
+不是可用的群转发成品，真实转发仍未启用。注入并打开微信后，右下方“同步”按钮进入设置；捕获到待确认内容后入口显示“预览”，手动发送观察中显示“观察”（预览优先）。
+成员读取、手动文字接收和发送观察均为带签名检查的候选适配，尚未在两版微信上真机验证；接口不匹配会停止并提示诊断。
 本轮只提交源码与运行测试，没有生成新 DEB；旧开发包不会自动具有本轮新增功能。
 
 已编写母群选择、成员原始 wxid 显示/多选、文字/图片开关、随机间隔编辑、排除群搜索与批量操作、100/200 群自动分规则、分组去重与按账号保存草稿。
@@ -21,6 +21,18 @@
 
 当前接收候选仅处理其他成员的文字，未开放本人消息、图片/媒体或接收历史扫描。该回调是否还包含离线补同步、正文是否带群消息前缀、服务器 ID 字段是否稳定，均需真机核对；不能把签名检查通过当作兼容性证明。
 细节与证据边界见 `docs/RECEIVE-CANDIDATE.md`。
+
+## 原包研究与手动发送观察
+
+已继续分析用户提供的 MikotoHelper DEB：限定离线 ARM64 模型还原 `PJTransmitModel` 的 12 次及 `PJHelper` 元类的 224 次业务方法注册，核对一个普通文字路径的 `MMContext -> CMessageMgr -> AddMsg:MsgWrap:` 调用点。不是只搜选择器，也不是完整源码还原；输入哈希、原始地址和模型边界见 `docs/MIKOTO-SEND-EVIDENCE.md`。
+
+新增“只读观察一次手动文字发送”：手动选择一个授权测试群，关闭面板后在 120 秒内由用户用微信正常发送一条普通文字。观察原链之后的元数据及精确本地 ID 读取，保留原始状态码；不读正文、不代发、不写投递成功。切后台、锁屏、账号变化或期限到达后停止，不自动重开。报告在“查看适配诊断”中复制，不含账号/群/消息 ID。
+
+已找到的一个 `MessageReturn:MessageInfo:Event:` hook 的附加逻辑调用 `changeHeaderFinish`，不能把它误当成已验证的文字发送回执；发送观察不 hook 此入口，也不把服务器 ID 或状态数字直接解释为成功。细节见 `docs/SEND-PROBE.md`。
+
+当前已到第一轮小范围手机验证检查点：入口、群/成员 wxid、单条接收预览、一个授权群的一次手动文字发送观察。需要为该目的明确打新开发包，旧 DEB 没有这些更新；仍不做 100/200 群实发测试。
+
+当前源码 `201bbd4`：本地双架构语法检查 42 项通过；[私有 Actions 测试](https://github.com/andyzpl/SyncRelay/actions/runs/39432617080) 共 22 条 PASS，打包步骤全部跳过，产物数 0。测试不是手机兼容性证明。
 
 ## 自动分组
 
@@ -45,8 +57,9 @@
 - `Core/SRGroupPlanner.m`：共享条件、按配额自动分组、不足额预览和持久化排除的候选草稿生成，不触发发送。
 - `Core/SRSourceCapture.m`、`Core/SRSourceMessage.m`：规范化消息过滤、单条预览冻结和确认后原子创建计划；已连接手动文字接收候选，尚待真机验证。
 - `Core/SRRunner.m`：串行派发、账号互斥、节拍和超时核对核心；仅使用测试发送器验证，启动时不会运行它。
-- `Adapter/`：运行时签名检查、只读联系人/成员候选接口、脱敏诊断；没有发送 API。
+- `Adapter/`：运行时签名检查、只读联系人/成员候选接口、脱敏诊断；没有主动发送 API。
 - `Adapter/SRWeChatReceiver.m`：手动文字接收候选，保留原接收链，只向内存捕获器提供核对后的规范化数据。
+- `Adapter/SRWeChatSendProbe.m`：最长 120 秒的单群手动文字发送观察，保留原链、精确 ID 关联、有限脱敏样本，不读正文或推断送达。
 - `UI/SRPanel.m`、`UI/SRPlanScreens.m`：原生设置、搜索多选、手动等待、单条确认、计划/规则/历史/异常只读页面及适配诊断。
 - `Tweak/SRBootstrap.m`：仅在微信主进程初始化存储和设置入口，不注入扩展进程。
 - `tests/`：直接调用生产核心的测试。模拟确认不是微信真实回执。
@@ -81,6 +94,8 @@ clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/
 /tmp/sr-receive
 clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRPacing.c tests/plan_queries_test.m -framework Foundation -lsqlite3 -o /tmp/sr-queries
 /tmp/sr-queries
+clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatSendProbe.m tests/send_probe_test.m -framework Foundation -o /tmp/sr-send-probe
+/tmp/sr-send-probe
 ```
 
 完整需求和真实进度见 `开发需求与进度.md`。两版微信兼容性目前均未真机验证。
