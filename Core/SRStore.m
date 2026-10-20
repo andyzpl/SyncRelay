@@ -1,6 +1,7 @@
 #import "SRStore.h"
 #import "SRPacing.h"
 #import "SRConfiguration.h"
+#import "SRSourceMessage.h"
 #import <sqlite3.h>
 
 @interface SRStore () {
@@ -78,7 +79,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         [self query:@"PRAGMA journal_mode=WAL" values:@[]];
         [self query:@"PRAGMA synchronous=FULL" values:@[]];
         NSInteger version = [[self query:@"PRAGMA user_version" values:@[]].firstObject[@"user_version"] integerValue];
-        SRRequire(version >= 0 && version <= 2, @"Unsupported database schema; do not downgrade");
+        SRRequire(version >= 0 && version <= 3, @"Unsupported database schema; do not downgrade");
         return @YES;
     } transaction:NO error:error];
     if (!setup) return nil;
@@ -93,7 +94,8 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"CREATE INDEX IF NOT EXISTS delivery_queue ON deliveries(run_id,state,position)",
             @"CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id), started_at REAL NOT NULL, ended_at REAL, state TEXT NOT NULL, message_id TEXT, reason TEXT)",
             @"CREATE TABLE IF NOT EXISTS configurations(account TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL)",
-            @"PRAGMA user_version=2"
+            @"CREATE TABLE IF NOT EXISTS source_claims(account TEXT NOT NULL, source_group TEXT NOT NULL, message_id TEXT NOT NULL, plan_id TEXT NOT NULL UNIQUE REFERENCES plans(id), PRIMARY KEY(account,source_group,message_id))",
+            @"PRAGMA user_version=3"
         ];
         for (NSString *sql in schema) [self query:sql values:@[]];
         return @YES;
@@ -217,6 +219,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         SRRequire(row != nil, @"Unmatched attempt");
         if (![row[@"state"] isEqual:@"submitting"] && ![row[@"state"] isEqual:@"uncertain"]) {
             SRRequire([row[@"state"] isEqual:state], @"Conflicting terminal callback");
+            SRRequire(![state isEqual:@"confirmed"] || [row[@"message_id"] isEqual:messageID], @"Conflicting confirmation message ID");
             return @YES;
         }
         [self query:@"UPDATE deliveries SET state=?,message_id=?,reason=? WHERE id=?"
@@ -276,5 +279,31 @@ static void SRRequire(BOOL condition, NSString *message) {
             values:@[account, [self json:configuration], @(NSDate.date.timeIntervalSince1970)]];
         return @YES;
     } transaction:YES error:error] != nil;
+}
+
+- (NSString *)createPlanFromConfiguration:(NSDictionary *)configuration envelope:(NSDictionary *)envelope account:(NSString *)account error:(NSError **)error {
+    NSDictionary *draft = [SRSourceMessage frozenJSON:configuration];
+    NSDictionary *message = [SRSourceMessage frozenJSON:envelope];
+    return [self perform:^id{
+        SRRequire([SRSourceMessage matchesEnvelope:message configuration:draft account:account] && [draft[@"rules"] count], @"Captured source does not match the configured rule");
+        NSString *plan = NSUUID.UUID.UUIDString;
+        [self query:@"INSERT INTO plans VALUES(?,?,?,?,?,?)" values:@[plan, account, message[@"group"],
+            [self json:[draft[@"senders"] valueForKey:@"id"]], [self json:draft[@"types"]], [self json:message]]];
+        [self query:@"INSERT INTO source_claims VALUES(?,?,?,?)" values:@[account, message[@"group"], message[@"messageID"], plan]];
+        NSUInteger position = 0;
+        for (NSDictionary *rule in draft[@"rules"]) {
+            NSString *ruleID = NSUUID.UUID.UUIDString;
+            [self query:@"INSERT INTO rules VALUES(?,?,?,?,?,?)" values:@[ruleID, plan, rule[@"name"], @(++position), draft[@"minimum"], draft[@"maximum"]]];
+            NSUInteger targetPosition = 0;
+            for (NSDictionary *target in rule[@"targets"]) [self query:@"INSERT INTO allocations VALUES(?,?,?,?)"
+                values:@[plan, target[@"id"], ruleID, @(targetPosition++)]];
+        }
+        return plan;
+    } transaction:YES error:error];
+}
+- (NSArray *)rulesForPlan:(NSString *)plan error:(NSError **)error {
+    return [self perform:^id{
+        return [self query:@"SELECT id,name,position,minimum,maximum FROM rules WHERE plan_id=? ORDER BY position" values:@[plan]];
+    } transaction:NO error:error];
 }
 @end

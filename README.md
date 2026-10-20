@@ -17,12 +17,15 @@
 - `Core/SRStore.m`：计划、互斥分组、独立执行批次、持久化状态、暂停/恢复、重新执行、结果关联。
 - `Core/SRPacing.c`：至少 10 秒的随机节拍计算，单调时钟输入，恢复时不补发错过节拍。
 - `Core/SRConfiguration.m`、`Core/SRSelection.m`：草稿校验、完整列表批量选择、来源群与重复目标排除。
+- `Core/SRSourceCapture.m`、`Core/SRSourceMessage.m`：规范化消息过滤、单条预览冻结和确认后原子创建计划；尚未挂接微信接收接口。
+- `Core/SRRunner.m`：串行派发、账号互斥、节拍和超时核对核心；仅使用测试发送器验证，启动时不会运行它。
 - `Adapter/`：运行时签名检查、只读联系人/成员候选接口、脱敏诊断；没有发送 API。
 - `UI/SRPanel.m`：原生设置、搜索多选、草稿保存、适配诊断。
 - `Tweak/SRBootstrap.m`：仅在微信主进程初始化存储和设置入口，不注入扩展进程。
 - `tests/`：直接调用生产核心的测试。模拟确认不是微信真实回执。
 
-尚未实现：实际消息捕获与来源/类型过滤、发送适配、执行控制界面、实际调度循环、失败补发 UI/策略、媒体缓存、常亮与设备验收。
+尚未实现：微信实际消息捕获、发送适配、执行控制界面、调度定时器/生命周期接入、失败补发 UI/策略、媒体缓存、常亮与设备验收。
+规范化过滤和调度核心说明见 `docs/RELAY-CORE.md`；它们不等于已经接入微信。
 群枚举当前只调用候选 `getContactList:contactType:` 的 `(1,0)` 参数，不能保证覆盖全部已加入群；成员来自本地群成员字段，不能保证为实时完整名单。界面显示该限制。
 `SRStore` 的 claim 是存储层操作；接入发送器时必须先经过节拍、单账号身份和适配可用性检查。
 传入 confirmed 只说明调用方声称已验证结果；未来适配器必须提供实际确认依据，消息 ID 本身不证明服务器已接收。
@@ -41,7 +44,7 @@ macOS 本地核心测试：
 ```sh
 clang -std=c11 -Wall -Wextra -Werror -I. Core/SRPacing.c tests/pacing_test.c -o /tmp/sr-pacing
 /tmp/sr-pacing
-clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o /tmp/sr-store
+clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o /tmp/sr-store
 /tmp/sr-store
 clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReader.m Core/SRSelection.m Core/SRConfiguration.m Core/SRPacing.c tests/adapter_test.m -framework Foundation -o /tmp/sr-adapter
 /tmp/sr-adapter
