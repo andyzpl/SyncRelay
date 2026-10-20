@@ -52,7 +52,7 @@ static NSMethodSignature *SRSettingsSignature(id target, NSString *name) {
     @try {
         SEL selector = NSSelectorFromString(name);
         return [target respondsToSelector:selector] ? [target methodSignatureForSelector:selector] : nil;
-    } @catch (__unused NSException *exception) { return nil; }
+    } @catch (__unused id exception) { return nil; }
 }
 static BOOL SRSettingsVoidSignature(NSMethodSignature *signature, NSUInteger objects) {
     if (!signature || strcmp(SRSettingsType(signature.methodReturnType), "v") || signature.numberOfArguments != objects + 2) return NO;
@@ -78,7 +78,7 @@ static BOOL SRSettingsVoid(id target, NSString *name, NSArray *objects) {
             __unsafe_unretained id value = objects[i]; [invocation setArgument:&value atIndex:i + 2];
         }
         [invocation invoke]; return YES;
-    } @catch (__unused NSException *exception) { return NO; }
+    } @catch (__unused id exception) { return NO; }
 }
 static id SRSettingsObjectIvar(id object, NSString *name) {
     Ivar ivar = object ? class_getInstanceVariable(object_getClass(object), name.UTF8String) : NULL;
@@ -124,7 +124,7 @@ static BOOL SRSettingsInsert(id section, id cell) {
         __unsafe_unretained id value = cell; [invocation setArgument:&value atIndex:2];
         SRSettingsSetInteger(invocation, SRSettingsType([signature getArgumentTypeAtIndex:3]), 3, 0);
         [invocation invoke]; return YES;
-    } @catch (__unused NSException *exception) { return NO; }
+    } @catch (__unused id exception) { return NO; }
 }
 static id SRSettingsCell(Class cellClass, SRSettingsAction *action) {
     for (NSString *name in @[@"normalCellForSel:target:title:rightValue:accessoryType:", @"normalCellForSel:target:title:"]) {
@@ -155,7 +155,7 @@ static id SRSettingsCell(Class cellClass, SRSettingsAction *action) {
                 objc_setAssociatedObject(cell, &SRSettingsActionKey, action, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 return cell;
             }
-        } @catch (__unused NSException *exception) { }
+        } @catch (__unused id exception) { }
     }
     return nil;
 }
@@ -227,9 +227,9 @@ static id SRSettingsCell(Class cellClass, SRSettingsAction *action) {
     @try {
         self.refreshes++;
         present = [self appendToController:controller];
-    } @catch (__unused NSException *exception) { self.state = @"optional_entry_exception"; }
+    } @catch (__unused id exception) { self.state = @"optional_entry_exception"; }
     @try { if (self.updated) self.updated(controller, present); }
-    @catch (__unused NSException *exception) { self.state = @"optional_recovery_entry_exception"; }
+    @catch (__unused id exception) { self.state = @"optional_recovery_entry_exception"; }
     @finally { objc_setAssociatedObject(controller, &SRSettingsRefreshKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     return present;
 }

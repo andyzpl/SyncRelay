@@ -62,6 +62,7 @@
 @property(nonatomic) NSUInteger originalCalls;
 @property(nonatomic) BOOL rebuild;
 @property(nonatomic) BOOL throws;
+@property(nonatomic) BOOL throwsObject;
 - (void)reloadTableData;
 @end
 @implementation NativeSettings
@@ -69,6 +70,7 @@
 - (void)reloadTableData {
     self.originalCalls++;
     if (self.throws) @throw [NSException exceptionWithName:@"HostError" reason:@"Private host content" userInfo:nil];
+    if (self.throwsObject) @throw @"HostObjectError";
     if (self.rebuild) [self.m_tableViewInfo.sections setArray:@[[NativeSection sectionInfoDefaut]]];
 }
 @end
@@ -267,6 +269,9 @@ int main(void) {
         host.throws = YES; BOOL threw = NO;
         @try { [host reloadTableData]; } @catch (NSException *exception) { threw = [exception.name isEqual:@"HostError"]; }
         CHECK(threw && host.m_tableViewInfo.sections.count == 1); host.throws = NO;
+        host.throwsObject = YES; BOOL objectThrew = NO;
+        @try { [host reloadTableData]; } @catch (id exception) { objectThrew = [exception isEqual:@"HostObjectError"]; }
+        CHECK(objectThrew && host.m_tableViewInfo.sections.count == 1); host.throwsObject = NO;
         CHECK([settings.diagnostics[@"state"] isEqual:@"row_present"] && ![settings.diagnostics.description containsString:@"Private host"]);
         CHECK(![entry(@"8.0.79", NativeSettings.class, NativeCellFactory.class, open) install:NULL]);
 
