@@ -126,13 +126,13 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
 }
 
 - (void)submitDelivery:(NSDictionary *)delivery snapshot:(NSDictionary *)snapshot completion:(SRSendCompletion)completion {
-    NSString *account, *group; NSDictionary *source; BOOL alreadySubmitted;
+    NSString *account, *group; NSDictionary *source; SRTextSendOperation operation; BOOL alreadySubmitted;
     @synchronized (self) {
-        account = self.account; group = self.group; source = self.snapshot; alreadySubmitted = self.submitted;
+        account = self.account; group = self.group; source = self.snapshot; operation = self.operation; alreadySubmitted = self.submitted;
     }
     NSString *reason = nil;
     if (alreadySubmitted) reason = @"A single-target test does not retry automatically";
-    else if (![self canSendForAccount:account]) reason = @"Text-send adapter is not ready for this account/environment";
+    else if (!operation || ![self canSendForAccount:account]) reason = @"Text-send adapter is not ready for this account/environment";
     else if (![snapshot isEqual:source] || ![delivery isKindOfClass:NSDictionary.class] ||
              ![delivery[@"target"] isEqual:group] || ![delivery[@"state"] isEqual:@"submitting"])
         reason = @"Delivery target or frozen source snapshot changed";
@@ -160,7 +160,7 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
                                    ([state isEqual:@"confirmed"] && messageID.length) ? messageID : nil,
                                    callbackReason ?: ([state isEqual:@"failed"] ? @"Host send failed" : @"Host confirmation is not reliable"));
     };
-    @try { self.operation(request, guarded); }
+    @try { operation(request, guarded); }
     @catch (__unused NSException *exception) { guarded(@"uncertain", nil, @"Text-send operation threw before a result"); }
 }
 
