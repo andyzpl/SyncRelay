@@ -33,6 +33,7 @@ def analyze(report):
     for key, code, message in (
         ('receive_wrong_session', 'session_mismatch', 'Receive callbacks were rejected by the session check; inspect adapter semantics.'),
         ('receive_wrong_direction', 'direction_mismatch', 'From/to checks rejected callbacks; do not guess the sender.'),
+        ('outgoing_wrong_direction', 'outgoing_direction_mismatch', 'Own-message callbacks were rejected before server-ID observation.'),
         ('receive_invalid_sender', 'invalid_sender', 'A callback lacked a valid sender wxid.'),
         ('receive_no_server_id', 'missing_server_id', 'A callback had no non-zero server message ID.'),
         ('own_timeout', 'own_timeout', 'Own text did not gain a confirmed source ID in the observation window.'),
@@ -40,6 +41,52 @@ def analyze(report):
     ):
         if isinstance(counters.get(key), (int, float)) and counters[key] > 0:
             add(code, message)
+    direction_mismatch = any(isinstance(counters.get(key), (int, float)) and counters[key] > 0
+                             for key in ('receive_wrong_direction', 'outgoing_wrong_direction'))
+    if direction_mismatch:
+        samples = receiver.get('directionSamples')
+        if type(receiver.get('directionEvidenceSchema')) is not int or receiver['directionEvidenceSchema'] != 1:
+            add('direction_details_required', 'This report has no supported direction evidence; reproduce using a matching diagnostic build.')
+        elif not isinstance(samples, list) or not samples:
+            add('direction_details_missing', 'No bounded direction sample was completed; export immediately after reproducing.')
+        else:
+            evidence = set()
+            relation_keys = ('wrapClassCode', 'fromState', 'toState', 'senderState', 'fromIsAccount', 'fromIsSource',
+                             'toIsAccount', 'toIsSource', 'senderIsAccount', 'fromEqualsTo')
+            for sample in samples[:12]:
+                if not isinstance(sample, dict) or sample.get('path') not in ('receive', 'outgoing'):
+                    continue
+                before, after = sample.get('before'), sample.get('after')
+                if not isinstance(before, dict) or not isinstance(after, dict):
+                    continue
+                if any(type(before.get(key)) in (int, bool) and type(after.get(key)) in (int, bool)
+                       and before[key] != after[key] for key in relation_keys):
+                    evidence.add('direction_relationships_changed')
+                if after.get('wrapClassCode') == 3:
+                    evidence.add('direction_unexpected_wrap')
+                states = (after.get('fromState'), after.get('toState'))
+                if any(type(state) is int and state in (1, 2, 3, 5) for state in states):
+                    evidence.add('direction_getter_failed')
+                if any(type(state) is int and state in (0, 4, 6) for state in states):
+                    evidence.add('direction_endpoint_empty')
+                if states == (7, 7):
+                    if after.get('fromEqualsTo') is True:
+                        evidence.add('direction_same_endpoint')
+                    if after.get('fromIsAccount') is False and after.get('toIsAccount') is False:
+                        evidence.add('direction_account_unmatched')
+                    if after.get('fromIsSource') is False and after.get('toIsSource') is False:
+                        evidence.add('direction_source_unmatched')
+            for code, message in (
+                ('direction_relationships_changed', 'Pre/post-original direction relationships differ; inspect host-side field changes without accepting pre-call data.'),
+                ('direction_unexpected_wrap', 'A sampled object is not the expected message class or a subclass; inspect its actual getter contract.'),
+                ('direction_getter_failed', 'A sampled endpoint getter is missing, incompatible, failed, or non-string.'),
+                ('direction_endpoint_empty', 'A sampled endpoint is absent, nil, or empty; do not infer an identity.'),
+                ('direction_same_endpoint', 'A sampled from/to pair contains the same non-empty string.'),
+                ('direction_account_unmatched', 'Neither sampled endpoint equals the verified account; inspect account identity and version semantics.'),
+                ('direction_source_unmatched', 'Neither sampled endpoint equals the selected source although the hook session matched it.'),
+            ):
+                if code in evidence:
+                    add(code, message)
     if capture.get('lastReasonCode') == 22:
         add('sender_not_selected', 'A normalized candidate was rejected by the selected-wxid filter.')
     if capture.get('lastReasonCode') == 23:

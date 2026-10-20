@@ -1,6 +1,6 @@
 # 运行诊断与维护流程
 
-日期：2026-10-21。0.2.4 测试包的诊断格式为 `reportSchema: 1`，已编译打包，尚待手机验收。诊断不启用发送，不改微信消息处理结果，也不等于真实转发成功证明。包来源和复现步骤见 `DEVICE-CHECK-0.2.4.md`。
+日期：2026-10-21。诊断格式为 `reportSchema: 1`，0.2.5 增加可选的方向证据子格式 `receiveCandidate.directionEvidenceSchema: 1`，不改变旧字段语义。0.2.4 已收到方向拒绝的手机报告，0.2.5 正准备定点诊断包。诊断不启用发送，不改微信消息处理结果，也不等于真实转发成功证明。最新复现步骤见 `DEVICE-CHECK-0.2.5.md`。
 
 ## 手机端怎么回传
 
@@ -40,6 +40,21 @@
 | `capture_accepted` / `state = preview` | 冻结了一条匹配源消息 | 用户核对预览，不代表任何目标收到转发 |
 
 捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束。错误码必须结合事件与模块看，不跨模块猜含义。
+
+## 0.2.5 方向证据子格式
+
+`receiveCandidate.directionSamples` 最多 12 条，只采本次等待中会话参数等于母群的回调，记录 `path`（固定 receive/outgoing）、宿主原方法返回后的时间、`before` 与 `after`。限额同时限制额外字段读取，超限累计 `directionSamplesDropped`；原方法抛异常时没有 after 样本，已预留名额仍会消耗。每次重新等待清空，停止后可导出最后快照，不跨启动持久化；其余固定事件仍按原规则持久化。
+
+每个 before/after 只有白名单数字/布尔字段：
+
+- `wrapClassCode`：0 无对象，1 精确 CMessageWrap，2 子类，3 其他对象；不输出任意运行时类名。
+- `fromState`、`toState`、`senderState`：0 无对象，1 无 getter，2 签名不兼容，3 读取失败或异常，4 nil，5 非字符串，6 空字符串，7 非空字符串。签名不兼容时不调用 getter。
+- `fromIsAccount` / `toIsAccount` / `senderIsAccount`，`fromIsSource` / `toIsSource` / `senderIsSource`：与已核对账号或已选母群的精确相等结果。
+- `fromIsGroup` / `toIsGroup` / `senderIsGroup`：是否带群 ID 后缀，仅为形态证据，不作为身份核验或放行条件。
+- `fromEqualsTo`、`senderEqualsFrom`、`senderEqualsTo`：两个非空字符串的相等关系。
+- `typeReadable`、`messageType`：类型 getter 的读取结果，读不到时数字为 0，不把该 0 当作已读消息类型。
+
+before/after 不同只证明这些分类/关系在原方法前后不同；相同不证明原始字符串相同。样本不读正文、消息 ID 或 getter 异常文本，不参与捕获放行，不采用调用前数据来绕过调用后检查。诊断自身失败不能阻断宿主原方法或原有观察分支。旧/未知方向子格式只提示补充证据，不能根据缺字段推测身份。
 
 ## 离线分析与后续维护
 

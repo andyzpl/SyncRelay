@@ -53,6 +53,40 @@
 @implementation ThrowingReceiveWrap
 - (NSString *)m_nsContent { @throw @"OptionalGetterException"; }
 @end
+@interface DirectionManager : ReceiveManager
+@property(nonatomic) BOOL rewriteDirection;
+@property(nonatomic, copy) void (^duringOriginal)(void);
+@end
+@implementation DirectionManager
+- (void)AddMsg:(id)session MsgWrap:(id)value {
+    [super AddMsg:session MsgWrap:value];
+    if (self.duringOriginal) self.duringOriginal();
+    if (self.rewriteDirection && [value isKindOfClass:ReceiveWrap.class])
+        ((ReceiveWrap *)value).m_nsFromUsr = session;
+}
+@end
+@interface DirectionThrowWrap : ReceiveWrap
+@end
+@implementation DirectionThrowWrap
+- (NSString *)m_nsFromUsr { @throw @"private getter exception"; }
+@end
+@interface DirectionNumberWrap : ReceiveWrap
+@end
+@implementation DirectionNumberWrap
+- (NSString *)m_nsFromUsr { return (id)@123; }
+@end
+@interface DirectionScalarWrap : NSObject
+- (double)m_nsFromUsr;
+@end
+@implementation DirectionScalarWrap
+- (double)m_nsFromUsr { abort(); }
+@end
+@interface DirectionBodyWrap : ReceiveWrap
+@property(nonatomic) NSUInteger bodyReads;
+@end
+@implementation DirectionBodyWrap
+- (NSString *)m_nsContent { self.bodyReads++; return @"private diagnostic body"; }
+@end
 @interface ScalarTraps : NSObject
 - (double)floating;
 - (id)object;
@@ -84,6 +118,82 @@ static NSMutableDictionary *draft(void) {
     value[@"senders"] = @[@{@"id": @"wxid_sender", @"name": @"Same name"}];
     value[@"rules"] = @[@{@"id": @"rule", @"name": @"First", @"targets": @[@{@"id": @"target@chatroom", @"name": @"Target"}]}];
     return value;
+}
+static void checkDirectionEvidence(void) {
+    __block NSUInteger accepted = 0;
+    SRWeChatReceiver *receiver = [[SRWeChatReceiver alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
+        return [name isEqual:@"CMessageMgr"] ? DirectionManager.class : ([name isEqual:@"CMessageWrap"] ? ReceiveWrap.class : Nil);
+    } currentAccount:^NSString *{ return @"wxid_account"; } received:^(__unused NSDictionary *message) { accepted++; }];
+    DirectionManager *manager = [[DirectionManager alloc] init];
+    CHECK([receiver armForAccount:@"wxid_account" sourceGroup:@"mother@chatroom" error:NULL]);
+    [manager AddMsg:@"other@chatroom" MsgWrap:wrap()];
+    CHECK([receiver.diagnostics[@"directionSamples"] count] == 0);
+    ReceiveWrap *own = wrap(); own.m_nsFromUsr = @"wxid_account"; own.m_nsToUsr = @"mother@chatroom";
+    own.m_nsRealChatUsr = nil; manager.rewriteDirection = YES;
+    [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump();
+    NSDictionary *sample = [receiver.diagnostics[@"directionSamples"] lastObject];
+    CHECK([sample[@"path"] isEqual:@"outgoing"]);
+    CHECK([sample[@"before"][@"fromIsAccount"] boolValue] && [sample[@"before"][@"toIsSource"] boolValue]);
+    CHECK([sample[@"after"][@"fromIsSource"] boolValue] && [sample[@"after"][@"fromEqualsTo"] boolValue]);
+    CHECK([sample[@"before"][@"senderState"] isEqual:@4]);
+    CHECK(!accepted && [receiver.diagnostics[@"counters"][@"outgoing_wrong_direction"] isEqual:@1]);
+    manager.rewriteDirection = NO;
+    // Rejected directions must not cause diagnostics to read a message body.
+    DirectionBodyWrap *private = [[DirectionBodyWrap alloc] init];
+    private.m_nsFromUsr = @"other@chatroom"; private.m_nsToUsr = @"unknown_private_account";
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:private]; pump();
+    sample = [receiver.diagnostics[@"directionSamples"] lastObject];
+    CHECK([sample[@"path"] isEqual:@"receive"] && [sample[@"after"][@"wrapClassCode"] isEqual:@2]);
+    CHECK([sample[@"after"][@"fromIsGroup"] boolValue] && ![sample[@"after"][@"fromIsSource"] boolValue]);
+    CHECK(!private.bodyReads && !accepted);
+    ReceiveWrap *empty = wrap(); empty.m_nsFromUsr = @"";
+    NSArray *values = @[[[DirectionThrowWrap alloc] init], [[DirectionNumberWrap alloc] init],
+        [[DirectionScalarWrap alloc] init], NSObject.new, empty, NSNull.null];
+    NSArray *states = @[@3, @5, @2, @1, @6, @0];
+    for (NSUInteger index = 0; index < values.count; index++) {
+        id value = values[index] == NSNull.null ? nil : values[index];
+        NSUInteger before = manager.calls;
+        [manager AddMsg:@"mother@chatroom" MsgWrap:value];
+        sample = [receiver.diagnostics[@"directionSamples"] lastObject];
+        CHECK(manager.calls == before + 1 && [sample[@"before"][@"fromState"] isEqual:states[index]]);
+        CHECK([sample[@"after"][@"fromState"] isEqual:states[index]]);
+    }
+    // Diagnostics cannot swallow an exception from the original implementation.
+    manager.raiseOriginal = YES; BOOL propagated = NO;
+    @try { [manager AddMsg:@"mother@chatroom" MsgWrap:own]; }
+    @catch (id exception) { propagated = [exception isEqual:@"OriginalOutgoingException"]; }
+    CHECK(propagated); manager.raiseOriginal = NO;
+    for (NSUInteger index = 0; index < 25; index++) [manager AddMsg:@"mother@chatroom" MsgWrap:empty];
+    NSDictionary *diagnostic = receiver.diagnostics;
+    CHECK([diagnostic[@"directionSamples"] count] <= 12 && [diagnostic[@"directionSamplesDropped"] unsignedIntegerValue] > 0);
+    CHECK([diagnostic[@"directionEvidenceSchema"] isEqual:@1]);
+    NSSet *sampleKeys = [NSSet setWithArray:@[@"path", @"time", @"before", @"after"]];
+    for (NSDictionary *entry in diagnostic[@"directionSamples"]) {
+        CHECK([[NSSet setWithArray:entry.allKeys] isEqual:sampleKeys]);
+        for (NSString *phase in @[@"before", @"after"]) for (id fact in [entry[phase] allValues])
+            CHECK([fact isKindOfClass:NSNumber.class]);
+    }
+    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:diagnostic options:0 error:NULL] encoding:NSUTF8StringEncoding];
+    for (NSString *secret in @[@"wxid_account", @"mother@chatroom", @"other@chatroom", @"unknown_private_account",
+        @"private diagnostic body", @"private getter exception", @"9007199254740993"])
+        CHECK(![json containsString:secret]);
+    [receiver stop];
+    CHECK([receiver armForAccount:@"wxid_account" sourceGroup:@"mother@chatroom" error:NULL]);
+    CHECK([receiver.diagnostics[@"directionSamples"] count] == 0 && [receiver.diagnostics[@"directionSamplesDropped"] isEqual:@0]);
+    CHECK([diagnostic[@"directionSamples"] count] > 0);
+    [manager AddMsg:@"mother@chatroom" MsgWrap:empty];
+    CHECK([receiver.diagnostics[@"directionSamples"] count] == 1);
+    __weak SRWeChatReceiver *weakReceiver = receiver;
+    manager.duringOriginal = ^{
+        [weakReceiver stop];
+        CHECK([weakReceiver armForAccount:@"wxid_account" sourceGroup:@"mother@chatroom" error:NULL]);
+    };
+    [manager AddMsg:@"mother@chatroom" MsgWrap:empty];
+    CHECK([receiver.diagnostics[@"directionSamples"] count] == 0);
+    manager.duringOriginal = nil;
+    [manager AddMsg:@"mother@chatroom" MsgWrap:empty];
+    CHECK([receiver.diagnostics[@"directionSamples"] count] == 1);
+    [receiver stop]; pump(); CHECK(!accepted);
 }
 int main(void) {
     @autoreleasepool {
@@ -252,8 +362,9 @@ int main(void) {
         for (NSString *secret in @[@"wxid_account", @"mother@chatroom", @"original message", @"9007199254740995"])
             CHECK(![ownDiagnostics containsString:secret]);
         [receiver stop]; [capture cancel]; receiver = nil; replacement = nil; inherited = nil; makeReceiver = nil; capture = nil; store = nil;
+        checkDirectionEvidence();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
-        puts("PASS: guarded receive candidate, original hook chain, exact server IDs, wxid/text filters, frozen preview and account/generation cancellation");
+        puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }
     return 0;
 }

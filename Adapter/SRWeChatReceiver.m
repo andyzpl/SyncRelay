@@ -14,6 +14,14 @@
 @implementation SRPendingOwnText
 @end
 
+@interface SRDirectionObservation : NSObject
+@property(nonatomic, weak) SRWeChatReceiver *owner;
+@property(nonatomic) NSUInteger generation;
+@property(nonatomic, copy) NSDictionary *before;
+@end
+@implementation SRDirectionObservation
+@end
+
 @interface SRWeChatReceiver ()
 @property(nonatomic, copy) NSString *version;
 @property(nonatomic, copy) Class (^resolver)(NSString *);
@@ -32,6 +40,11 @@
 @property(nonatomic, strong) NSMutableDictionary *counters;
 @property(nonatomic) NSTimeInterval armedAt;
 @property(nonatomic) NSTimeInterval lastCallbackAt;
+@property(nonatomic, strong) NSMutableArray *directionSamples;
+@property(nonatomic) NSUInteger directionReservations;
+@property(nonatomic) NSUInteger directionDropped;
+- (SRDirectionObservation *)beginDirectionForSession:(id)session wrap:(id)wrap;
+- (void)finishDirection:(SRDirectionObservation *)observation path:(NSString *)path wrap:(id)wrap;
 - (void)observeSession:(id)session wrap:(id)wrap;
 - (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap;
 - (void)pollOutgoing:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
@@ -74,6 +87,44 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
     } @catch (__unused id exception) { return NO; }
 }
 
+// Diagnostic states only; raw identifiers never enter a snapshot or trace.
+static NSString *SRDirectionString(id wrap, NSString *name, NSUInteger *state) {
+    *state = 0;
+    @try {
+        if (!wrap) return nil;
+        SEL selector = NSSelectorFromString(name);
+        if (![wrap respondsToSelector:selector]) { *state = 1; return nil; }
+        NSMethodSignature *signature = [wrap methodSignatureForSelector:selector];
+        const char *type = signature ? SRReceiveType(signature.methodReturnType) : "";
+        if (!signature || signature.numberOfArguments != 2 || type[0] != '@' || type[1] == '?') {
+            *state = 2; return nil;
+        }
+        NSError *error = nil;
+        id value = SRReadObject(wrap, name, @[], &error);
+        if (error) { *state = 3; return nil; }
+        if (!value) { *state = 4; return nil; }
+        if (![value isKindOfClass:NSString.class]) { *state = 5; return nil; }
+        *state = [value length] ? 7 : 6;
+        return [value copy];
+    } @catch (__unused id exception) { *state = 3; return nil; }
+}
+static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *account, NSString *group) {
+    NSUInteger fromState, toState, senderState;
+    NSString *from = SRDirectionString(wrap, @"m_nsFromUsr", &fromState);
+    NSString *to = SRDirectionString(wrap, @"m_nsToUsr", &toState);
+    NSString *sender = SRDirectionString(wrap, @"m_nsRealChatUsr", &senderState);
+    NSUInteger classCode = !wrap ? 0 : (expected && object_getClass(wrap) == expected ? 1 :
+        (expected && [wrap isKindOfClass:expected] ? 2 : 3));
+    NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
+    return @{@"wrapClassCode": @(classCode), @"fromState": @(fromState), @"toState": @(toState), @"senderState": @(senderState),
+        @"fromIsAccount": @([from isEqual:account]), @"fromIsSource": @([from isEqual:group]), @"fromIsGroup": @([from hasSuffix:@"@chatroom"]),
+        @"toIsAccount": @([to isEqual:account]), @"toIsSource": @([to isEqual:group]), @"toIsGroup": @([to hasSuffix:@"@chatroom"]),
+        @"senderIsAccount": @([sender isEqual:account]), @"senderIsSource": @([sender isEqual:group]),
+        @"senderIsGroup": @([sender hasSuffix:@"@chatroom"]), @"fromEqualsTo": @(from.length && [from isEqual:to]),
+        @"senderEqualsFrom": @(sender.length && [sender isEqual:from]), @"senderEqualsTo": @(sender.length && [sender isEqual:to]),
+        @"typeReadable": @(type != nil), @"messageType": type ?: @0};
+}
+
 @implementation SRWeChatReceiver
 - (instancetype)initWithVersion:(NSString *)version classResolver:(Class (^)(NSString *))resolver
                 currentAccount:(NSString *(^)(void))currentAccount received:(void (^)(NSDictionary *))received {
@@ -95,6 +146,35 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
         self.lastCallbackAt = NSDate.date.timeIntervalSince1970;
     }
     if (first) @try { if (self.trace) self.trace(event, @{}); } @catch (__unused id exception) { }
+}
+- (SRDirectionObservation *)beginDirectionForSession:(id)session wrap:(id)wrap {
+    NSString *account, *group; NSUInteger generation;
+    @synchronized(self) {
+        if (!self.armed || ![session isKindOfClass:NSString.class] || ![session isEqual:self.group]) return nil;
+        if (self.directionReservations >= 12) {
+            if (self.directionDropped < NSUIntegerMax) self.directionDropped++;
+            return nil;
+        }
+        self.directionReservations++; account = self.account; group = self.group; generation = self.generation;
+    }
+    SRDirectionObservation *observation = [[SRDirectionObservation alloc] init];
+    observation.owner = self; observation.generation = generation;
+    observation.before = SRDirectionSnapshot(wrap, self.resolver(@"CMessageWrap"), account, group);
+    return observation;
+}
+- (void)finishDirection:(SRDirectionObservation *)observation path:(NSString *)path wrap:(id)wrap {
+    if (!observation || observation.owner != self) return;
+    NSString *account, *group;
+    @synchronized(self) {
+        if (!self.armed || self.generation != observation.generation) return;
+        account = self.account; group = self.group;
+    }
+    NSDictionary *after = SRDirectionSnapshot(wrap, self.resolver(@"CMessageWrap"), account, group);
+    @synchronized(self) {
+        if (!self.armed || self.generation != observation.generation) return;
+        [self.directionSamples addObject:@{@"path": path, @"time": @(NSDate.date.timeIntervalSince1970),
+            @"before": observation.before, @"after": after}];
+    }
 }
 - (BOOL)armForAccount:(NSString *)account sourceGroup:(NSString *)group error:(NSError **)error {
     if (!NSThread.isMainThread) return [self fail:@"Receive capture must be armed on the main thread" error:error];
@@ -120,8 +200,11 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
             tap = [[SRReceiveTap alloc] init]; tap.original = method_getImplementation(method);
             SRReceiveTap *installed = tap;
             IMP replacement = imp_implementationWithBlock(^(id object, id session, id wrap) {
+                SRDirectionObservation *observation = nil;
+                @try { observation = [installed.listener beginDirectionForSession:session wrap:wrap]; } @catch (__unused id exception) { }
                 ((void (*)(id, SEL, id, id))installed.original)(object, selector, session, wrap);
                 // Never let optional observation exceptions change WeChat's receive behavior.
+                @try { [installed.listener finishDirection:observation path:@"receive" wrap:wrap]; } @catch (__unused id exception) { }
                 @try { [installed.listener observeSession:session wrap:wrap]; } @catch (__unused id exception) { }
             });
             if (!class_addMethod(manager, selector, replacement, method_getTypeEncoding(method)))
@@ -131,6 +214,7 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
         @synchronized(self) {
             self.account = account; self.group = group; self.problem = nil; self.generation++;
             self.counters = [NSMutableDictionary dictionary]; self.armedAt = NSDate.date.timeIntervalSince1970; self.lastCallbackAt = 0;
+            self.directionSamples = [NSMutableArray array]; self.directionReservations = 0; self.directionDropped = 0;
             self.pendingOutgoing = nil; self.queuedOutgoing = 0; self.ownTextState = @"unavailable";
             self.tap = tap; self.armed = YES; tap.listener = self;
         }
@@ -144,7 +228,10 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
                 outgoing = [[SRReceiveTap alloc] init]; outgoing.original = method_getImplementation(outgoingMethod);
                 SRReceiveTap *installed = outgoing;
                 IMP replacement = imp_implementationWithBlock(^(id object, id session, id wrap) {
+                    SRDirectionObservation *observation = nil;
+                    @try { observation = [installed.listener beginDirectionForSession:session wrap:wrap]; } @catch (__unused id exception) { }
                     ((void (*)(id, SEL, id, id))installed.original)(object, outgoingSelector, session, wrap);
+                    @try { [installed.listener finishDirection:observation path:@"outgoing" wrap:wrap]; } @catch (__unused id exception) { }
                     @try { [installed.listener observeOutgoingManager:object session:session wrap:wrap]; } @catch (__unused id exception) { }
                 });
                 if (!class_addMethod(manager, outgoingSelector, replacement, method_getTypeEncoding(outgoingMethod)))
@@ -307,6 +394,8 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
             @"ownTextHookAvailable": @(self.outgoingTap != nil), @"ownTextPending": @(self.pendingOutgoing != nil),
             @"ownTextState": self.ownTextState ?: @"idle",
             @"armedAt": @(self.armedAt), @"lastEventAt": @(self.lastCallbackAt), @"counters": [self.counters copy] ?: @{},
+            @"directionEvidenceSchema": @1, @"directionSampleLimit": @12, @"directionSamples": [self.directionSamples copy] ?: @[],
+            @"directionSamplesDropped": @(self.directionDropped),
             @"textOnlyCandidate": @YES, @"sendingEnabled": @NO, @"problem": self.problem ?: @"", @"methods": methods};
     }
 }
