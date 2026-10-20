@@ -6,12 +6,15 @@
 #import "Core/SRSourceMessage.h"
 #import "Core/SRSourceCapture.h"
 #import "Core/SREntryPreferences.h"
+#import "Core/SRRuntimeLog.h"
+#import "Core/SRVersion.h"
 #import "Adapter/SRWeChatReader.h"
 #import "Adapter/SRWeChatReceiver.h"
 #import "Adapter/SRWeChatSendProbe.h"
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "SRPlanScreens.h"
 #import "SRSettingsFallback.h"
+#import "SRNativeStyle.h"
 #include <errno.h>
 #include <stdlib.h>
 
@@ -45,6 +48,12 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     return count;
 }
 
+// Preserve action dispatch IDs while putting configuration before diagnostics.
+static NSInteger SRPanelSection(NSInteger displayedSection) {
+    static const NSInteger sections[] = {1, 2, 3, 4, 0};
+    return sections[displayedSection];
+}
+
 @interface SRPicker : UITableViewController <UISearchResultsUpdating>
 @property(nonatomic, strong) SRSelection *selection;
 @property(nonatomic, copy) NSArray<NSDictionary *> *visibleRows;
@@ -58,8 +67,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 @implementation SRPicker
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 70;
+    SRStyleSettingsTable(self);
     self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.search.obscuresBackgroundDuringPresentation = NO;
     self.search.searchResultsUpdater = self;
@@ -102,12 +110,10 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(__unused NSInteger)section { return self.note; }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"contact"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"contact"];
+    SRStyleSettingsCell(cell);
     NSDictionary *row = self.visibleRows[indexPath.row];
     cell.textLabel.text = row[@"name"]; cell.textLabel.numberOfLines = 0;
     cell.detailTextLabel.text = row[@"id"]; cell.detailTextLabel.numberOfLines = 0;
-    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-    cell.textLabel.adjustsFontForContentSizeCategory = YES; cell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
     cell.accessoryType = [self.selection isSelected:row[@"id"]] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
     return cell;
 }
@@ -154,8 +160,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"SyncRelay 转发";
-    self.navigationController.navigationBar.prefersLargeTitles = YES;
-    self.tableView.rowHeight = UITableViewAutomaticDimension; self.tableView.estimatedRowHeight = 64;
+    SRStyleSettingsTable(self);
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"保存草稿" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
@@ -207,7 +212,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
 - (void)refresh {
     if ([self.capture.status[@"state"] isEqual:@"waiting"] && ![self.receiver.diagnostics[@"armed"] boolValue]) [self.capture cancel];
     self.navigationItem.rightBarButtonItem.enabled = self.ready;
-    self.navigationItem.prompt = self.dirty ? @"有未保存的修改" : @"0.2.3 · 支持本人文字候选 / 发送未启用";
+    self.navigationItem.prompt = nil;
     [self.tableView reloadData];
 }
 - (void)changed {
@@ -230,81 +235,89 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     if (![self checkAccount]) return;
     NSError *error = nil;
     if (![SRConfiguration validateDraft:self.draft error:&error] || ![self.store saveConfiguration:self.draft account:self.account error:&error]) {
+        [SRRuntimeLog.shared record:@"draft_save_failed" facts:@{@"errorCode": @(error.code)}];
         SRAlert(self, @"保存失败", error.localizedDescription); return;
     }
     self.dirty = NO; [self refresh];
+    [SRRuntimeLog.shared record:@"draft_saved" facts:[self diagnosticDraft]];
     SRAlert(self, @"草稿已保存", @"下次打开会恢复该账号的统一转发条件、排除群和规则分组。保存不会创建发送任务。" );
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 5;
+    section = SRPanelSection(section);
+    if (section == 0) return 7;
     if (section == 1) return 4;
     if (section == 2) return 1;
     if (section == 4) return 3;
     return [self.draft[@"rules"] count] + 3;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @[@"适配状态", @"统一转发条件", @"统一发送节拍", @"自动分组与规则", @"单条内容与计划"][section];
+    return @[@"来源设置", @"发送间隔", @"目标群与规则", @"源消息与计划", @"更多设置"][section];
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return self.status;
-    if (section == 1) return @"所有草稿规则共用母群、发送者和消息类型，只需设置一次。接收为待真机核对的文字候选；图片接收和真实发送未启用。";
-    if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。随机节拍不代表平台允许或保证发送成功。";
-    if (section == 4) return @"手动等待后可关闭面板回母群；支持指定成员（含本人）的文字候选，必须取得服务器消息 ID。不读取历史，不支持图片媒体。本人发送观察仍需真机验证。离开前台/锁屏取消等待；预览确认只建立计划，不发送。";
-    return @"只需搜索并勾选要排除的群，其他群自动按 100/200 个分配。母群和已分配群自动排除；不足按实际数量生成，不建空规则。生成/保存不会发送。";
+    section = SRPanelSection(section);
+    if (section == 0) return [NSString stringWithFormat:@"SyncRelay %@ · 开发版\n%@", SR_PLUGIN_VERSION, self.status ?: @"真实转发未启用"];
+    if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存草稿”。" : @"所有规则共用来源条件；图片采集尚未启用。";
+    if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。";
+    if (section == 4) return @"预览和确认都不会发送；切后台或锁屏会取消等待。";
+    return @"母群自动排除，每条最多 200 群；不足按实际数量分组。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"setting"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"setting"];
+    NSInteger section = SRPanelSection(path.section);
+    BOOL accessible = UIContentSizeCategoryIsAccessibilityCategory(tableView.traitCollection.preferredContentSizeCategory);
+    NSString *reuse = accessible ? @"setting-accessible" : @"setting-value";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuse] ?: [[UITableViewCell alloc]
+        initWithStyle:accessible ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1 reuseIdentifier:reuse];
+    SRStyleSettingsCell(cell);
     cell.accessoryView = nil; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
-    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-    cell.textLabel.adjustsFontForContentSizeCategory = YES; cell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
-    cell.textLabel.textColor = UIColor.labelColor; cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
     cell.detailTextLabel.text = nil; cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    if (path.section == 0) {
-        if (path.row == 0) { cell.textLabel.text = [@"微信 " stringByAppendingString:self.reader.version]; cell.detailTextLabel.text = self.account ?: @"账号 wxid 未读取"; cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleNone; }
-        if (path.row == 1) cell.textLabel.text = @"重新读取账号与草稿";
-        if (path.row == 2) { cell.textLabel.text = @"查看适配诊断"; cell.detailTextLabel.text = @"版本、接口签名及手动观察摘要；不含 wxid、群 ID 或正文"; }
+    if (section == 0) {
+        if (path.row == 0) { cell.textLabel.text = @"微信版本"; cell.detailTextLabel.text = self.reader.version; cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleNone; }
+        if (path.row == 1) { cell.textLabel.text = @"重新读取配置"; cell.detailTextLabel.text = self.ready ? @"已连接" : @"待核对"; }
+        if (path.row == 2) { cell.textLabel.text = @"运行诊断"; cell.detailTextLabel.text = @"只读"; }
         if (path.row == 3) {
             BOOL armed = [self.sendProbe.diagnostics[@"armed"] boolValue];
-            cell.textLabel.text = armed ? @"停止手动发送观察" : @"只读观察一次手动文字发送";
-            cell.detailTextLabel.text = armed ? @"观察中 · 120 秒到期或切后台停止；结果见适配诊断" : @"只选一个测试群，由你手动发文字；插件不代发";
+            cell.textLabel.text = armed ? @"停止发送观察" : @"手动发送观察";
+            cell.detailTextLabel.text = armed ? @"观察中" : @"不代发";
         }
         if (path.row == 4) {
-            cell.textLabel.text = @"开启悬浮入口";
-            cell.detailTextLabel.text = @"默认关闭；始终可从 我 → 设置 → SyncRelay 转发 进入";
+            cell.textLabel.text = @"悬浮入口";
             UISwitch *toggle = [[UISwitch alloc] init]; toggle.on = self.entryPreferences.floatingEntryEnabled;
+            toggle.onTintColor = SRSettingsAccent();
             [toggle addTarget:self action:@selector(floatingEntryChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryType = UITableViewCellAccessoryNone; cell.accessoryView = toggle; cell.selectionStyle = UITableViewCellSelectionStyleNone;
         }
-    } else if (path.section == 1) {
-        if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"选择消息来源群"; }
-        else if (path.row == 1) { cell.textLabel.text = @"指定发送者"; cell.detailTextLabel.text = [NSString stringWithFormat:@"已选 %lu 人 · 查看 wxid", (unsigned long)[self.draft[@"senders"] count]]; }
+        if (path.row == 5) cell.textLabel.text = @"使用说明";
+        if (path.row == 6) cell.textLabel.text = @"导出运行诊断";
+    } else if (section == 1) {
+        if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"未选择"; }
+        else if (path.row == 1) { cell.textLabel.text = @"来源成员"; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 人", (unsigned long)[self.draft[@"senders"] count]]; }
         else {
             NSString *type = path.row == 2 ? @"text" : @"image";
-            cell.textLabel.text = path.row == 2 ? @"允许文字" : @"允许图片";
+            cell.textLabel.text = path.row == 2 ? @"转发文字" : @"转发图片";
             UISwitch *toggle = [[UISwitch alloc] init]; toggle.tag = path.row;
+            toggle.onTintColor = SRSettingsAccent();
             toggle.on = [self.draft[@"types"] containsObject:type]; toggle.enabled = self.ready;
             [toggle addTarget:self action:@selector(typeChanged:) forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = toggle; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryType = UITableViewCellAccessoryNone; cell.accessoryView = toggle; cell.selectionStyle = UITableViewCellSelectionStyleNone;
         }
-    } else if (path.section == 2) {
+    } else if (section == 2) {
         cell.textLabel.text = @"随机间隔";
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@–%@ 秒 / 次", self.draft[@"minimum"], self.draft[@"maximum"]];
-    } else if (path.section == 3) {
+    } else if (section == 3) {
         NSArray *rules = self.draft[@"rules"];
-        if (path.row == 0) { cell.textLabel.text = @"搜索并排除群聊"; cell.detailTextLabel.text = [NSString stringWithFormat:@"手动排除 %lu 个 · 母群始终自动排除", (unsigned long)[self.draft[@"excludedGroups"] count]]; }
-        else if (path.row == 1) { cell.textLabel.text = @"自动分配规则"; cell.detailTextLabel.text = @"设置 100 群/条、200 群/条各生成多少条"; }
-        else if (path.row == 2) { cell.textLabel.text = @"手动选择并分组（可选）"; cell.detailTextLabel.text = @"全选会拆成每条不超过 200 群，不合成大批次"; }
-        else { NSDictionary *rule = rules[path.row - 3]; cell.textLabel.text = rule[@"name"]; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群 · 共用统一条件 · 点击查看或移除", (unsigned long)[rule[@"targets"] count]]; }
+        if (path.row == 0) { cell.textLabel.text = @"排除群聊"; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个", (unsigned long)[self.draft[@"excludedGroups"] count]]; }
+        else if (path.row == 1) { cell.textLabel.text = @"自动分组"; cell.detailTextLabel.text = @"100 / 200 群"; }
+        else if (path.row == 2) cell.textLabel.text = @"手动选择群聊";
+        else { NSDictionary *rule = rules[path.row - 3]; cell.textLabel.text = rule[@"name"]; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群", (unsigned long)[rule[@"targets"] count]]; }
     } else {
         NSString *state = self.capture.status[@"state"];
-        if (path.row == 0) { cell.textLabel.text = [state isEqual:@"waiting"] ? @"取消等待源消息" : @"等待一条母群文字"; cell.detailTextLabel.text = @"先保存草稿，再手动开始等待；不会发送"; }
-        if (path.row == 1) { cell.textLabel.text = @"预览并确认源消息"; cell.detailTextLabel.text = [state isEqual:@"preview"] ? @"已锁定一条 · 使用捕获时的冻结配置，可放弃" : ([state isEqual:@"waiting"] ? @"正在等待匹配的群、wxid 和文字类型" : @"尚无待确认内容"); }
-        if (path.row == 2) { cell.textLabel.text = @"已确认内容计划与历史"; cell.detailTextLabel.text = @"查看规则状态、真实完成时间和异常群；只读"; }
+        if (path.row == 0) { cell.textLabel.text = [state isEqual:@"waiting"] ? @"取消等待" : @"等待源消息"; cell.detailTextLabel.text = [state isEqual:@"waiting"] ? @"等待中" : @"手动开始"; }
+        if (path.row == 1) { cell.textLabel.text = @"源消息预览"; cell.detailTextLabel.text = [state isEqual:@"preview"] ? @"已锁定 1 条" : ([state isEqual:@"waiting"] ? @"等待中" : @"暂无内容"); }
+        if (path.row == 2) { cell.textLabel.text = @"内容计划与历史"; cell.detailTextLabel.text = @"只读"; }
     }
-    if (path.section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
+    if (section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
     return cell;
 }
 - (void)floatingEntryChanged:(UISwitch *)toggle {
@@ -319,7 +332,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     self.draft[@"types"] = types; [self changed];
 }
 - (SRPicker *)picker:(NSString *)title rows:(NSArray *)rows selected:(NSArray *)selected excluded:(NSSet *)excluded multiple:(BOOL)multiple excluding:(BOOL)excluding completion:(void (^)(NSArray *))completion {
-    SRPicker *picker = [[SRPicker alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    SRPicker *picker = [[SRPicker alloc] initWithStyle:UITableViewStyleGrouped];
     picker.title = title; picker.multiple = multiple; picker.excluding = excluding;
     NSString *note = [self.reader.warnings componentsJoinedByString:@"\n"];
     picker.note = excluding ? [@"勾选＝排除。可按群名或原始 ID 搜索；批量菜单支持排除/恢复搜索结果。应用后从草稿规则移除相应群；不会修改已有执行记录。\n" stringByAppendingString:note] : note;
@@ -335,16 +348,23 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     __weak typeof(self) weakSelf = self;
     [self picker:@"选择母群" rows:groups selected:@[] excluded:NSSet.set multiple:NO excluding:NO completion:^(NSArray *chosen) {
         if ([chosen[0][@"id"] isEqual:weakSelf.draft[@"sourceGroup"][@"id"]]) return;
+        NSDictionary *snapshot = [SRSourceMessage frozenJSON:weakSelf.draft]; NSString *account = weakSelf.account;
+        NSError *error = nil;
+        NSDictionary *candidate = [SRGroupPlanner configurationBySettingSourceGroup:chosen[0] inDraft:snapshot error:&error];
+        if (!candidate) { SRAlert(weakSelf, @"无法更换母群", error.localizedDescription); return; }
         void (^apply)(void) = ^{
+            if (![weakSelf checkDraft:snapshot account:account]) return;
             [weakSelf.receiver stop]; [weakSelf.capture cancel];
-            weakSelf.draft[@"sourceGroup"] = chosen[0]; weakSelf.draft[@"senders"] = @[]; weakSelf.draft[@"rules"] = @[];
+            weakSelf.draft = [candidate mutableCopy];
+            [SRRuntimeLog.shared record:@"source_changed" facts:@{@"removedTargets": @(SRTargetCount(snapshot) - SRTargetCount(candidate)),
+                @"ruleCount": @([candidate[@"rules"] count])}];
             [weakSelf changed]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
         };
         if ([weakSelf.draft[@"rules"] count] || [weakSelf.draft[@"senders"] count]) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"更换母群？" message:@"将清空当前发送者和目标分组，并取消未确认的捕获，避免沿用错误来源。已有内容计划和保存前的旧草稿不变。" preferredStyle:UIAlertControllerStyleAlert];
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"更换母群？" message:@"保留目标规则，并从目标中自动移除新母群；空规则会删除。来源成员需重新选择，未确认的捕获会取消。选好成员并保存后即可重新等待；已有内容计划不变。" preferredStyle:UIAlertControllerStyleAlert];
                 [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-                [alert addAction:[UIAlertAction actionWithTitle:@"更换并清空" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) { apply(); }]];
+                [alert addAction:[UIAlertAction actionWithTitle:@"更换母群" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { apply(); }]];
                 [weakSelf presentViewController:alert animated:YES completion:nil];
             });
         } else apply();
@@ -508,24 +528,81 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
-- (void)showDiagnostics {
+- (NSDictionary *)diagnosticDraft {
+    BOOL includesSelf = NO;
+    for (NSDictionary *sender in self.draft[@"senders"]) if ([sender[@"id"] isEqual:self.account]) includesSelf = YES;
+    return @{@"sourceSelected": @([self.draft[@"sourceGroup"] count] > 0), @"senderCount": @([self.draft[@"senders"] count]),
+        @"ruleCount": @([self.draft[@"rules"] count]), @"targetCount": @(SRTargetCount(self.draft)), @"includesSelf": @(includesSelf),
+        @"textEnabled": @([self.draft[@"types"] containsObject:@"text"]), @"imageEnabled": @([self.draft[@"types"] containsObject:@"image"]),
+        @"dirty": @(self.dirty)};
+}
+- (NSDictionary *)diagnosticReport {
     NSMutableDictionary *report = [[self.reader diagnostics] mutableCopy];
+    report[@"reportSchema"] = @1;
+    report[@"generatedAt"] = @([NSDate.date timeIntervalSince1970]);
+    report[@"build"] = @{@"plugin": SR_PLUGIN_VERSION, @"commit": SR_BUILD_COMMIT, @"ciRun": SR_BUILD_RUN, @"sendingEnabled": @NO};
     report[@"settingsEntry"] = self.settingsEntry.diagnostics;
     report[@"settingsFooterRecoveryActive"] = @(self.settingsFooterActive);
     report[@"storageReady"] = @(self.store != nil);
     report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
+    report[@"sourceCapture"] = self.capture.diagnostics ?: @{@"state": @"unavailable"};
+    report[@"draftSummary"] = [self diagnosticDraft];
+    report[@"runtimeLog"] = SRRuntimeLog.shared.snapshot;
     report[@"manualSendObservation"] = self.sendProbe.diagnostics;
     report[@"iOS"] = UIDevice.currentDevice.systemVersion;
     report[@"wechatBuild"] = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown";
+    return report;
+}
+- (void)exportDiagnosticFromController:(UIViewController *)controller {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:[self diagnosticReport] options:NSJSONWritingPrettyPrinted error:NULL];
+    NSString *name = [NSString stringWithFormat:@"SyncRelay-diagnostic-%@.json", NSUUID.UUID.UUIDString];
+    NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
+    NSError *error = nil;
+    if (!data || ![data writeToURL:url options:NSDataWritingAtomic | NSDataWritingFileProtectionComplete error:&error]) {
+        SRAlert(controller, @"诊断导出失败", @"无法写入临时诊断文件，请重试；现有配置未改变。"); return;
+    }
+    [SRRuntimeLog.shared record:@"export_created" facts:@{}];
+    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+    share.popoverPresentationController.sourceView = controller.view;
+    share.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(controller.view.bounds), CGRectGetMidY(controller.view.bounds), 1, 1);
+    [controller presentViewController:share animated:YES completion:nil];
+}
+- (void)showDiagnostics {
+    NSDictionary *report = [self diagnosticReport];
     NSString *text = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:NULL] encoding:NSUTF8StringEncoding];
-    UIViewController *viewer = [[UIViewController alloc] init]; viewer.title = @"适配诊断";
+    UIViewController *viewer = [[UIViewController alloc] init]; viewer.title = @"运行诊断";
+    SRStyleSettingsController(viewer);
     UITextView *view = [[UITextView alloc] init]; view.editable = NO; view.text = text;
     view.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody]; view.adjustsFontForContentSizeCategory = YES;
+    view.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
     view.backgroundColor = UIColor.systemBackgroundColor; viewer.view = view;
-    viewer.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:[UIAction actionWithTitle:@"复制" image:nil identifier:nil handler:^(__unused UIAction *action) {
+    UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithPrimaryAction:[UIAction actionWithTitle:@"复制" image:nil identifier:nil handler:^(__unused UIAction *action) {
         UIPasteboard.generalPasteboard.string = text;
     }]];
+    __weak typeof(self) weakSelf = self; __weak UIViewController *weakViewer = viewer;
+    UIBarButtonItem *export = [[UIBarButtonItem alloc] initWithPrimaryAction:[UIAction actionWithTitle:@"导出" image:nil identifier:nil handler:^(__unused UIAction *action) {
+        UIViewController *owner = weakViewer; if (owner) [weakSelf exportDiagnosticFromController:owner];
+    }]];
+    viewer.navigationItem.rightBarButtonItems = @[export, copy];
+    [self.navigationController pushViewController:viewer animated:YES];
+}
+- (void)showUsage {
+    UIViewController *viewer = [[UIViewController alloc] init]; viewer.title = @"使用说明";
+    SRStyleSettingsController(viewer);
+    UITextView *view = [[UITextView alloc] init]; view.editable = NO;
+    view.font = SRSettingsFont(17, UIFontTextStyleBody); view.adjustsFontForContentSizeCategory = YES;
+    view.textColor = UIColor.labelColor; view.backgroundColor = SRSettingsCellBackground();
+    view.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
+    view.text = @"当前版本\n这是开发测试版，真实转发尚未启用。保存草稿、预览或确认内容都不会向目标群发送消息。\n\n"
+        @"来源条件\n所有草稿规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片选项仅保存配置，图片采集尚未启用。\n\n"
+        @"群聊与分组\n母群和已分配群自动排除。只需搜索并排除不想转发的群，再按每条 100 或 200 群自动分组；数量不足按实际生成，不建空规则。手动全选也会拆分为每条最多 200 群。\n\n"
+        @"等待源消息\n先保存草稿，再手动开始等待。关闭面板回母群，由指定成员或本人发一条文字；须取得服务器消息 ID 才进入预览。本人候选最多等待确认 30 秒，不用临时本地 ID 替代。\n\n"
+        @"预览与计划\n第一条匹配内容锁定后停止等待。核对母群、发送者 wxid、类型和完整正文再确认；候选可能包含离线补同步，不能只凭回调时间判断新旧。确认只建立计划，不开始执行任何规则。\n\n"
+        @"暂停采集\n切后台、锁屏或账号改变会取消等待，回前台不自动重启。预览未确认前只保留在内存，退出微信后需重新捕获；已确认计划与历史独立于草稿。\n\n"
+        @"间隔与发送观察\n随机间隔下限至少 10 秒，上下限相同为固定间隔；随机节拍和小批次不保证平台允许或发送成功。手动发送观察只记录一个测试群的元数据，需你回微信手动发送，120 秒到期或切后台停止，不代发、不读取正文、不判定送达。\n\n"
+        @"入口与诊断\n主入口始终是“我 → 设置 → SyncRelay 转发”。悬浮入口默认关闭，可自行开启。诊断包含版本、接口签名及脱敏观察摘要，不含账号 wxid、群 ID、消息 ID 或正文。所有采集候选及页面表现仍需真机验证。";
+    viewer.view = view;
     [self.navigationController pushViewController:viewer animated:YES];
 }
 - (void)beginSendProbe {
@@ -566,50 +643,60 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier]) animated:YES];
 }
 - (void)beginCapture {
+    [SRRuntimeLog.shared record:@"capture_attempt" facts:[self diagnosticDraft]];
     if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { SRAlert(self, @"请先停止手动发送观察", @"两种诊断分开进行；停止观察不会发送或修改规则。"); return; }
     NSString *state = self.capture.status[@"state"];
     if ([state isEqual:@"waiting"]) {
         [self.receiver stop]; [self.capture cancel];
+        [SRRuntimeLog.shared record:@"capture_cancelled" facts:@{}];
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; return;
     }
     if ([state isEqual:@"preview"]) { [self showCapture]; return; }
-    if (self.dirty) { SRAlert(self, @"请先保存草稿", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
-    if (![self.draft[@"types"] containsObject:@"text"]) { SRAlert(self, @"图片捕获尚未开放", @"当前候选只能核对文字，不能猜测图片媒体路径。图片配置会保留，但本轮不能仅等待图片。"); return; }
+    if (self.dirty) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @1}]; SRAlert(self, @"请先保存草稿", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
+    if (![self.draft[@"types"] containsObject:@"text"]) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @2}]; SRAlert(self, @"图片捕获尚未开放", @"当前候选只能核对文字，不能猜测图片媒体路径。图片配置会保留，但本轮不能仅等待图片。"); return; }
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群文字？" message:@"仅观察指定母群和 wxid，锁定第一条具有服务器消息 ID 的匹配文字后停止，支持本人作为来源。候选尚未真机验证，可能包含离线补同步，请核对预览；切后台会取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         if (![self checkDraft:snapshot account:account]) return;
         NSError *error = nil;
-        if (![self.capture armForAccount:account configuration:snapshot error:&error]) { SRAlert(self, @"无法开始等待", error.localizedDescription); return; }
+        if (![self.capture armForAccount:account configuration:snapshot error:&error]) {
+            [SRRuntimeLog.shared record:@"capture_arm_failed" facts:@{@"errorCode": @(error.code)}];
+            SRAlert(self, @"还不能开始等待", error.localizedDescription); return;
+        }
         if (![self.receiver armForAccount:account sourceGroup:snapshot[@"sourceGroup"][@"id"] error:&error]) {
+            [SRRuntimeLog.shared record:@"capture_arm_failed" facts:@{@"errorCode": @(error.code)}];
             [self.capture cancel]; SRAlert(self, @"接收候选不可用", error.localizedDescription); return;
         }
+        [SRRuntimeLog.shared record:@"capture_started" facts:[self diagnosticDraft]];
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
     }]];
     SRPresentAlert(self, alert);
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
-    if (path.section == 0) {
+    NSInteger section = SRPanelSection(path.section);
+    if (section == 0) {
         if (path.row == 1) {
             if (self.dirty) { SRAlert(self, @"有未保存的修改", @"请先保存，或关闭并放弃修改后重新打开。"); return; }
             [self loadAccount];
         }
         if (path.row == 2) [self showDiagnostics];
         if (path.row == 3) [self beginSendProbe];
+        if (path.row == 5) [self showUsage];
+        if (path.row == 6) [self exportDiagnosticFromController:self];
         return;
     }
     if (![self checkAccount]) return;
-    if (path.section == 1 && path.row == 0) [self chooseSource];
-    if (path.section == 1 && path.row == 1) [self chooseSenders];
-    if (path.section == 2) [self editInterval];
-    if (path.section == 4) {
+    if (section == 1 && path.row == 0) [self chooseSource];
+    if (section == 1 && path.row == 1) [self chooseSenders];
+    if (section == 2) [self editInterval];
+    if (section == 4) {
         if (path.row == 0) [self beginCapture];
         if (path.row == 1) [self showCapture];
         if (path.row == 2) [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, [self planVerifier]) animated:YES];
     }
-    if (path.section == 3) {
+    if (section == 3) {
         if (path.row == 0) [self chooseExclusions];
         else if (path.row == 1) [self autoGroup];
         else if (path.row == 2) [self addRule];
@@ -665,9 +752,11 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
         } received:^(NSDictionary *message) {
             SREntry *entry = weakSelf;
             if ([entry.capture offerEnvelope:message]) {
+                [SRRuntimeLog.shared record:@"capture_accepted" facts:@{}];
                 [entry.receiver stop]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
-            }
+            } else [SRRuntimeLog.shared record:@"capture_rejected" facts:@{@"reasonCode": entry.capture.diagnostics[@"lastReasonCode"] ?: @0}];
         }];
+    self.receiver.trace = ^(NSString *event, NSDictionary *facts) { [SRRuntimeLog.shared record:event facts:facts]; };
     self.sendProbe = [[SRWeChatSendProbe alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
         currentAccount:^NSString * {
             SREntry *entry = weakSelf; if (!entry) return nil;
@@ -725,7 +814,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     }
     while (presenter.presentedViewController) presenter = presenter.presentedViewController;
     if (!presenter || presenter.isBeingDismissed || presenter.isBeingPresented || [presenter isKindOfClass:UIAlertController.class]) return;
-    SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleInsetGrouped]; panel.store = self.store;
+    SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleGrouped]; panel.store = self.store;
     panel.capture = self.capture; panel.receiver = self.receiver;
     panel.sendProbe = self.sendProbe;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
@@ -733,6 +822,8 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     __weak typeof(self) weakSelf = self;
     panel.didClose = ^{ weakSelf.presented = nil; [weakSelf install]; };
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:panel];
+    UINavigationController *hostNavigation = [presenter isKindOfClass:UINavigationController.class] ? (UINavigationController *)presenter : presenter.navigationController;
+    SRStyleSettingsNavigation(navigation, hostNavigation);
     navigation.modalPresentationStyle = UIModalPresentationFullScreen;
     self.presented = navigation;
     self.button.hidden = YES;
@@ -743,6 +834,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     else dispatch_async(dispatch_get_main_queue(), ^{ [self install]; });
 }
 - (void)resigningActive:(__unused NSNotification *)notification {
+    [SRRuntimeLog.shared record:@"inactive" facts:@{}];
     [self.sendProbe cancelForInactivity];
     [self.receiver stop];
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) [self.capture cancel];

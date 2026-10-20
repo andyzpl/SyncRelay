@@ -25,11 +25,11 @@ for arch in ('arm64', 'arm64e'):
     for file in ('Core/SRStore.m', 'Core/SRConfiguration.m', 'Core/SRSelection.m', 'Core/SRGroupPlanner.m',
                  'Core/SRSourceMessage.m', 'Core/SRSourceCapture.m', 'Core/SRRunner.m',
                  'Adapter/SRRuntime.m', 'Adapter/SRWeChatReader.m', 'Adapter/SRWeChatReceiver.m', 'Adapter/SRWeChatSendProbe.m',
-                 'Adapter/SRWeChatSettingsEntry.m', 'Core/SREntryPreferences.m',
+                 'Adapter/SRWeChatSettingsEntry.m', 'Core/SREntryPreferences.m', 'Core/SRRuntimeLog.m',
                  'UI/SRPanel.m', 'UI/SRPlanScreens.m', 'UI/SRSettingsFallback.m',
                  'Tweak/SRBootstrap.m', 'tests/store_test.m', 'tests/adapter_test.m',
                  'tests/relay_pipeline_test.m', 'tests/group_planner_test.m',
-                 'tests/receive_test.m', 'tests/plan_queries_test.m', 'tests/send_probe_test.m', 'tests/settings_entry_test.m'):
+                 'tests/receive_test.m', 'tests/plan_queries_test.m', 'tests/send_probe_test.m', 'tests/settings_entry_test.m', 'tests/runtime_log_test.m'):
         unit = index.parse(str(root / file), args=flags)
         diagnostics = [str(d) for d in unit.diagnostics]
         passed = not any(d.severity >= cindex.Diagnostic.Warning for d in unit.diagnostics)

@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import "Core/SRStore.h"
 #import "UI/SRPanel.h"
+#import "Core/SRRuntimeLog.h"
+#import "Core/SRVersion.h"
 
 /* Manual receive candidate/settings entry. No private send API or automatic execution. */
 static SRStore *SRRepository;
@@ -23,6 +25,7 @@ __attribute__((constructor)) static void SRInitialize(void) {
                     SRShowSettings(nil);
                     return;
                 }
+                [SRRuntimeLog.shared enablePersistenceAtPath:[[directory URLByAppendingPathComponent:@"runtime-log.json"] path]];
                 SRRepository = [[SRStore alloc] initWithPath:[[directory URLByAppendingPathComponent:@"relay.sqlite3"] path] error:&error];
                 if (!SRRepository || ![SRRepository recoverInterruptedRuns:&error]) {
                     NSLog(@"[SyncRelay] Recovery failed; sender disabled.");
@@ -30,7 +33,8 @@ __attribute__((constructor)) static void SRInitialize(void) {
                     return;
                 }
                 SRShowSettings(SRRepository);
-                NSLog(@"[SyncRelay] 0.2.2 initialized. Native settings entry is guarded; floating entry is opt-in. Sending is disabled.");
+                [SRRuntimeLog.shared record:@"boot" facts:@{@"storageReady": @YES}];
+                NSLog(@"[SyncRelay] %@ initialized. Native settings entry is guarded; sending is disabled.", SR_PLUGIN_VERSION);
             }
         });
     }

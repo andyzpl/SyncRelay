@@ -26,6 +26,25 @@ static void SRGroupingError(NSError **error, id reason) {
 }
 
 @implementation SRGroupPlanner
++ (NSDictionary *)configurationBySettingSourceGroup:(NSDictionary *)group inDraft:(NSDictionary *)draft error:(NSError **)error {
+    @try {
+        NSDictionary *snapshot = [SRSourceMessage frozenJSON:draft];
+        if (![SRConfiguration validateDraft:snapshot error:NULL] || !SRGroupRow(group)) @throw @"Invalid source group or draft";
+        if ([snapshot[@"sourceGroup"][@"id"] isEqual:group[@"id"]]) return snapshot;
+        NSMutableDictionary *candidate = [snapshot mutableCopy];
+        candidate[@"sourceGroup"] = group; candidate[@"senders"] = @[];
+        NSMutableArray *rules = [NSMutableArray array];
+        for (NSDictionary *rule in snapshot[@"rules"]) {
+            NSMutableArray *targets = [NSMutableArray array];
+            for (NSDictionary *target in rule[@"targets"]) if (![target[@"id"] isEqual:group[@"id"]]) [targets addObject:target];
+            if (!targets.count) continue;
+            NSMutableDictionary *updated = [rule mutableCopy]; updated[@"targets"] = targets; [rules addObject:updated];
+        }
+        candidate[@"rules"] = rules;
+        if (![SRConfiguration validateDraft:candidate error:NULL]) @throw @"Source change would create an invalid draft";
+        return [SRSourceMessage frozenJSON:candidate];
+    } @catch (id reason) { SRGroupingError(error, reason); return nil; }
+}
 + (NSDictionary *)previewWithRows:(NSArray<NSDictionary *> *)rows draft:(NSDictionary *)draft
                           recipe:(NSArray<NSDictionary *> *)recipe error:(NSError **)error {
     @try {

@@ -60,6 +60,18 @@ int main(void) {
         NSMutableDictionary *conflicting = [candidate mutableCopy];
         conflicting[@"sourceGroup"] = candidate[@"rules"][0][@"targets"][0];
         CHECK(![SRConfiguration validateDraft:conflicting error:NULL]);
+        NSDictionary *changed = [SRGroupPlanner configurationBySettingSourceGroup:candidate[@"rules"][0][@"targets"][0]
+            inDraft:candidate error:NULL];
+        CHECK(changed && targetIDs(changed).count == 2999 && [changed[@"senders"] count] == 0);
+        CHECK([changed[@"rules"] count] == 20 && [candidate[@"senders"] count] == 2);
+        CHECK(![targetIDs(changed) containsObject:changed[@"sourceGroup"][@"id"]]);
+        NSDictionary *same = [SRGroupPlanner configurationBySettingSourceGroup:candidate[@"sourceGroup"] inDraft:candidate error:NULL];
+        CHECK([same isEqual:candidate]);
+        NSMutableDictionary *oneTarget = draft();
+        oneTarget[@"rules"] = @[@{@"id": @"single", @"name": @"Single", @"targets": @[group(0)]}];
+        NSDictionary *emptied = [SRGroupPlanner configurationBySettingSourceGroup:group(0) inDraft:oneTarget error:NULL];
+        CHECK(emptied && [emptied[@"rules"] count] == 0 && [emptied[@"senders"] count] == 0);
+        CHECK(![SRGroupPlanner configurationBySettingSourceGroup:@{@"id": @"wxid_not_group", @"name": @"Invalid"} inDraft:candidate error:NULL]);
         for (NSUInteger i = 0; i < 20; i++) CHECK([candidate[@"rules"][i][@"targets"] count] == (i < 10 ? 100 : 200));
         for (NSString *key in @[@"sourceGroup", @"senders", @"types", @"minimum", @"maximum"])
             CHECK([candidate[key] isEqual:original[key]]);

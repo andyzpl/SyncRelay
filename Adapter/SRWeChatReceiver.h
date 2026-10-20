@@ -2,6 +2,7 @@
 NS_ASSUME_NONNULL_BEGIN
 /* Read-only, manually armed candidate. No send API and no guessed image path. */
 @interface SRWeChatReceiver : NSObject
+@property(nonatomic, copy, nullable) void (^trace)(NSString *event, NSDictionary *facts);
 - (instancetype)initWithVersion:(NSString *)version classResolver:(Class _Nullable (^)(NSString *))resolver
                 currentAccount:(NSString * _Nullable (^)(void))currentAccount
                       received:(void (^)(NSDictionary *))received;

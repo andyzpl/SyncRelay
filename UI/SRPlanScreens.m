@@ -1,4 +1,5 @@
 #import "SRPlanScreens.h"
+#import "SRNativeStyle.h"
 #import "Core/SRStore.h"
 #import "Core/SRSourceCapture.h"
 
@@ -35,10 +36,12 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 - (void)loadView {
     UITextView *text = [[UITextView alloc] init]; text.editable = NO;
     text.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody]; text.adjustsFontForContentSizeCategory = YES;
-    text.backgroundColor = UIColor.systemBackgroundColor; self.view = text;
+    text.textColor = UIColor.labelColor; text.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
+    text.backgroundColor = SRSettingsCellBackground(); self.view = text;
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
+    SRStyleSettingsController(self);
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(resigningActive:) name:UIApplicationWillResignActiveNotification object:nil];
 }
@@ -72,7 +75,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 @implementation SRRecordScreen
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.tableView.rowHeight = UITableViewAutomaticDimension; self.tableView.estimatedRowHeight = 76;
+    SRStyleSettingsTable(self);
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
@@ -148,10 +151,8 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"record"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"record"];
+    SRStyleSettingsCell(cell);
     cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
-    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody]; cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-    cell.textLabel.adjustsFontForContentSizeCategory = YES; cell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
-    cell.textLabel.textColor = UIColor.labelColor; cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil; cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     if (self.problem) { cell.textLabel.text = self.problem; return cell; }
@@ -208,7 +209,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     return cell;
 }
 - (SRRecordScreen *)screen:(SRRecordKind)kind identifier:(NSString *)identifier title:(NSString *)title {
-    SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.kind = kind; screen.store = self.store; screen.account = self.account; screen.verifyAccount = self.verifyAccount;
     screen.identifier = identifier; screen.title = title; return screen;
 }
@@ -244,12 +245,12 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 @end
 
 UIViewController *SRCreateCapturePreview(SRStore *store, SRSourceCapture *capture, NSString *account, BOOL (^verifyAccount)(void)) {
-    SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.kind = SRRecordPreview; screen.store = store; screen.capture = capture; screen.account = account;
     screen.verifyAccount = verifyAccount; screen.title = @"单条源消息预览"; return screen;
 }
 UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void)) {
-    SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.kind = SRRecordPlans; screen.store = store; screen.account = account;
     screen.verifyAccount = verifyAccount; screen.title = @"已确认内容计划"; return screen;
 }

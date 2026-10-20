@@ -52,12 +52,19 @@ int main(void) {
         NSString *path = [directory stringByAppendingPathComponent:@"pipeline.sqlite3"];
         SRStore *store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store);
         SRSourceCapture *capture = [[SRSourceCapture alloc] initWithStore:store];
+        NSMutableDictionary *incomplete = configuration(1); incomplete[@"senders"] = @[];
+        NSError *readiness = nil;
+        CHECK(![capture armForAccount:@"account" configuration:incomplete error:&readiness] && readiness.code == 14);
+        incomplete = configuration(1); incomplete[@"rules"] = @[];
+        CHECK(![capture armForAccount:@"account" configuration:incomplete error:&readiness] && readiness.code == 15);
         NSMutableDictionary *draft = configuration(2000);
         CHECK([capture armForAccount:@"account" configuration:draft error:NULL]);
         draft[@"types"] = @[@"image"]; // Armed configuration is a deep immutable snapshot.
         for (NSString *key in @[@"account", @"group", @"sender", @"type"]) {
             NSMutableDictionary *wrong = message(@"message1"); wrong[key] = @"wrong"; CHECK(![capture offerEnvelope:wrong]);
         }
+        CHECK([capture.diagnostics[@"rejected"] isEqual:@4]);
+        CHECK(![capture.diagnostics.description containsString:@"wxid_sender"]);
         NSMutableDictionary *generated = message(@"message1"); generated[@"generatedByRelay"] = @YES; CHECK(![capture offerEnvelope:generated]);
         [generated removeObjectForKey:@"generatedByRelay"]; CHECK(![capture offerEnvelope:generated]);
         NSMutableDictionary *source = message(@"message1"); CHECK([capture offerEnvelope:source]);

@@ -27,6 +27,7 @@ jobs:
       - name: Test production core on macOS
         run: |
           set -euo pipefail
+          python3 -m unittest discover -s tests -p '*_test.py'
           clang -std=c11 -Wall -Wextra -Werror -I. Core/SRPacing.c tests/pacing_test.c -o "$RUNNER_TEMP/pacing-test"
           "$RUNNER_TEMP/pacing-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/store-test"
@@ -37,6 +38,7 @@ jobs:
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRPacing.c tests/plan_queries_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/plan-queries-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatSendProbe.m tests/send_probe_test.m -framework Foundation -o "$RUNNER_TEMP/send-probe-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatSettingsEntry.m Core/SREntryPreferences.m tests/settings_entry_test.m -framework Foundation -o "$RUNNER_TEMP/settings-entry-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRRuntimeLog.m tests/runtime_log_test.m -framework Foundation -o "$RUNNER_TEMP/runtime-log-test"
           for pass in 1 2 3; do
             "$RUNNER_TEMP/store-test"
             "$RUNNER_TEMP/adapter-test"
@@ -46,6 +48,7 @@ jobs:
             "$RUNNER_TEMP/plan-queries-test"
             "$RUNNER_TEMP/send-probe-test"
             "$RUNNER_TEMP/settings-entry-test"
+            "$RUNNER_TEMP/runtime-log-test"
           done
       - name: Install build tools
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
@@ -74,6 +77,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         run: |
           set -euo pipefail
+          printf '#define SR_BUILD_COMMIT @"%s"\n#define SR_BUILD_RUN @"%s"\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > Core/SRBuildRevision.h
           make package FINALPACKAGE=1 DEBUG=0
       - name: Verify package contents
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb

@@ -109,6 +109,8 @@ int main(void) {
             }];
         };
         SRWeChatReceiver *receiver = makeReceiver(@"8.0.79", ReceiveManager.class); weakReceiver = receiver;
+        NSMutableArray *trace = [NSMutableArray array];
+        receiver.trace = ^(NSString *event, __unused NSDictionary *facts) { [trace addObject:event]; };
         ReceiveManager *manager = [[ReceiveManager alloc] init];
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump(); CHECK(manager.calls == 1 && !received.count);
         CHECK(![makeReceiver(@"8.0.80", ReceiveManager.class) armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
@@ -235,6 +237,8 @@ int main(void) {
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.2, false);
         CHECK(!capture.preview && ![receiver.diagnostics[@"ownTextPending"] boolValue]);
         CHECK([receiver.diagnostics[@"ownTextState"] isEqual:@"conflict"]);
+        CHECK([receiver.diagnostics[@"counters"][@"own_conflict"] isEqual:@1]);
+        CHECK([trace containsObject:@"own_readback"] && [trace containsObject:@"own_conflict"]);
         own.m_nsContent = @"original message"; manager.stored = nil;
         // Optional observation catches arbitrary Objective-C objects, but never host exceptions.
         ThrowingReceiveWrap *throwing = [[ThrowingReceiveWrap alloc] init];
