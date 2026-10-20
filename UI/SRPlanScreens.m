@@ -27,6 +27,33 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     [controller presentViewController:alert animated:YES completion:nil];
 }
 
+@interface SRSourceTextScreen : UIViewController
+@property(nonatomic, copy) NSString *body;
+@property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@end
+@implementation SRSourceTextScreen
+- (void)loadView {
+    UITextView *text = [[UITextView alloc] init]; text.editable = NO;
+    text.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody]; text.adjustsFontForContentSizeCategory = YES;
+    text.backgroundColor = UIColor.systemBackgroundColor; self.view = text;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(resigningActive:) name:UIApplicationWillResignActiveNotification object:nil];
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reloadText]; }
+- (void)becameActive:(__unused NSNotification *)notification { if (self.viewIfLoaded.window) [self reloadText]; }
+- (void)resigningActive:(__unused NSNotification *)notification { ((UITextView *)self.viewIfLoaded).text = @""; }
+- (void)reloadText {
+    BOOL verified = NO;
+    @try { verified = self.verifyAccount && self.verifyAccount(); } @catch (__unused NSException *exception) { }
+    if (!verified) self.body = nil;
+    ((UITextView *)self.view).text = self.body ?: @"当前账号无法核对或已经改变，源消息内容已隐藏。请返回设置重新读取账号。";
+}
+@end
+
 @interface SRRecordScreen : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRSourceCapture *capture;
@@ -190,12 +217,9 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     if (![self verified] || self.problem) return;
     if ((self.kind == SRRecordPreview || self.kind == SRRecordPlan) && path.section == 0) {
         if (path.row == 4) {
-            UIViewController *viewer = [[UIViewController alloc] init]; viewer.title = @"源消息内容";
-            UITextView *text = [[UITextView alloc] init]; text.editable = NO;
-            text.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody]; text.adjustsFontForContentSizeCategory = YES;
-            text.backgroundColor = UIColor.systemBackgroundColor;
-            text.text = [self sourceText];
-            viewer.view = text; [self.navigationController pushViewController:viewer animated:YES];
+            SRSourceTextScreen *viewer = [[SRSourceTextScreen alloc] init]; viewer.title = @"源消息内容";
+            viewer.body = [self sourceText]; viewer.verifyAccount = self.verifyAccount;
+            [self.navigationController pushViewController:viewer animated:YES];
         }
         return;
     }

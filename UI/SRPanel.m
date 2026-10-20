@@ -496,7 +496,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     };
 }
 - (void)showCapture {
-    if (![self.capture.status[@"state"] isEqual:@"preview"]) { SRAlert(self, @"还没有源消息预览", @"请先手动开始等待，再由指定成员在母群发送一条新文字。"); return; }
+    if (![self.capture.status[@"state"] isEqual:@"preview"]) { SRAlert(self, @"还没有源消息预览", @"请先手动开始等待，再由指定成员在母群发送一条文字并核对预览。"); return; }
     [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier]) animated:YES];
 }
 - (void)beginCapture {
@@ -512,7 +512,7 @@ static NSUInteger SRTargetCount(NSDictionary *draft) {
     for (NSDictionary *sender in self.draft[@"senders"]) if (![sender[@"id"] isEqual:self.account]) otherSender = YES;
     if (!otherSender) { SRAlert(self, @"请选择母群的其他来源成员", @"当前接收候选不把本人发送或回显当作收到的新消息。请先核对来源 wxid。"); return; }
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条新文字？" message:@"仅观察指定母群和 wxid，锁定第一条符合条件的新文字后停止。接收候选尚未真机验证；切后台会取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群文字？" message:@"仅观察指定母群和 wxid，锁定进入接收回调的第一条匹配文字后停止。候选尚未真机验证，可能包含离线补同步，请核对预览；切后台会取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         if (![self checkDraft:snapshot account:account]) return;
