@@ -63,7 +63,7 @@ jobs:
           test -f "$dylib"
           test -f "$RUNNER_TEMP/package-check/Library/MobileSubstrate/DynamicLibraries/SyncRelay.plist"
           lipo -info "$dylib"
-          lipo -verify_arch arm64 arm64e "$dylib"
+          lipo "$dylib" -verify_arch arm64 arm64e
           otool -L "$dylib"
           cp "$deb" dist/
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
@@ -73,4 +73,3 @@ jobs:
           name: SyncRelay-development-deb
           path: dist/
           if-no-files-found: error
-

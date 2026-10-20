@@ -15,4 +15,3 @@ bool SRPacingSubmitted(SRPacing *pacing, double monotonic_now, double unit_rando
 /* Resume waits a fresh interval; it never catches up missed ticks. */
 bool SRPacingResume(SRPacing *pacing, double monotonic_now, double unit_random);
 #endif
-

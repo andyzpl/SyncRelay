@@ -26,4 +26,3 @@ bool SRPacingSubmitted(SRPacing *p, double now, double random) {
 bool SRPacingResume(SRPacing *p, double now, double random) {
     return SRPacingSubmitted(p, now, random);
 }
-

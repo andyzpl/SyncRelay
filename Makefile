@@ -13,4 +13,3 @@ SyncRelay_FRAMEWORKS = Foundation UIKit
 SyncRelay_LIBRARIES = sqlite3
 
 include $(THEOS_MAKE_PATH)/tweak.mk
-

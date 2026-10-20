@@ -33,4 +33,3 @@ int main(void) {
     puts("PASS: pacing bounds, fixed intervals, resume and 2000 samples");
     return 0;
 }
-
