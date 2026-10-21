@@ -23,7 +23,7 @@
 
 结果：`completedModel=true`，终点 `0x3652d90`，0 次导入调用、0 次注册、0 次 Objective-C 消息调用，字符串为 `CMessageWrap`。此模式只执行限定的本地字符串解码指令；二进制哈希、镜像、指令数及时间仍有限制。它不验证任何手机运行行为。
 
-本地忽略目录证据：`analysis/reports/offline-image-strings-3652694.json`、`analysis/reports/disasm-3651f00.txt`、`analysis/reports/disasm-3653430.txt`。原包、报告和逆向依赖不提交私有库。
+本地忽略目录证据：`analysis/reports/offline-image-strings-3652694.json`、`analysis/reports/disasm-3651f00.txt`、`analysis/reports/disasm-3653430.txt`。原包、原始报告和逆向依赖不提交仓库，无论仓库是私有还是公开。
 
 ## SyncRelay 的独立实现
 

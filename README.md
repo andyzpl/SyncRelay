@@ -8,7 +8,9 @@
 
 0.2.15 新增“图片发送接口检查（不发送）”：只分配一条未发送 type-3 消息，核对图片扩展 getter 与两种 setter 的真实 ABI。没有图片写入、消息服务或发送调用、不占文字实验次数；图片实发/批量/重试仍关闭。步骤见 `docs/DEVICE-CHECK-0.2.15.md`，离线接收者/参数证据见 `docs/MIKOTO-IMAGE-EVIDENCE.md`。本地 43 项 Python 与 74 项双架构语法通过；构建/包身份以本轮实际结果单独记录。
 
-**0.2.15 尚无安装包**：私有 Actions run `39549098574`（源码 `0139ee7c7e2d56ed5fb5341f0ed1d29969001070`）因 GitHub 账号计费门禁失败；原生测试、编译和打包步骤均未启动，不是编译报错。GitHub 注释提示近期付款失败或需要提高支出限额，需账号所有者检查 Billing & plans。未切公开库或替代发布，最新已核验手机包仍为下述 0.2.14；不要把它当成包含新检查按钮的 0.2.15。
+2026-10-21 经用户明确授权，仓库已从私有改为[公开项目](https://github.com/andyzpl/SyncRelay)，并验证匿名可访问。历史源码、Actions 日志和附件的公开前检查见 `docs/PUBLIC-BUILD.md`。正在以公开仓库的标准 macOS runner 重新验证 0.2.15；在新产物完成核验前，最新已核验手机包仍为下述 0.2.14，不要把它当成包含新检查按钮的 0.2.15。
+
+历史私有构建 run `39549098574`（源码 `0139ee7c7e2d56ed5fb5341f0ed1d29969001070`）因 GitHub 账号计费门禁失败，原生测试、编译和打包均未启动，不是编译报错。改为公开不改变该次失败记录，也不代表新构建已经成功。
 
 ### 0.2.14 图片捕获包交付记录
 
@@ -184,9 +186,11 @@
 
 ## 编译
 
-沿用相邻 OwnHide 项目的私有 GitHub Actions/macOS + 固定版本 Theos/SDK 方式。
-工作流：`.github/workflows/build.yml`。日常 push 只运行 C 和 Objective-C 核心测试，不安装 Theos、不生成 DEB。
-只有需要手机验证时，手动触发并明确勾选 `build_deb`，才会在测试通过后构建普通 DEB，检查 arm64/arm64e slice 并上传私有 Actions artifact。该选项默认关闭。
+使用公开 GitHub Actions 的标准 `macos-15-intel` runner，保留相邻 OwnHide 项目采用的固定版本 Theos/SDK。
+工作流：`.github/workflows/build.yml`。日常代码 push 运行 Python、C 和 Objective-C 核心测试，不安装 Theos、不生成 DEB；纯 Markdown 更新不触发。
+只有需要手机验证时，手动触发并明确勾选 `build_deb`，才会在测试通过后构建普通 DEB，检查 arm64/arm64e slice 并上传 Actions artifact。该选项默认关闭，后续产物保留 7 天。源码、历史、工作流日志及构建附件不再保密；不要上传真实诊断或第三方二进制。
+
+[GitHub 官方计费说明](https://docs.github.com/en/billing/concepts/product-billing/github-actions)：公开仓库标准托管 runner 的运行时间免费；大型 runner 仍收费，附件存储等另受额度与计费规则约束，不宣称所有 Actions 功能免费。公开不等于已经选定开源许可证，本次不新增许可证。
 
 普通包载荷位于 `Library/MobileSubstrate/DynamicLibraries`。不附带安装脚本，不自动重启微信，不发布 GitHub Release。
 包不包含第三方 MikotoHelper 二进制、反汇编输出或本地工具缓存。

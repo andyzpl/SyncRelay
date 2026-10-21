@@ -75,7 +75,7 @@ MMContext currentContext
 
 ## 可重复检查
 
-依赖限定在本地 `analysis/python-libs`：LIEF `1.0.0-d05b3499b`、Unicorn `2.1.4`。这些依赖、原包及解包/报告均不加入私有库或 DEB。
+依赖限定在本地 `analysis/python-libs`：LIEF `1.0.0-d05b3499b`、Unicorn `2.1.4`。这些依赖、原包及解包/原始报告均不加入仓库或 DEB，无论仓库是私有还是公开。
 
 ```sh
 python tools/offline_mikoto_trace.py --entry 0x541d788
