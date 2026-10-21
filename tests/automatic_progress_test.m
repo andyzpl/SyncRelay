@@ -98,7 +98,7 @@ int main(void) {
         CHECK(![runner tick]); now += 10000;
         CHECK(![runner activateRun:interrupted account:@"other" error:NULL]);
         CHECK([runner activateRun:interrupted account:@"account" error:NULL]);
-        CHECK(![runner tick]); double due = [runner.status[@"nextMonotonic"] doubleValue]; CHECK(due == now + 15);
+        CHECK(![runner tick]); double due = [runner.status[@"nextMonotonic"] doubleValue]; CHECK(due == now + 10);
         now = due; CHECK([runner tick]);
         CHECK(![restored.deliveries[0][@"target"] isEqual:transport.deliveries[3][@"target"]]);
         finish(transport, 3, @"submitted"); (void)runner.status; // Dead runner callback cannot mutate recovery.
@@ -194,9 +194,25 @@ int main(void) {
         CHECK(sqlite3_open(migrationPath.fileSystemRepresentation, &db) == SQLITE_OK);
         sqlite3_stmt *statement = NULL;
         CHECK(sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &statement, NULL) == SQLITE_OK);
-        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 7); sqlite3_finalize(statement);
-        CHECK(sqlite3_exec(db, "PRAGMA user_version=8", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
+        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 8); sqlite3_finalize(statement);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=9", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
         CHECK(![[SRStore alloc] initWithPath:migrationPath error:NULL]);
+
+        // A pre-v8 rules table has a CHECK(minimum>=10); rebuilding it must allow the new 3-second floor.
+        NSString *constraintPath = [directory stringByAppendingPathComponent:@"legacy-interval.sqlite3"];
+        SRStore *constraintSeed = [[SRStore alloc] initWithPath:constraintPath error:NULL]; CHECK(constraintSeed);
+        NSString *constraintPlan = plan(constraintSeed, @"legacy-interval");
+        constraintSeed = nil;
+        CHECK(sqlite3_open(constraintPath.fileSystemRepresentation, &db) == SQLITE_OK);
+        CHECK(sqlite3_exec(db,
+            "PRAGMA foreign_keys=OFF;"
+            "CREATE TABLE rules_legacy(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), name TEXT NOT NULL, position INTEGER NOT NULL, minimum REAL NOT NULL CHECK(minimum>=10), maximum REAL NOT NULL CHECK(maximum>=minimum), UNIQUE(plan_id,position));"
+            "INSERT INTO rules_legacy SELECT id,plan_id,name,position,minimum,maximum FROM rules;"
+            "DROP TABLE rules; ALTER TABLE rules_legacy RENAME TO rules; PRAGMA user_version=7;",
+            NULL, NULL, NULL) == SQLITE_OK);
+        CHECK(sqlite3_close(db) == SQLITE_OK);
+        SRStore *constraintStore = [[SRStore alloc] initWithPath:constraintPath error:NULL]; CHECK(constraintStore);
+        CHECK([constraintStore addRuleToPlan:constraintPlan name:@"three-second" targets:@[@"new@chatroom"] minimum:3 maximum:3 error:NULL]);
 
         runner = nil; store = nil; transport = nil; restored = nil;
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);

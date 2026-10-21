@@ -18,13 +18,17 @@ int main(void) {
         SRStore *store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store && !error);
         NSMutableDictionary *draft = [SRConfiguration emptyDraft];
+        assert([draft[@"minimum"] isEqual:@5] && [draft[@"maximum"] isEqual:@10]);
         draft[@"maximum"] = @30;
         assert([store saveConfiguration:draft account:@"account" error:&error]);
         assert([store configurationForAccount:@"other-account" error:&error][@"maximum"] != nil);
-        assert([[store configurationForAccount:@"other-account" error:&error][@"maximum"] isEqual:@20]);
-        draft[@"minimum"] = @5;
+        assert([[store configurationForAccount:@"other-account" error:&error][@"maximum"] isEqual:@10]);
+        draft[@"minimum"] = @2;
         assert(![store saveConfiguration:draft account:@"account" error:NULL]);
-        assert([[store configurationForAccount:@"account" error:&error][@"minimum"] isEqual:@10]);
+        assert([[store configurationForAccount:@"account" error:&error][@"minimum"] isEqual:@5]);
+        draft[@"minimum"] = @3;
+        assert([store saveConfiguration:draft account:@"account" error:&error]);
+        assert([[store configurationForAccount:@"account" error:&error][@"minimum"] isEqual:@3]);
         NSMutableDictionary *experimentDraft = [SRConfiguration emptyDraft];
         experimentDraft[@"sourceGroup"] = @{ @"id": @"source@chatroom", @"name": @"Source" };
         experimentDraft[@"senders"] = @[ @{ @"id": @"wxid_sender", @"name": @"Sender" } ];
@@ -39,7 +43,7 @@ int main(void) {
         NSString *plan = [store createPlanForAccount:@"account" sourceGroup:@"source@chatroom"
             senders:@[@"wxid_sender"] types:@[@"text", @"image"] sourceSnapshot:@{@"id": @"source-message", @"text": @"test"} error:&error];
         assert(plan);
-        assert(![store addRuleToPlan:plan name:@"invalid" targets:@[@"invalid"] minimum:9 maximum:20 error:NULL]);
+        assert(![store addRuleToPlan:plan name:@"invalid" targets:@[@"invalid"] minimum:2 maximum:20 error:NULL]);
         assert(![store addRuleToPlan:plan name:@"self" targets:@[@"source@chatroom"] minimum:10 maximum:20 error:NULL]);
         NSMutableArray *targets = [NSMutableArray array];
         for (int i = 0; i < 2000; i++) [targets addObject:[NSString stringWithFormat:@"group-%d@chatroom", i]];
@@ -66,6 +70,7 @@ int main(void) {
         assert(![store claimTextExperiment:experimentSource configuration:experimentDraft account:@"account" target:@"target@chatroom" error:NULL]);
         assert([[store textExperimentSummaryForAccount:@"account" error:&error][@"claimed"] boolValue]);
         assert([[store configurationForAccount:@"account" error:&error][@"maximum"] isEqual:@30]);
+        assert([[store configurationForAccount:@"account" error:&error][@"minimum"] isEqual:@3]);
         assert([store recoverInterruptedRuns:&error]);
         NSDictionary *summary = [store summaryForRun:run error:&error];
         assert([summary[@"state"] isEqual:@"awaiting_resume"]);

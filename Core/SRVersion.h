@@ -1,4 +1,4 @@
-#define SR_PLUGIN_VERSION @"0.2.17"
+#define SR_PLUGIN_VERSION @"0.2.18"
 #if __has_include("SRBuildRevision.h")
 #import "SRBuildRevision.h"
 #else

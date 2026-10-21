@@ -261,8 +261,9 @@ int main(void) {
         NSDictionary *rule = @{@"id": @"rule1", @"name": @"Rule 1", @"targets": selection.selectedRows};
         draft[@"rules"] = @[rule]; CHECK([SRConfiguration validateDraft:draft error:NULL]);
         draft[@"rules"] = @[rule, rule]; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
-        draft[@"rules"] = @[rule]; draft[@"minimum"] = @9; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
-        draft[@"minimum"] = @10; draft[@"types"] = @[@"video"]; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
+        draft[@"rules"] = @[rule]; draft[@"minimum"] = @2; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
+        draft[@"minimum"] = @3; CHECK([SRConfiguration validateDraft:draft error:NULL]);
+        draft[@"types"] = @[@"video"]; CHECK(![SRConfiguration validateDraft:draft error:NULL]);
         draft[@"types"] = @[@"image"]; CHECK([SRConfiguration validateDraft:draft error:NULL]);
         puts("PASS: guarded runtime, declared string ABI with misleading reflection, contact/session union, privacy and 12345-row drafts");
     }

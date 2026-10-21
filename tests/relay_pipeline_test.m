@@ -97,7 +97,7 @@ int main(void) {
         CHECK(![runner activateRun:run account:@"other-account" error:NULL]);
         CHECK([runner activateRun:run account:@"account" error:NULL]);
         SRRunner *competitor = newRunner(); CHECK(![competitor activateRun:run account:@"account" error:NULL]);
-        CHECK(![runner tick]); now = 14.99; CHECK(![runner tick]); now = 15; CHECK([runner tick]);
+        CHECK(![runner tick]); now = 9.99; CHECK(![runner tick]); now = 10; CHECK([runner tick]);
         CHECK(![runner.status[@"inflight"] boolValue]);
         CHECK(transport.submitted == 1);
         CHECK([runner pause:NULL]); now = 1000; CHECK(![runner tick]);

@@ -2,6 +2,10 @@
 #define SR_PACING_H
 #include <stdbool.h>
 
+#define SR_PACING_MINIMUM_SECONDS 3.0
+#define SR_PACING_DEFAULT_MINIMUM_SECONDS 5.0
+#define SR_PACING_DEFAULT_MAXIMUM_SECONDS 10.0
+
 typedef struct {
     double minimum;
     double maximum;

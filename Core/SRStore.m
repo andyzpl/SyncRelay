@@ -65,6 +65,14 @@ static void SRRequire(BOOL condition, NSString *message) {
     }
 }
 
+- (void)migrateRuleIntervalConstraint {
+    // Called inside the schema transaction with foreign keys disabled. Keep child references named rules.
+    [self query:@"CREATE TABLE rules_interval_v8(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), name TEXT NOT NULL, position INTEGER NOT NULL, minimum REAL NOT NULL CHECK(minimum>=3), maximum REAL NOT NULL CHECK(maximum>=minimum), UNIQUE(plan_id,position))" values:@[]];
+    [self query:@"INSERT INTO rules_interval_v8 SELECT id,plan_id,name,position,minimum,maximum FROM rules" values:@[]];
+    [self query:@"DROP TABLE rules" values:@[]];
+    [self query:@"ALTER TABLE rules_interval_v8 RENAME TO rules" values:@[]];
+}
+
 - (instancetype)initWithPath:(NSString *)path error:(NSError **)error {
     self = [super init];
     if (!self) return nil;
@@ -76,19 +84,25 @@ static void SRRequire(BOOL condition, NSString *message) {
         return nil;
     }
     sqlite3_busy_timeout(_db, 5000);
+    __block NSInteger version = 0;
+    __block BOOL rebuildRules = NO;
     id setup = [self perform:^id{
         [self query:@"PRAGMA foreign_keys=ON" values:@[]];
         [self query:@"PRAGMA journal_mode=WAL" values:@[]];
         [self query:@"PRAGMA synchronous=FULL" values:@[]];
-        NSInteger version = [[self query:@"PRAGMA user_version" values:@[]].firstObject[@"user_version"] integerValue];
-        SRRequire(version >= 0 && version <= 7, @"Unsupported database schema; do not downgrade");
+        version = [[self query:@"PRAGMA user_version" values:@[]].firstObject[@"user_version"] integerValue];
+        SRRequire(version >= 0 && version <= 8, @"Unsupported database schema; do not downgrade");
+        if (version < 8) {
+            rebuildRules = [self query:@"SELECT name FROM sqlite_master WHERE type='table' AND name='rules'" values:@[]].count > 0;
+            [self query:@"PRAGMA foreign_keys=OFF" values:@[]];
+        }
         return @YES;
     } transaction:NO error:error];
     if (!setup) return nil;
     id migrated = [self perform:^id{
         NSArray *schema = @[
             @"CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, account TEXT NOT NULL, source_group TEXT NOT NULL, senders TEXT NOT NULL, types TEXT NOT NULL, snapshot TEXT NOT NULL)",
-            @"CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), name TEXT NOT NULL, position INTEGER NOT NULL, minimum REAL NOT NULL CHECK(minimum>=10), maximum REAL NOT NULL CHECK(maximum>=minimum), UNIQUE(plan_id,position))",
+            @"CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), name TEXT NOT NULL, position INTEGER NOT NULL, minimum REAL NOT NULL CHECK(minimum>=3), maximum REAL NOT NULL CHECK(maximum>=minimum), UNIQUE(plan_id,position))",
             @"CREATE TABLE IF NOT EXISTS allocations(plan_id TEXT NOT NULL REFERENCES plans(id), target TEXT NOT NULL, rule_id TEXT NOT NULL REFERENCES rules(id), position INTEGER NOT NULL, PRIMARY KEY(plan_id,target))",
             @"CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, rule_id TEXT NOT NULL REFERENCES rules(id), account TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('running','paused','awaiting_resume','completed','ended')), started_at REAL NOT NULL, ended_at REAL, minimum REAL NOT NULL, maximum REAL NOT NULL, snapshot TEXT NOT NULL)",
             @"CREATE UNIQUE INDEX IF NOT EXISTS one_active_run ON runs(account) WHERE state IN ('running','paused','awaiting_resume')",
@@ -104,13 +118,24 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"CREATE TABLE IF NOT EXISTS image_experiments(account TEXT NOT NULL, source_group TEXT NOT NULL, source_message_id TEXT NOT NULL, target TEXT NOT NULL, claimed_at REAL NOT NULL, PRIMARY KEY(account,source_group,source_message_id))",
             @"CREATE TABLE IF NOT EXISTS submission_receipts(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), submitted_at REAL NOT NULL)",
             @"CREATE TABLE IF NOT EXISTS small_group_runs(run_id TEXT PRIMARY KEY REFERENCES runs(id), authorized_at REAL NOT NULL)",
-            @"CREATE TABLE IF NOT EXISTS native_attempt_claims(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), claimed_at REAL NOT NULL)",
-            @"PRAGMA user_version=7"
+            @"CREATE TABLE IF NOT EXISTS native_attempt_claims(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), claimed_at REAL NOT NULL)"
         ];
         for (NSString *sql in schema) [self query:sql values:@[]];
+        if (rebuildRules) [self migrateRuleIntervalConstraint];
+        if (version < 8) {
+            SRRequire([self query:@"PRAGMA foreign_key_check" values:@[]].count == 0,
+                      @"Database migration found broken foreign key references");
+            [self query:@"PRAGMA user_version=8" values:@[]];
+        }
         return @YES;
     } transaction:YES error:error];
-    if (!migrated) return nil;
+    id enforced = [self perform:^id{
+        [self query:@"PRAGMA foreign_keys=ON" values:@[]];
+        SRRequire([[self query:@"PRAGMA foreign_keys" values:@[]].firstObject[@"foreign_keys"] boolValue],
+                  @"Database foreign key enforcement is unavailable");
+        return @YES;
+    } transaction:NO error:migrated ? error : NULL];
+    if (!migrated || !enforced) return nil;
     id retained = [self perform:^id{
         NSMutableSet *references = [NSMutableSet set];
         for (NSDictionary *row in [self query:@"SELECT snapshot FROM plans" values:@[]]) {
@@ -158,7 +183,7 @@ static void SRRequire(BOOL condition, NSString *message) {
                     minimum:(double)minimum maximum:(double)maximum error:(NSError **)error {
     return [self perform:^id{
         SRPacing pacing = {0};
-        SRRequire(SRPacingConfigure(&pacing, minimum, maximum), @"Interval must satisfy 10 <= minimum <= maximum");
+        SRRequire(SRPacingConfigure(&pacing, minimum, maximum), @"Interval must satisfy 3 <= minimum <= maximum");
         NSDictionary *source = [self query:@"SELECT source_group FROM plans WHERE id=?" values:@[plan]].firstObject;
         SRRequire(source && name.length && targets.count, @"Plan, rule name and targets are required");
         SRRequire([NSSet setWithArray:targets].count == targets.count, @"Duplicate targets");

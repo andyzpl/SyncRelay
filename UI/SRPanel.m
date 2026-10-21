@@ -337,7 +337,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     section = SRPanelSection(section);
     if (section == 0) return [NSString stringWithFormat:@"SyncRelay %@ · 开发版\n%@", SR_PLUGIN_VERSION, self.status ?: @"小群测试需手动开始"];
     if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存”。" : @"所有规则共用来源条件；图片先捕获并预览，不自动发送。";
-    if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。";
+    if (section == 2) return @"下限至少 3 秒；默认 5–10 秒。上下限相同则固定间隔。";
     if (section == 4) return @"预览和确认不会启动规则；单群实验需单独开启并二次确认，切后台或锁屏会取消等待。";
     return @"母群自动排除，每条最多 200 群；不足按实际数量分组。";
 }
@@ -444,7 +444,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     toggle.on = NO;
     if (self.ownsIdleTimer) { SRAlert(self, @"已有活动实验", @"先取消倒计时或停止观察，再切换实验类型。"); return; }
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"开启单群图片实验？"
-        message:@"只允许一张静态图片、一个授权目标群。按已保存的间隔等待，最低 10 秒；与文字实验共用本次进程的一次机会。图片会从已校验快照生成 JPEG，不保证原图质量。装载接口可能写入微信本地媒体文件，即使后续提交阻断也不自动重试。批量仍关闭。"
+        message:@"只允许一张静态图片、一个授权目标群。按已保存的间隔等待，最低 3 秒；与文字实验共用本次进程的一次机会。图片会从已校验快照生成 JPEG，不保证原图质量。装载接口可能写入微信本地媒体文件，即使后续提交阻断也不自动重试。批量仍关闭。"
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开启本次图片实验" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
@@ -620,7 +620,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     SRPresentAlert(self, alert);
 }
 - (void)editInterval {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"随机间隔（秒）" message:@"下限不能小于 10，上限不能小于下限。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"发送间隔（秒）" message:@"下限不能小于 3；默认 5–10 秒。上限不能小于下限，设成相同数值即为固定间隔。" preferredStyle:UIAlertControllerStyleAlert];
     for (NSString *key in @[@"minimum", @"maximum"]) [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.keyboardType = UIKeyboardTypeNumberPad; field.text = [self.draft[key] stringValue]; field.placeholder = [key isEqual:@"minimum"] ? @"下限" : @"上限";
     }];
@@ -748,7 +748,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         @"预览与计划\n第一条匹配内容锁定后停止等待。核对母群、发送者 wxid、类型和完整正文再确认；候选可能包含离线补同步，不能只凭回调时间判断新旧。确认只建立计划，不开始执行任何规则。\n\n"
         @"小群执行\n测试时手动只选 1–3 个群组成规则；大分组可以保存，但本轮不能实发。每条规则点一次开始，内部串行处理，不逐群弹窗。暂停后手动继续未尝试群；切后台、锁屏或账号改变会暂停，回前台或重启不自动继续。等待和在途观察时保持常亮，暂停收尾和完成时释放。已提交不等于确认送达，失败/未知不自动重发，当前规则结束不自动执行下一条。\n\n"
         @"暂停采集\n切后台、锁屏或账号改变会取消等待，回前台不自动重启。预览未确认前只保留在内存，退出微信后需重新捕获；已确认计划与历史独立于当前设置。\n\n"
-        @"间隔与发送观察\n随机间隔下限至少 10 秒，上下限相同为固定间隔；随机节拍和小批次不保证平台允许或发送成功。手动发送观察只记录一个测试群的元数据，需你回微信手动发送，120 秒到期或切后台停止，不代发、不读取正文、不判定送达。单群文字实验必须先打开开关、选择一个目标并二次确认；回读到服务器 ID 仍只记为主机关联，不自动重试。\n\n"
+        @"间隔与发送观察\n默认间隔 5–10 秒，最低 3 秒，上限可自定义；上下限相同为固定间隔。间隔仅控制本插件的发送节奏，不保证发送成功。手动发送观察只记录一个测试群的元数据，需你回微信手动发送，120 秒到期或切后台停止，不代发、不读取正文、不判定送达。单群文字实验必须先打开开关、选择一个目标并二次确认；回读到服务器 ID 仍只记为主机关联，不自动重试。\n\n"
         @"入口与诊断\n主入口始终是“我 → 设置 → SyncRelay 转发”。悬浮入口默认关闭，可自行开启。诊断包含版本、接口签名及脱敏观察摘要，不含账号 wxid、群 ID、消息 ID 或正文。所有采集候选及页面表现仍需真机验证。";
     viewer.view = view;
     [self.navigationController pushViewController:viewer animated:YES];
@@ -827,7 +827,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         SRPanel *panel = weakSelf; if (!panel || !chosen.count || ![panel checkAccount]) return;
         NSString *target = chosen.firstObject[@"id"]; NSString *name = chosen.firstObject[@"name"] ?: target;
         UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"最后确认：只发送一次"
-            message:[NSString stringWithFormat:@"目标群：%@\n%@\n来源 wxid：%@\n\n请先打开源消息图片核对。发送已捕获静态快照的 JPEG，不承诺原图质量。按保存的随机间隔（至少 10 秒）提交一次；切后台、关闭面板或修改设置会取消。", name, target, source[@"sender"]]
+            message:[NSString stringWithFormat:@"目标群：%@\n%@\n来源 wxid：%@\n\n请先打开源消息图片核对。发送已捕获静态快照的 JPEG，不承诺原图质量。按保存的随机间隔（至少 3 秒）提交一次；切后台、关闭面板或修改设置会取消。", name, target, source[@"sender"]]
             preferredStyle:UIAlertControllerStyleAlert];
         [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [confirm addAction:[UIAlertAction actionWithTitle:@"发送一次" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
@@ -843,7 +843,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             double now = NSProcessInfo.processInfo.systemUptime;
             if (!SRPacingConfigure(&pacing, [configuration[@"minimum"] doubleValue], [configuration[@"maximum"] doubleValue]) ||
                 pacing.maximum > 3600 || !SRPacingResume(&pacing, now, (double)arc4random() / 4294967296.0)) {
-                SRAlert(panel, @"实验间隔无效", @"本轮单群实验要求上下限在 10 至 3600 秒内，请保存后重新捕获。"); return;
+                SRAlert(panel, @"实验间隔无效", @"本轮单群实验要求上下限在 3 至 3600 秒内，请保存后重新捕获。"); return;
             }
             double wait = pacing.next_monotonic - now;
             panel.imageCountdown = YES; NSUInteger generation = ++panel.imageGeneration;
@@ -920,7 +920,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         SRPanel *panel = weakSelf; if (!panel || !chosen.count || ![panel checkAccount]) return;
         NSString *target = chosen.firstObject[@"id"]; NSString *name = chosen.firstObject[@"name"] ?: target;
         UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"最后确认：只发送一次"
-            message:[NSString stringWithFormat:@"目标群：%@\n%@\n来源 wxid：%@\n\n文字：%@\n\n确认后等待至少 10 秒再提交一次；切后台、关闭面板或修改设置会取消倒计时。", name, target, source[@"sender"], [source[@"payload"][@"text"] substringToIndex:MIN((NSUInteger)300, [source[@"payload"][@"text"] length])]]
+            message:[NSString stringWithFormat:@"目标群：%@\n%@\n来源 wxid：%@\n\n文字：%@\n\n确认后等待至少 3 秒再提交一次；切后台、关闭面板或修改设置会取消倒计时。", name, target, source[@"sender"], [source[@"payload"][@"text"] substringToIndex:MIN((NSUInteger)300, [source[@"payload"][@"text"] length])]]
             preferredStyle:UIAlertControllerStyleAlert];
         [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [confirm addAction:[UIAlertAction actionWithTitle:@"发送一次" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
@@ -932,14 +932,21 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
                 [SRRuntimeLog.shared record:@"text_test_blocked" facts:@{@"reasonCode": @1}];
                 SRAlert(panel, @"发送门禁未通过", failure.localizedDescription); return;
             }
+            SRPacing pacing = {0};
+            double now = NSProcessInfo.processInfo.systemUptime;
+            if (!SRPacingConfigure(&pacing, [configuration[@"minimum"] doubleValue], [configuration[@"maximum"] doubleValue]) ||
+                pacing.maximum > 3600 || !SRPacingResume(&pacing, now, (double)arc4random() / 4294967296.0)) {
+                SRAlert(panel, @"实验间隔无效", @"本轮单群实验要求上下限在 3 至 3600 秒内，请保存后重新捕获。"); return;
+            }
+            double wait = pacing.next_monotonic - now;
             panel.textCountdown = YES; NSUInteger generation = ++panel.textGeneration;
             panel.previousIdleTimer = UIApplication.sharedApplication.idleTimerDisabled;
             panel.ownsIdleTimer = YES; UIApplication.sharedApplication.idleTimerDisabled = YES;
-            UIAlertController *countdown = [UIAlertController alertControllerWithTitle:@"10 秒后仅提交一次" message:@"保持本页和微信前台；你可以取消。提交后无自动重试，结果必须核对。" preferredStyle:UIAlertControllerStyleAlert];
+            UIAlertController *countdown = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%.1f 秒后仅提交一次文字", wait] message:@"保持本页和微信前台；你可以取消。提交后无自动重试，结果必须核对。" preferredStyle:UIAlertControllerStyleAlert];
             [countdown addAction:[UIAlertAction actionWithTitle:@"取消 / 停止观察" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *a) { [panel cancelTextExperiment]; panel.singleTextSendEnabled = NO; [panel refresh]; }]];
             SRPresentAlert(panel, countdown);
             [SRRuntimeLog.shared record:@"text_test_countdown" facts:@{}];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)ceil(wait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 if (!panel.textCountdown || panel.textGeneration != generation) return;
                 // Keep the idle-timer claim until the host's bounded observation ends.
                 panel.textCountdown = NO;

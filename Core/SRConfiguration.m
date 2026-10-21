@@ -4,7 +4,8 @@
 @implementation SRConfiguration
 + (NSMutableDictionary *)emptyDraft {
     return [@{@"schema": @1, @"sourceGroup": @{}, @"senders": @[], @"types": @[@"text", @"image"],
-              @"minimum": @10, @"maximum": @20, @"rules": @[], @"excludedGroups": @[]} mutableCopy];
+              @"minimum": @(SR_PACING_DEFAULT_MINIMUM_SECONDS), @"maximum": @(SR_PACING_DEFAULT_MAXIMUM_SECONDS),
+              @"rules": @[], @"excludedGroups": @[]} mutableCopy];
 }
 + (BOOL)row:(id)row group:(BOOL)group {
     if (![row isKindOfClass:NSDictionary.class]) return NO;
