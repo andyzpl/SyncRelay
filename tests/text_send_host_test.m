@@ -101,6 +101,69 @@
 }
 @end
 
+@interface SRFakeServiceProxy : NSProxy
+@property(nonatomic, strong) SRFakeMessageMgr *service;
+@property(nonatomic) NSUInteger forwardAdds;
+@property(nonatomic) NSUInteger forwardLookups;
+@property(nonatomic) NSUInteger signatureMode;
+@property(nonatomic) BOOL denyIdentity;
+@property(nonatomic) BOOL denyLookup;
+@property(nonatomic) BOOL throwMetadata;
+@end
+@implementation SRFakeServiceProxy
+- (BOOL)isKindOfClass:(Class)type { return !self.denyIdentity && [self.service isKindOfClass:type]; }
+- (BOOL)respondsToSelector:(SEL)selector {
+    return !(self.denyLookup && selector == NSSelectorFromString(@"GetMsg:LocalID:")) && [self.service respondsToSelector:selector];
+}
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    if (self.throwMetadata) @throw [NSException exceptionWithName:@"Test" reason:@"private proxy body" userInfo:nil];
+    if (self.signatureMode == 1 && selector == NSSelectorFromString(@"AddMsg:MsgWrap:")) return nil;
+    if (self.signatureMode == 2 && selector == NSSelectorFromString(@"AddMsg:MsgWrap:"))
+        return [NSMethodSignature signatureWithObjCTypes:"@32@0:8@16@24"];
+    if (self.signatureMode == 3 && selector == NSSelectorFromString(@"GetMsg:LocalID:"))
+        return [NSMethodSignature signatureWithObjCTypes:"@32@0:8@16Q24"];
+    return [self.service methodSignatureForSelector:selector];
+}
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    if (invocation.selector == NSSelectorFromString(@"AddMsg:MsgWrap:")) self.forwardAdds++;
+    if (invocation.selector == NSSelectorFromString(@"GetMsg:LocalID:")) self.forwardLookups++;
+    [invocation invokeWithTarget:self.service];
+}
+@end
+
+@interface SRFakeBadDeclaredAddProxy : SRFakeServiceProxy
+@end
+@implementation SRFakeBadDeclaredAddProxy
+- (id)AddMsg:(__unused id)target MsgWrap:(__unused id)wrap { abort(); }
+@end
+@interface SRFakeBadDeclaredLookupProxy : SRFakeServiceProxy
+@end
+@implementation SRFakeBadDeclaredLookupProxy
+- (id)GetMsg:(__unused id)target LocalID:(__unused unsigned long long)localID { abort(); }
+@end
+
+@interface SRFakeServiceWrapper : NSObject
+@property(nonatomic, strong) SRFakeMessageMgr *service;
+@property(nonatomic) NSUInteger forwardAdds;
+@end
+@implementation SRFakeServiceWrapper
+- (BOOL)isKindOfClass:(Class)type { return [super isKindOfClass:type] || [self.service isKindOfClass:type]; }
+- (BOOL)respondsToSelector:(SEL)selector { return [super respondsToSelector:selector] || [self.service respondsToSelector:selector]; }
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    return [super methodSignatureForSelector:selector] ?: [self.service methodSignatureForSelector:selector];
+}
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    if (invocation.selector == NSSelectorFromString(@"AddMsg:MsgWrap:")) self.forwardAdds++;
+    [invocation invokeWithTarget:self.service];
+}
+@end
+
+@interface SRFakeIdentityOnly : NSObject
+@end
+@implementation SRFakeIdentityOnly
+- (BOOL)isKindOfClass:(Class)type { return type == SRFakeMessageMgr.class || [super isKindOfClass:type]; }
+@end
+
 static void forbiddenMethod(__unused id object, __unused SEL selector, __unused id first, __unused id second) { abort(); }
 static Class managerWithMethod(NSString *name, NSString *selector, const char *encoding) {
     Class type = objc_allocateClassPair(SRFakeMessageMgr.class, name.UTF8String, 0);
@@ -162,7 +225,7 @@ int main(void) {
         CHECK(manager.lastWrap.initializerArgument == 1);
         CHECK([host.diagnostics[@"initializerArgumentType"] isEqual:@"q"]);
         CHECK([host.diagnostics[@"initializerCallType"] isEqual:@"q"]);
-        CHECK([host.diagnostics[@"serviceEvidenceSchema"] isEqual:@1]);
+        CHECK([host.diagnostics[@"serviceEvidenceSchema"] isEqual:@2]);
         CHECK([host.diagnostics[@"serviceChecks"] count] == 2);
         CHECK([host.diagnostics[@"serviceChecks"][@"pre_submit"][@"add"][@"issue"] isEqual:@"compatible"]);
         CHECK(callbackShapeOK);
@@ -249,13 +312,75 @@ int main(void) {
         CHECK(![lookupBlocked readyForAccount:@"wxid_account" error:NULL]);
         CHECK([lookupBlocked.diagnostics[@"problem"] isEqual:@"concrete_lookup_abi_incompatible"]);
         CHECK([lookupBlocked.diagnostics[@"serviceChecks"][@"preflight"][@"lookup"][@"issue"] isEqual:@"second_argument"]);
-        for (id service in @[(id)SRFakeMessageMgr.class, [NSObject new], NSNull.null]) {
+        for (id service in @[(id)SRFakeMessageMgr.class, [NSObject new], [SRFakeIdentityOnly new], NSNull.null]) {
             context.manager = service == NSNull.null ? nil : service;
             SRWeChatTextSendHost *identityBlocked = makeHost(@"8.0.79", account, allowed);
             CHECK(![identityBlocked readyForAccount:@"wxid_account" error:NULL]);
-            CHECK([identityBlocked.diagnostics[@"problem"] isEqual:@"service_identity_rejected"]);
+            CHECK(([@[@"service_identity_rejected", @"service_forwarding_unverified"] containsObject:identityBlocked.diagnostics[@"problem"]]));
             CHECK(![identityBlocked.diagnostics[@"submissionAttempted"] boolValue]);
         }
+        SRFakeMessageMgr *forwardedManager = [SRFakeMessageMgr new];
+        SRFakeServiceProxy *proxy = [SRFakeServiceProxy alloc]; proxy.service = forwardedManager;
+        context.manager = (id)proxy;
+        SRWeChatTextSendHost *proxied = makeHost(@"8.0.79", account, allowed);
+        CHECK([proxied readyForAccount:@"wxid_account" error:NULL]);
+        CHECK(forwardedManager.addCount == 0 && proxy.forwardAdds == 0 && proxy.forwardLookups == 0);
+        NSDictionary *proxyCheck = proxied.diagnostics[@"serviceChecks"][@"preflight"];
+        CHECK([proxyCheck[@"managerClassCode"] isEqual:@3]);
+        CHECK([proxyCheck[@"add"][@"issue"] isEqual:@"missing_method"]);
+        CHECK([proxyCheck[@"route"] isEqual:@"forwarding_proxy"]);
+        CHECK([proxyCheck[@"forwarding"][@"rootCode"] isEqual:@2]);
+        [proxied submitRequest:request completion:nil];
+        CHECK(forwardedManager.addCount == 1 && proxy.forwardAdds == 1 && proxy.forwardLookups == 1);
+        CHECK([proxied.diagnostics[@"submissionAttempted"] boolValue]);
+        CHECK([proxied.diagnostics[@"deliveryOutcome"] isEqual:@"uncertain"]);
+        [proxied submitRequest:request completion:nil]; CHECK(proxy.forwardAdds == 1);
+        for (NSUInteger mode = 1; mode <= 6; mode++) {
+            proxy.signatureMode = mode <= 3 ? mode : 0;
+            proxy.denyIdentity = mode == 4; proxy.denyLookup = mode == 5; proxy.throwMetadata = mode == 6;
+            SRWeChatTextSendHost *badProxy = makeHost(@"8.0.79", account, allowed);
+            CHECK(![badProxy readyForAccount:@"wxid_account" error:NULL]);
+            CHECK([badProxy.diagnostics[@"problem"] isEqual:@"service_forwarding_unverified"]);
+            [badProxy submitRequest:request completion:nil];
+            CHECK(![badProxy.diagnostics[@"submissionAttempted"] boolValue] && proxy.forwardAdds == 1 && proxy.forwardLookups == 1);
+            CHECK(![[badProxy.diagnostics description] containsString:@"private proxy body"]);
+        }
+        proxy.signatureMode = 0; proxy.denyIdentity = NO; proxy.denyLookup = NO; proxy.throwMetadata = NO;
+        for (Class type in @[SRFakeBadDeclaredAddProxy.class, SRFakeBadDeclaredLookupProxy.class]) {
+            SRFakeServiceProxy *conflicting = [type alloc]; conflicting.service = [SRFakeMessageMgr new];
+            context.manager = (id)conflicting;
+            SRWeChatTextSendHost *declaredConflict = makeHost(@"8.0.79", account, allowed);
+            CHECK(![declaredConflict readyForAccount:@"wxid_account" error:NULL]);
+            [declaredConflict submitRequest:request completion:nil];
+            CHECK(conflicting.forwardAdds == 0 && conflicting.service.addCount == 0);
+            CHECK([declaredConflict.diagnostics[@"problem"] isEqual:@"service_forwarding_unverified"]);
+        }
+        context.manager = (id)proxy;
+        __block NSUInteger proxyAccountReads = 0;
+        SRWeChatTextSendHost *proxyChanged = makeHost(@"8.0.79", ^NSString * {
+            if (++proxyAccountReads == 2) proxy.signatureMode = 3;
+            return @"wxid_account";
+        }, allowed);
+        [proxyChanged submitRequest:request completion:nil];
+        CHECK(![proxyChanged.diagnostics[@"submissionAttempted"] boolValue] && proxy.forwardAdds == 1);
+        CHECK([proxyChanged.diagnostics[@"serviceChecks"][@"pre_submit"][@"forwarding"][@"lookupMatchesNamedABI"] isEqual:@NO]);
+        proxy.signatureMode = 0; forwardedManager.deferServerID = YES;
+        SRWeChatTextSendHost *proxyObservation = makeHost(@"8.0.79", account, allowed);
+        [proxyObservation submitRequest:request completion:nil];
+        CHECK([proxyObservation.diagnostics[@"observing"] boolValue]);
+        NSUInteger proxyReads = proxy.forwardLookups;
+        proxy.signatureMode = 3; [proxyObservation poll];
+        CHECK(![proxyObservation.diagnostics[@"observing"] boolValue] && proxy.forwardLookups == proxyReads);
+        CHECK([proxyObservation.diagnostics[@"observationServiceCheckFailed"] boolValue]);
+        CHECK([proxyObservation.diagnostics[@"deliveryOutcome"] isEqual:@"uncertain"]);
+        SRFakeServiceWrapper *wrapper = [SRFakeServiceWrapper new]; wrapper.service = [SRFakeMessageMgr new];
+        context.manager = (id)wrapper;
+        SRWeChatTextSendHost *wrapped = makeHost(@"8.0.79", account, allowed);
+        CHECK([wrapped readyForAccount:@"wxid_account" error:NULL] && wrapper.forwardAdds == 0);
+        CHECK([wrapped.diagnostics[@"serviceChecks"][@"preflight"][@"forwarding"][@"rootCode"] isEqual:@1]);
+        [wrapped submitRequest:request completion:nil];
+        CHECK(wrapper.forwardAdds == 1 && wrapper.service.addCount == 1);
+        CHECK(![[wrapped.diagnostics description] containsString:@"SRFake"]);
         context.manager = manager;
         context.rejectServiceSignature = YES;
         SRWeChatTextSendHost *serviceReadBlocked = makeHost(@"8.0.79", account, allowed);
@@ -334,7 +459,7 @@ int main(void) {
         CHECK([exception.diagnostics[@"deliveryOutcome"] isEqual:@"uncertain"]);
         CHECK(![[exception.diagnostics description] containsString:@"private body"]);
         count = manager.addCount; [exception submitRequest:request completion:nil]; CHECK(manager.addCount == count);
-        puts("PASS: concrete service preflight/revalidation, sanitized signature evidence, i/I/q/Q construction, bounded observation and unknown delivery");
+        puts("PASS: concrete/forwarded service preflight/revalidation, original proxy dispatch, sanitized evidence, i/I/q/Q construction and unknown delivery");
     }
     return 0;
 }

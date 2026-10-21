@@ -182,11 +182,13 @@ def analyze(report):
                 add('text_not_submitted', 'The single-text host was blocked before invocation.')
             if flag(candidate.get('observing')) is True:
                 add('text_observing', 'Exact-local-ID observation is still active; export again after it ends.')
+            if flag(candidate.get('observationServiceCheckFailed')) is True:
+                add('text_observation_contract_changed', 'A later observation stopped because the service contract changed. Stored pre-submit snapshots describe the earlier check, not the changed contract; delivery remains unknown and must not be retried.')
             if flag(candidate.get('serverIDPresent')) is True:
                 add('text_server_association', 'A non-zero server ID was associated, not a verified delivery receipt.')
             problem = candidate.get('problem')
             service_schema = candidate.get('serviceEvidenceSchema')
-            if type(service_schema) is int and service_schema == 1:
+            if type(service_schema) is int and service_schema in (1, 2):
                 checks = candidate.get('serviceChecks')
                 if not isinstance(checks, dict):
                     add('text_service_evidence_invalid', 'Concrete service evidence is not an object; use a matching diagnostic build.')
@@ -196,20 +198,35 @@ def analyze(report):
                         check = checks.get(phase)
                         if not isinstance(check, dict):
                             continue
-                        if any(type(check.get(key)) is int and check[key] in (0, 3, 4)
-                               for key in ('contextClassCode', 'managerClassCode')):
+                        manager_code = check.get('managerClassCode')
+                        direct = type(manager_code) is int and manager_code in (1, 2)
+                        forwarding = check.get('forwarding') if service_schema == 2 else None
+                        forwarded = (isinstance(forwarding, dict) and check.get('route') == 'forwarding_proxy'
+                                     and flag(forwarding.get('accepted')) is True)
+                        if ((type(check.get('contextClassCode')) is int and check['contextClassCode'] in (0, 3, 4))
+                                or (type(manager_code) is int and manager_code in (0, 3, 4) and not forwarded)):
                             evidence.add('text_service_identity_blocked')
+                        if type(manager_code) is int and manager_code == 3:
+                            if service_schema == 1:
+                                evidence.add('text_service_wrapper_details_required')
+                            elif forwarded:
+                                evidence.add('text_service_forwarding_validated')
+                            else:
+                                evidence.add('text_service_forwarding_unverified')
                         if any(flag(check.get(key)) is True for key in ('contextReadFailed', 'serviceReadFailed')):
                             evidence.add('text_service_resolution_failed')
                         for key in ('add', 'lookup'):
                             method = check.get(key)
-                            if (isinstance(method, dict) and method.get('issue') in
+                            if (direct and isinstance(method, dict) and method.get('issue') in
                                     ('missing_method', 'argument_count', 'return_type', 'first_argument', 'second_argument')):
                                 evidence.add('text_concrete_' + key + '_abi_blocked')
                                 if flag(candidate.get('abiValidated')) is True and key == 'add':
                                     evidence.add('text_named_concrete_abi_differ')
                     for code, message in (
-                        ('text_service_identity_blocked', 'The actual context/service is absent, unrelated or a class object, not an allowed service instance.'),
+                        ('text_service_identity_blocked', 'The context/service is absent, a class object, or an unrelated instance without a validated forwarding contract.'),
+                        ('text_service_wrapper_details_required', 'The retrieved service has a different runtime class. Missing declared methods alone do not rule out a proxy; this older report has no forwarding-contract evidence.'),
+                        ('text_service_forwarding_unverified', 'The returned service did not satisfy the complete forwarding contract; do not remove identity/ABI checks or unwrap the service.'),
+                        ('text_service_forwarding_validated', 'The service forwarding contract matched the named ABI. This is capability evidence only, not proof of invocation or delivery.'),
                         ('text_service_resolution_failed', 'A read-only context/service lookup failed; do not infer a send failure.'),
                         ('text_concrete_add_abi_blocked', 'The actual service AddMsg signature failed a specific runtime check; no signature bypass is allowed.'),
                         ('text_concrete_lookup_abi_blocked', 'The actual service exact-ID lookup signature is incompatible; sending remains blocked.'),
@@ -253,7 +270,7 @@ def analyze(report):
         if not isinstance(history, dict):
             add('invalid_text_history', 'The persistent text experiment summary is not an object.')
         elif flag(history.get('claimed')) is True:
-            add('text_attempt_claimed', 'A persistent source attempt exists. It is reserved before invocation and must not be retried after restart.')
+            add('text_attempt_claimed', 'An account-level persistent source reservation exists; it may be from an earlier source, not this report session. Preserve it and do not retry its reserved source.')
             if history.get('deliveryOutcome') != 'uncertain' or flag(history.get('automaticRetry')) is not False:
                 add('text_claim_policy_invalid', 'The persistent experiment does not preserve unknown delivery/no-retry policy.')
     if not result:

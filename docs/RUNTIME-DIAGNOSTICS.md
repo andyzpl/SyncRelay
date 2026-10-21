@@ -65,6 +65,8 @@
 - 0.2.11 新增 `initializerArgumentType`（验证到的类型）/ `initializerCallType`（实际构造采用的类型），值限定为 `i/I/q/Q` 或固定的未检查/未调用/不支持状态，不导出任意宿主值。构造所用的 getter 也加入签名列表。旧 0.2.9/0.2.10 报告若明确出现 `q/Q` 编码与构造器拒绝，解析器输出 `text_initializer_width_mismatch`，指向匹配 ABI 的修正版而不是关闭校验；未知签名不推测原因。新步骤见 `DEVICE-CHECK-0.2.11.md`。
 - 0.2.12 新增 `serviceEvidenceSchema = 1`、`validationStage` 和最多两个 `serviceChecks` 快照（preflight/pre_submit）。其中上下文/服务分类 0 无对象、1 精确实例、2 子类实例、3 不相关实例、4 类对象；使用真实 runtime 继承关系而非实例反射。快照包含只读解析失败标志及实际 AddMsg/GetMsg 的固定类型 token、参数数目、与基础类是否同一方法和具体失败项；不输出任意类名、地址或对象描述。检查在倒计时、持久占位之前执行，构造后仍复验，不能因预检查通过而跳过最终门禁。完整字段和设备步骤见 `DEVICE-CHECK-0.2.12.md`。
 - 旧报告若基础类 ABI 已通过、未调用、却报 `message_manager_abi_incompatible`，解析器输出 `text_concrete_manager_details_required`；不能凭基础类签名推断实际服务的差异。新证据对应固定代码 `text_service_identity_blocked`、`text_service_resolution_failed`、`text_concrete_add_abi_blocked`、`text_concrete_lookup_abi_blocked`、`text_named_concrete_abi_differ`，未知/私人字段不回显。
+- 0.2.13 的 `serviceEvidenceSchema=2` 增加 `route`（direct_instance/forwarding_proxy/rejected）与固定 `forwarding` 契约结果。分类 3 若完整转发契约通过，不再当成必然错误实例；顶层 missing_method 仅表示没有直接声明，不能代替转发签名判断。转发字段、整数 ABI 匹配和真机步骤见 `DEVICE-CHECK-0.2.13.md`。解析器兼容格式 1/2，输出固定的 wrapper_details_required、forwarding_unverified、forwarding_validated 等 text_service 代码；验证通过不是调用或送达证明。
+- `singleTextExperimentHistory` 是账号汇总，不是本轮源消息的逐条状态；旧 claimed 不能证明最近一次阻断消耗了新占位。保留旧占位，不因这次未调用而删除历史。
 
 捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束。错误码必须结合事件与模块看，不跨模块猜含义。
 

@@ -218,7 +218,53 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('text_service_identity_blocked', self.codes(report))
         candidate['serviceChecks']['pre_submit'] = {'contextClassCode': 1, 'managerClassCode': 4,
             'lookup': {'issue': 'second_argument'}}
-        self.assertTrue({'text_service_identity_blocked', 'text_concrete_lookup_abi_blocked'} <= self.codes(report))
+        self.assertIn('text_service_identity_blocked', self.codes(report))
+        self.assertNotIn('text_concrete_lookup_abi_blocked', self.codes(report))
+
+    def test_old_unrelated_service_is_not_proven_incompatible_proxy(self):
+        report = self.base()
+        report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'abiValidated': True, 'submissionAttempted': False, 'state': 'blocked', 'serviceEvidenceSchema': 1,
+            'problem': 'service_identity_rejected', 'serviceChecks': {'preflight': {
+                'contextClassCode': 1, 'managerClassCode': 3, 'add': {'issue': 'missing_method'},
+                'lookup': {'issue': 'missing_method'}}}}
+        self.assertTrue({'text_not_submitted', 'text_service_identity_blocked',
+                         'text_service_wrapper_details_required'} <= self.codes(report))
+        self.assertNotIn('text_concrete_add_abi_blocked', self.codes(report))
+        self.assertNotIn('text_named_concrete_abi_differ', self.codes(report))
+
+    def test_forwarding_contract_accepted_is_not_delivery(self):
+        report = self.base()
+        report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'abiValidated': True, 'submissionAttempted': False, 'state': 'ready', 'serviceEvidenceSchema': 2,
+            'serviceChecks': {'preflight': {'contextClassCode': 1, 'managerClassCode': 3,
+                'route': 'forwarding_proxy', 'forwarding': {'accepted': 1}, 'add': {'issue': 'missing_method'}}}}
+        self.assertIn('text_service_forwarding_validated', self.codes(report))
+        self.assertNotIn('text_service_identity_blocked', self.codes(report))
+        self.assertNotIn('text_host_invoked', self.codes(report))
+        self.assertNotIn('text_concrete_add_abi_blocked', self.codes(report))
+        report['singleTextSendCandidate']['observationServiceCheckFailed'] = True
+        self.assertIn('text_observation_contract_changed', self.codes(report))
+
+    def test_forwarding_contract_rejected_or_malformed_stays_blocked(self):
+        report = self.base()
+        candidate = report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'submissionAttempted': False, 'state': 'blocked', 'serviceEvidenceSchema': 2,
+            'serviceChecks': {'preflight': {'contextClassCode': 1, 'managerClassCode': 3,
+                'route': 'rejected', 'forwarding': {'accepted': False, 'queryFailed': True}}}}
+        self.assertIn('text_service_forwarding_unverified', self.codes(report))
+        self.assertNotIn('text_service_forwarding_validated', self.codes(report))
+        candidate['serviceChecks']['preflight']['forwarding'] = 'private proxy body'
+        self.assertIn('text_service_identity_blocked', self.codes(report))
+        self.assertNotIn('private proxy body', str(analyze(report)))
+
+    def test_persistent_claim_is_not_attributed_to_current_source(self):
+        report = self.base()
+        report['singleTextExperimentHistory'] = {'claimed': True, 'deliveryOutcome': 'uncertain', 'automaticRetry': False}
+        findings = analyze(report)
+        message = next(item['message'] for item in findings if item['code'] == 'text_attempt_claimed')
+        self.assertIn('account-level', message)
+        self.assertIn('earlier source', message)
 
     def test_service_resolution_failure_is_not_a_host_invocation(self):
         report = self.base()

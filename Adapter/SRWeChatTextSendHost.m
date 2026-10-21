@@ -40,6 +40,7 @@
 @property(nonatomic) NSUInteger lookupAttempts;
 @property(nonatomic) NSUInteger lookupMisses;
 @property(nonatomic) NSUInteger identityConflicts;
+@property(nonatomic) BOOL observationServiceCheckFailed;
 @property(nonatomic) double deadline;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSString *target;
@@ -104,6 +105,91 @@ static NSDictionary *SRHostMethodCheck(Class actual, Class named, NSString *name
     return @{@"available": @(s != nil), @"argumentCount": @(s.numberOfArguments),
         @"returnType": s ? SRHostDiagnosticType(s.methodReturnType) : @"unavailable", @"arguments": arguments,
         @"sameMethodAsNamedClass": @(method && method == base), @"issue": SRHostSignatureIssue(s, lookup)};
+}
+static BOOL SRHostSameABI(NSMethodSignature *left, NSMethodSignature *right) {
+    if (!left || !right || left.numberOfArguments != right.numberOfArguments || left.numberOfArguments > 10 ||
+        ![SRHostDiagnosticType(left.methodReturnType) isEqual:SRHostDiagnosticType(right.methodReturnType)]) return NO;
+    for (NSUInteger i = 0; i < left.numberOfArguments; i++)
+        if (![SRHostDiagnosticType([left getArgumentTypeAtIndex:i]) isEqual:SRHostDiagnosticType([right getArgumentTypeAtIndex:i])]) return NO;
+    return YES;
+}
+static BOOL SRHostMetadataABI(Class actual, NSString *name, const char *result, const char *argument) {
+    NSMethodSignature *s = SRHostSignature(actual, name);
+    if (!s || s.numberOfArguments != 3 || strcmp(SRHostType([s getArgumentTypeAtIndex:0]), "@") ||
+        strcmp(SRHostType([s getArgumentTypeAtIndex:1]), ":") || strcmp(SRHostType([s getArgumentTypeAtIndex:2]), argument)) return NO;
+    const char *type = SRHostType(s.methodReturnType);
+    return !strcmp(result, "bool") ? (!strcmp(type, "B") || !strcmp(type, "c")) : !strcmp(type, result);
+}
+static BOOL SRHostOverrides(Class actual, Class root, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    Method method = class_getInstanceMethod(actual, selector), base = class_getInstanceMethod(root, selector);
+    return method && base && method_getImplementation(method) != method_getImplementation(base);
+}
+static NSDictionary *SRHostForwardingCheck(id manager, Class named, NSMethodSignature **add, NSMethodSignature **lookup) {
+    Class actual = object_getClass(manager), root = Nil;
+    NSUInteger rootCode = 0;
+    if (SRHostClassCode(manager, NSProxy.class) == 2) { root = NSProxy.class; rootCode = 2; }
+    else if (SRHostClassCode(manager, NSObject.class) == 2) { root = NSObject.class; rootCode = 1; }
+    BOOL signatureOverride = root && SRHostOverrides(actual, root, @"methodSignatureForSelector:");
+    BOOL invocationOverride = root && SRHostOverrides(actual, root, @"forwardInvocation:");
+    BOOL metadataABI = root && SRHostMetadataABI(actual, @"methodSignatureForSelector:", "@", ":") &&
+        SRHostMetadataABI(actual, @"forwardInvocation:", "v", "@") &&
+        SRHostMetadataABI(actual, @"isKindOfClass:", "bool", "#") &&
+        SRHostMetadataABI(actual, @"respondsToSelector:", "bool", ":");
+    BOOL claimsManager = NO, respondsAdd = NO, respondsLookup = NO, failed = NO;
+    NSMethodSignature *forwardedAdd = nil, *forwardedLookup = nil;
+    if (signatureOverride && invocationOverride && metadataABI) {
+        @try {
+            claimsManager = [manager isKindOfClass:named];
+            respondsAdd = [manager respondsToSelector:NSSelectorFromString(@"AddMsg:MsgWrap:")];
+            respondsLookup = [manager respondsToSelector:NSSelectorFromString(@"GetMsg:LocalID:")];
+            id a = [manager methodSignatureForSelector:NSSelectorFromString(@"AddMsg:MsgWrap:")];
+            id g = [manager methodSignatureForSelector:NSSelectorFromString(@"GetMsg:LocalID:")];
+            if (SRHostClassCode(a, NSMethodSignature.class) == 1 || SRHostClassCode(a, NSMethodSignature.class) == 2) forwardedAdd = a;
+            if (SRHostClassCode(g, NSMethodSignature.class) == 1 || SRHostClassCode(g, NSMethodSignature.class) == 2) forwardedLookup = g;
+        } @catch (__unused id exception) { failed = YES; }
+    }
+    BOOL addMatches = [SRHostSignatureIssue(forwardedAdd, NO) isEqual:@"compatible"] &&
+        SRHostSameABI(forwardedAdd, SRHostSignature(named, @"AddMsg:MsgWrap:"));
+    BOOL lookupMatches = [SRHostSignatureIssue(forwardedLookup, YES) isEqual:@"compatible"] &&
+        SRHostSameABI(forwardedLookup, SRHostSignature(named, @"GetMsg:LocalID:"));
+    NSMethodSignature *declaredAdd = SRHostSignature(actual, @"AddMsg:MsgWrap:"), *declaredLookup = SRHostSignature(actual, @"GetMsg:LocalID:");
+    BOOL declaredAddCompatible = !declaredAdd || ([SRHostSignatureIssue(declaredAdd, NO) isEqual:@"compatible"] && SRHostSameABI(declaredAdd, forwardedAdd));
+    BOOL declaredLookupCompatible = !declaredLookup || ([SRHostSignatureIssue(declaredLookup, YES) isEqual:@"compatible"] && SRHostSameABI(declaredLookup, forwardedLookup));
+    BOOL accepted = !failed && signatureOverride && invocationOverride && metadataABI && claimsManager &&
+        respondsAdd && respondsLookup && addMatches && lookupMatches && declaredAddCompatible && declaredLookupCompatible;
+    if (accepted) { if (add) *add = forwardedAdd; if (lookup) *lookup = forwardedLookup; }
+    return @{@"rootCode": @(rootCode), @"signatureOverride": @(signatureOverride), @"invocationOverride": @(invocationOverride),
+        @"metadataABICompatible": @(metadataABI), @"claimsManager": @(claimsManager), @"respondsAdd": @(respondsAdd),
+        @"respondsLookup": @(respondsLookup), @"queryFailed": @(failed), @"addMatchesNamedABI": @(addMatches),
+        @"lookupMatchesNamedABI": @(lookupMatches), @"declaredAddCompatible": @(declaredAddCompatible),
+        @"declaredLookupCompatible": @(declaredLookupCompatible), @"accepted": @(accepted),
+        @"add": SRHostMethodCheck(Nil, named, @"AddMsg:MsgWrap:", forwardedAdd, NO),
+        @"lookup": SRHostMethodCheck(Nil, named, @"GetMsg:LocalID:", forwardedLookup, YES)};
+}
+static id SRHostLookup(id manager, NSString *target, NSNumber *localID, NSMethodSignature *signature) {
+    if (!localID.unsignedLongLongValue || ![SRHostSignatureIssue(signature, YES) isEqual:@"compatible"]) return nil;
+    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+    invocation.target = manager; invocation.selector = NSSelectorFromString(@"GetMsg:LocalID:");
+    __unsafe_unretained id argument = target; [invocation setArgument:&argument atIndex:2];
+    unsigned long long value = localID.unsignedLongLongValue;
+    switch (SRHostType([signature getArgumentTypeAtIndex:3])[0]) {
+#define SR_HOST_LOOKUP(encoding, ctype, maximum) \
+        case encoding: { if (value > (unsigned long long)(maximum)) return nil; ctype scalar = (ctype)value; [invocation setArgument:&scalar atIndex:3]; break; }
+        SR_HOST_LOOKUP('i', int, INT_MAX)
+        SR_HOST_LOOKUP('I', unsigned int, UINT_MAX)
+        SR_HOST_LOOKUP('q', long long, LLONG_MAX)
+        SR_HOST_LOOKUP('Q', unsigned long long, ULLONG_MAX)
+        SR_HOST_LOOKUP('l', long, LONG_MAX)
+        SR_HOST_LOOKUP('L', unsigned long, ULONG_MAX)
+        SR_HOST_LOOKUP('s', short, SHRT_MAX)
+        SR_HOST_LOOKUP('S', unsigned short, USHRT_MAX)
+        SR_HOST_LOOKUP('c', signed char, SCHAR_MAX)
+        SR_HOST_LOOKUP('C', unsigned char, UCHAR_MAX)
+#undef SR_HOST_LOOKUP
+        default: return nil;
+    }
+    [invocation invoke]; __unsafe_unretained id result = nil; [invocation getReturnValue:&result]; return result;
 }
 static char SRHostInitializerType(Class type) {
     NSMethodSignature *s = SRHostSignature(type, @"initWithMsgType:");
@@ -223,23 +309,37 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
     }
     self.abiValidated = YES; return YES;
 }
-- (BOOL)validateManager:(id)manager phase:(NSString *)phase validatedAdd:(NSMethodSignature **)validatedAdd error:(NSError **)error {
+- (BOOL)validateManager:(id)manager phase:(NSString *)phase validatedAdd:(NSMethodSignature **)validatedAdd
+       validatedLookup:(NSMethodSignature **)validatedLookup error:(NSError **)error {
     if (validatedAdd) *validatedAdd = nil;
-    self.validationStage = @"concrete_service";
+    if (validatedLookup) *validatedLookup = nil;
+    if (phase) self.validationStage = @"concrete_service";
     Class named = self.resolver(@"CMessageMgr"), actual = object_getClass(manager);
     NSMethodSignature *add = SRHostSignature(actual, @"AddMsg:MsgWrap:"), *get = SRHostSignature(actual, @"GetMsg:LocalID:");
     NSUInteger code = SRHostClassCode(manager, named);
     // Fixed phases and scalar type tokens only: no object descriptions, IDs, class names or addresses.
-    self.serviceChecks[phase] = @{@"managerClassCode": @(code), @"contextClassCode": @(self.contextClassCode),
+    NSMutableDictionary *check = [@{@"managerClassCode": @(code), @"contextClassCode": @(self.contextClassCode),
         @"contextReadFailed": @(self.contextReadFailed), @"serviceReadFailed": @(self.serviceReadFailed),
         @"add": SRHostMethodCheck(actual, named, @"AddMsg:MsgWrap:", add, NO),
-        @"lookup": SRHostMethodCheck(actual, named, @"GetMsg:LocalID:", get, YES)};
-    if (code != 1 && code != 2) return [self fail:@"service_identity_rejected" error:error];
+        @"lookup": SRHostMethodCheck(actual, named, @"GetMsg:LocalID:", get, YES), @"route": @"rejected"} mutableCopy];
+    if (code == 3) {
+        // Validate forwarding on the service returned by MMContext; never unwrap it or call a saved IMP.
+        NSDictionary *forwarding = SRHostForwardingCheck(manager, named, &add, &get);
+        check[@"forwarding"] = forwarding;
+        if ([forwarding[@"accepted"] boolValue]) check[@"route"] = @"forwarding_proxy";
+        if (phase) self.serviceChecks[phase] = check;
+        if (![forwarding[@"accepted"] boolValue]) return [self fail:@"service_forwarding_unverified" error:error];
+    } else {
+        if (code == 1 || code == 2) check[@"route"] = @"direct_instance";
+        if (phase) self.serviceChecks[phase] = check;
+        if (code != 1 && code != 2) return [self fail:@"service_identity_rejected" error:error];
+    }
     if (![SRHostSignatureIssue(add, NO) isEqual:@"compatible"])
         return [self fail:@"concrete_add_abi_incompatible" error:error];
     if (![SRHostSignatureIssue(get, YES) isEqual:@"compatible"])
         return [self fail:@"concrete_lookup_abi_incompatible" error:error];
     if (validatedAdd) *validatedAdd = add;
+    if (validatedLookup) *validatedLookup = get;
     return YES;
 }
 - (id)resolveManagerForPhase:(NSString *)phase error:(NSError **)error {
@@ -255,7 +355,7 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
         manager = SRReadObject(context, @"getService:", @[managerClass], &readError);
         self.serviceReadFailed = readError != nil;
     }
-    if (![self validateManager:manager phase:phase validatedAdd:NULL error:error]) return nil;
+    if (![self validateManager:manager phase:phase validatedAdd:NULL validatedLookup:NULL error:error]) return nil;
     return manager;
 }
 - (BOOL)readyForAccount:(NSString *)account error:(NSError **)error {
@@ -326,7 +426,7 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
                 else if (![self.currentAccount() isEqual:self.account] || !self.environmentAllowed()) reason = @"account_or_environment_changed";
                 else {
                     NSMethodSignature *s = nil;
-                    if (![self validateManager:manager phase:@"pre_submit" validatedAdd:&s error:&error]) reason = error.localizedDescription;
+                    if (![self validateManager:manager phase:@"pre_submit" validatedAdd:&s validatedLookup:NULL error:&error]) reason = error.localizedDescription;
                     else {
                         NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:s];
                         invocation.target = manager; invocation.selector = NSSelectorFromString(@"AddMsg:MsgWrap:");
@@ -364,8 +464,13 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
             self.problem = @"observation_environment_changed"; [self stopObservation]; return;
         }
         if (self.lookupAttempts >= 30 || NSProcessInfo.processInfo.systemUptime >= self.deadline) { [self stopObservation]; return; }
+        NSMethodSignature *lookup = nil;
+        if (![self validateManager:self.manager phase:nil validatedAdd:NULL validatedLookup:&lookup error:NULL]) {
+            self.observationServiceCheckFailed = YES;
+            [self stopObservation]; return;
+        }
         self.lookupAttempts++;
-        id found = SRReadObjectWithObjectAndUnsignedInteger(self.manager, @"GetMsg:LocalID:", self.target, self.localID, NULL);
+        id found = SRHostLookup(self.manager, self.target, self.localID, lookup);
         if (!found) self.lookupMisses++;
         else if (![self matches:found localID:self.localID]) { self.identityConflicts++; self.problem = @"readback_identity_conflict"; [self stopObservation]; }
         else { [self sample:found source:@"local_readback"]; if (self.serverID || self.identityConflicts) [self stopObservation]; }
@@ -391,11 +496,12 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
     } @catch (__unused id exception) { }
     return @{@"schema": @1, @"wechatVersion": self.version, @"abiValidated": @(self.abiValidated),
         @"initializerArgumentType": self.initializerArgumentType ?: @"unchecked", @"initializerCallType": self.initializerCallType ?: @"not_called",
-        @"serviceEvidenceSchema": @1, @"validationStage": self.validationStage, @"serviceChecks": [self.serviceChecks copy],
+        @"serviceEvidenceSchema": @2, @"validationStage": self.validationStage, @"serviceChecks": [self.serviceChecks copy],
         @"activeSendImplemented": @YES, @"batchSendingEnabled": @NO, @"deviceVerified": @NO,
         @"submissionAttempted": @(self.addInvoked), @"hostReturned": @(self.addReturned), @"observing": @(self.observing),
         @"localIDPresent": @(self.localID.unsignedLongLongValue > 0), @"serverIDPresent": @(self.serverID.unsignedLongLongValue > 0),
         @"lookupAttempts": @(self.lookupAttempts), @"lookupMisses": @(self.lookupMisses), @"identityConflicts": @(self.identityConflicts),
+        @"observationServiceCheckFailed": @(self.observationServiceCheckFailed),
         @"state": self.state, @"problem": self.problem ?: @"", @"samples": [self.samples copy], @"methods": methods,
         @"deliveryOutcome": self.addInvoked ? @"uncertain" : @"not_submitted"};
 }
