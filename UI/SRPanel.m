@@ -11,6 +11,8 @@
 #import "Adapter/SRWeChatReader.h"
 #import "Adapter/SRWeChatReceiver.h"
 #import "Adapter/SRWeChatSendProbe.h"
+#import "Adapter/SRWeChatTextSendAdapter.h"
+#import "Adapter/SRWeChatTextSendHost.h"
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "SRPlanScreens.h"
 #import "SRSettingsFallback.h"
@@ -144,6 +146,8 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRWeChatReader *reader;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
+@property(nonatomic, strong) SRWeChatTextSendHost *textSendHost;
+@property(nonatomic, strong) SRWeChatTextSendAdapter *textSendAdapter;
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
@@ -153,6 +157,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, copy) NSString *status;
 @property(nonatomic) BOOL ready;
 @property(nonatomic) BOOL dirty;
+@property(nonatomic) BOOL singleTextSendEnabled;
 @property(nonatomic, copy) void (^didClose)(void);
 @end
 
@@ -165,6 +170,26 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"保存" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     self.reader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
+    __weak typeof(self) weakSelf = self;
+    self.textSendHost = [[SRWeChatTextSendHost alloc] initWithVersion:version
+        classResolver:^Class(NSString *name) { return NSClassFromString(name); }
+        currentAccount:^NSString * { SRPanel *panel = weakSelf; return panel && [panel.reader connect:NULL] ? panel.reader.accountID : nil; }
+        environmentAllowed:^BOOL {
+            SRPanel *panel = weakSelf;
+            return panel && panel.singleTextSendEnabled && UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+        }];
+    self.textSendAdapter = [[SRWeChatTextSendAdapter alloc] initWithVersion:version
+        classResolver:^Class(NSString *name) { return NSClassFromString(name); }
+        currentAccount:^NSString * { SRPanel *panel = weakSelf; return panel && [panel.reader connect:NULL] ? panel.reader.accountID : nil; }
+        environmentAllowed:^BOOL {
+            SRPanel *panel = weakSelf;
+            return panel && panel.singleTextSendEnabled && UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+        }
+        operation:^(NSDictionary *request, SRSendCompletion completion) {
+            SRPanel *panel = weakSelf;
+            if (!panel) { if (completion) completion(@"uncertain", nil, @"Panel is no longer available"); return; }
+            [panel.textSendHost submitRequest:request completion:completion];
+        }];
     self.draft = [SRConfiguration emptyDraft];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(captureChanged:) name:SRRelayStateChangedNotification object:nil];
     [self loadAccount];
@@ -174,6 +199,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [super viewWillAppear:animated];
     if (self.ready && ![self.reader verifyAccount:self.account error:NULL]) {
         self.ready = NO; self.status = @"账号无法核对或已经改变，请重新读取。原账号的设置没有写入新账号。";
+        self.singleTextSendEnabled = NO; [self.textSendAdapter reset];
         [self.receiver stop]; [self.capture cancel];
     }
     [self refresh];
@@ -196,13 +222,16 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (saved) self.draft = [saved mutableCopy]; else self.ready = NO;
     }
     self.dirty = NO;
-    self.status = self.ready ? @"读取适配待真机核对 · 本版不会发送消息" : error.localizedDescription ?: @"无法读取账号";
+    self.singleTextSendEnabled = NO;
+    [self.textSendAdapter reset];
+    self.status = self.ready ? @"读取适配待真机核对 · 单群实验发送默认关闭" : error.localizedDescription ?: @"无法读取账号";
     [self refresh];
 }
 - (BOOL)checkAccount {
     NSError *error = nil;
     if (!self.ready || ![self.reader verifyAccount:self.account error:&error]) {
         self.ready = NO;
+        self.singleTextSendEnabled = NO; [self.textSendAdapter reset];
         [self.receiver stop]; [self.capture cancel];
         self.status = error.localizedDescription ?: @"请先重新读取账号";
         [self refresh]; SRAlert(self, @"操作已停止", self.status); return NO;
@@ -245,10 +274,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     section = SRPanelSection(section);
-    if (section == 0) return 7;
+    if (section == 0) return 8;
     if (section == 1) return 4;
     if (section == 2) return 1;
-    if (section == 4) return 3;
+    if (section == 4) return 4;
     return [self.draft[@"rules"] count] + 3;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -259,7 +288,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (section == 0) return [NSString stringWithFormat:@"SyncRelay %@ · 开发版\n%@", SR_PLUGIN_VERSION, self.status ?: @"真实转发未启用"];
     if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存”。" : @"所有规则共用来源条件；图片采集尚未启用。";
     if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。";
-    if (section == 4) return @"预览和确认都不会发送；切后台或锁屏会取消等待。";
+    if (section == 4) return @"预览和确认不会启动规则；单群实验需单独开启并二次确认，切后台或锁屏会取消等待。";
     return @"母群自动排除，每条最多 200 群；不足按实际数量分组。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
@@ -290,6 +319,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         }
         if (path.row == 5) cell.textLabel.text = @"使用说明";
         if (path.row == 6) cell.textLabel.text = @"导出运行诊断";
+        if (path.row == 7) {
+            cell.textLabel.text = @"单群文字实验发送";
+            UISwitch *toggle = [[UISwitch alloc] init]; toggle.on = self.singleTextSendEnabled;
+            toggle.onTintColor = SRSettingsAccent();
+            [toggle addTarget:self action:@selector(singleTextSendChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryType = UITableViewCellAccessoryNone; cell.accessoryView = toggle; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.detailTextLabel.text = self.singleTextSendEnabled ? @"已开启：仅允许一次、一个目标群" : @"默认关闭，需明确开启";
+        }
     } else if (section == 1) {
         if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"未选择"; }
         else if (path.row == 1) { cell.textLabel.text = @"来源成员"; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 人", (unsigned long)[self.draft[@"senders"] count]]; }
@@ -316,12 +353,29 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (path.row == 0) { cell.textLabel.text = [state isEqual:@"waiting"] ? @"取消等待" : @"等待源消息"; cell.detailTextLabel.text = [state isEqual:@"waiting"] ? @"等待中" : @"手动开始"; }
         if (path.row == 1) { cell.textLabel.text = @"源消息预览"; cell.detailTextLabel.text = [state isEqual:@"preview"] ? @"已锁定 1 条" : ([state isEqual:@"waiting"] ? @"等待中" : @"暂无内容"); }
         if (path.row == 2) { cell.textLabel.text = @"内容计划与历史"; cell.detailTextLabel.text = @"只读"; }
+        if (path.row == 3) {
+            cell.textLabel.text = @"单群文字发送（实验）";
+            cell.detailTextLabel.text = self.singleTextSendEnabled ? ([state isEqual:@"preview"] ? @"选择一个目标群后发送一次" : @"先锁定一条源消息") : @"先在更多设置中开启实验开关";
+            cell.textLabel.textColor = self.singleTextSendEnabled ? UIColor.labelColor : UIColor.tertiaryLabelColor;
+        }
     }
     if (section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
     return cell;
 }
 - (void)floatingEntryChanged:(UISwitch *)toggle {
     self.entryPreferences.floatingEntryEnabled = toggle.on;
+}
+- (void)singleTextSendChanged:(UISwitch *)toggle {
+    if (!toggle.on) { self.singleTextSendEnabled = NO; [self.textSendAdapter reset]; [self refresh]; return; }
+    toggle.on = NO;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"开启单群实验发送？"
+        message:@"只允许对一个明确选择的目标群提交一条文字；不会启动规则、不会批量发送、不会自动重试。非零服务器 ID 只能证明主机关联，不能直接证明目标群已送达。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"开启本次实验" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        self.singleTextSendEnabled = YES; [self refresh];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 - (void)typeChanged:(UISwitch *)toggle {
     if (![self checkAccount]) { [self refresh]; return; }
@@ -550,6 +604,8 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"draftSummary"] = [self diagnosticDraft];
     report[@"runtimeLog"] = SRRuntimeLog.shared.snapshot;
     report[@"manualSendObservation"] = self.sendProbe.diagnostics;
+    report[@"singleTextSendCandidate"] = self.textSendHost.diagnostics;
+    report[@"singleTextSendExperimentEnabled"] = @(self.singleTextSendEnabled);
     report[@"iOS"] = UIDevice.currentDevice.systemVersion;
     report[@"wechatBuild"] = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown";
     return report;
@@ -594,13 +650,13 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     view.font = SRSettingsFont(17, UIFontTextStyleBody); view.adjustsFontForContentSizeCategory = YES;
     view.textColor = UIColor.labelColor; view.backgroundColor = SRSettingsCellBackground();
     view.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
-    view.text = @"当前版本\n这是开发测试版，真实转发尚未启用。保存设置、预览或确认内容都不会向目标群发送消息。\n\n"
+    view.text = @"当前版本\n这是开发测试版，批量规则真实转发尚未启用。保存设置、预览或确认内容都不会向目标群发送消息；只有明确开启的单群文字实验才会提交一次。\n\n"
         @"来源条件\n所有规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片选项仅保存配置，图片采集尚未启用。\n\n"
         @"群聊与分组\n母群和已分配群自动排除。只需搜索并排除不想转发的群，再按每条 100 或 200 群自动分组；数量不足按实际生成，不建空规则。手动全选也会拆分为每条最多 200 群。\n\n"
         @"等待源消息\n先保存设置，再手动开始等待。关闭面板回母群，由指定成员或本人发一条文字；须取得服务器消息 ID 才进入预览。本人候选最多等待确认 30 秒，不用临时本地 ID 替代。\n\n"
         @"预览与计划\n第一条匹配内容锁定后停止等待。核对母群、发送者 wxid、类型和完整正文再确认；候选可能包含离线补同步，不能只凭回调时间判断新旧。确认只建立计划，不开始执行任何规则。\n\n"
         @"暂停采集\n切后台、锁屏或账号改变会取消等待，回前台不自动重启。预览未确认前只保留在内存，退出微信后需重新捕获；已确认计划与历史独立于当前设置。\n\n"
-        @"间隔与发送观察\n随机间隔下限至少 10 秒，上下限相同为固定间隔；随机节拍和小批次不保证平台允许或发送成功。手动发送观察只记录一个测试群的元数据，需你回微信手动发送，120 秒到期或切后台停止，不代发、不读取正文、不判定送达。\n\n"
+        @"间隔与发送观察\n随机间隔下限至少 10 秒，上下限相同为固定间隔；随机节拍和小批次不保证平台允许或发送成功。手动发送观察只记录一个测试群的元数据，需你回微信手动发送，120 秒到期或切后台停止，不代发、不读取正文、不判定送达。单群文字实验必须先打开开关、选择一个目标并二次确认；回读到服务器 ID 仍只记为主机关联，不自动重试。\n\n"
         @"入口与诊断\n主入口始终是“我 → 设置 → SyncRelay 转发”。悬浮入口默认关闭，可自行开启。诊断包含版本、接口签名及脱敏观察摘要，不含账号 wxid、群 ID、消息 ID 或正文。所有采集候选及页面表现仍需真机验证。";
     viewer.view = view;
     [self.navigationController pushViewController:viewer animated:YES];
@@ -641,6 +697,44 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (void)showCapture {
     if (![self.capture.status[@"state"] isEqual:@"preview"]) { SRAlert(self, @"还没有源消息预览", @"请先手动开始等待，再由指定成员在母群发送一条文字并核对预览。"); return; }
     [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier]) animated:YES];
+}
+- (void)beginSingleTextSend {
+    if (!self.singleTextSendEnabled) { SRAlert(self, @"实验开关未开启", @"请先在“更多设置”开启单群文字实验发送；默认关闭。" ); return; }
+    if (![self checkAccount]) return;
+    if (![self.capture.status[@"state"] isEqual:@"preview"] || ![self.capture.preview[@"type"] isEqual:@"text"]) {
+        SRAlert(self, @"还没有可发送的文字预览", @"先保存设置并等待一条母群文字，核对 wxid 和正文后再进行单群实验。" ); return;
+    }
+    NSError *error = nil; NSArray *groups = [self.reader groups:&error];
+    if (!groups) { SRAlert(self, @"无法读取目标群", error.localizedDescription); return; }
+    NSString *source = self.capture.preview[@"group"]; NSMutableArray *targets = [NSMutableArray array];
+    for (NSDictionary *group in groups) if (![group[@"id"] isEqual:source]) [targets addObject:group];
+    __weak typeof(self) weakSelf = self;
+    [self picker:@"单群实验：只选一个目标群" rows:targets selected:@[] excluded:NSSet.set multiple:NO excluding:NO completion:^(NSArray *chosen) {
+        SRPanel *panel = weakSelf; if (!panel || !chosen.count || ![panel checkAccount]) return;
+        NSString *target = chosen.firstObject[@"id"]; NSString *name = chosen.firstObject[@"name"] ?: target;
+        UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"最后确认：只发送一次"
+            message:[NSString stringWithFormat:@"目标群：%@\n\n将使用已锁定的母群文字提交一次。不会发送到其他群；无法确认送达时不会自动重试。", name]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"发送一次" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+            if (![panel checkAccount]) return;
+            [panel.textSendAdapter reset];
+            NSError *failure = nil;
+            if (![panel.textSendAdapter prepareForAccount:panel.account targetGroup:target sourceSnapshot:panel.capture.preview confirmed:YES error:&failure]) {
+                SRAlert(panel, @"发送门禁未通过", failure.localizedDescription); return;
+            }
+            NSDictionary *delivery = @{ @"target": target, @"state": @"submitting" };
+            [panel.textSendAdapter submitDelivery:delivery snapshot:panel.capture.preview completion:^(NSString *state, NSString *messageID, NSString *reason) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSString *detail = reason ?: @"没有可核对的主机结果";
+                    NSString *title = [state isEqual:@"failed"] ? @"主机明确失败" : @"已提交，待核对";
+                    SRAlert(panel, title, messageID.length ? [NSString stringWithFormat:@"消息关联 ID：%@\n%@", messageID, detail] : detail);
+                    [panel refresh];
+                });
+            }];
+        }]];
+        SRPresentAlert(panel, confirm);
+    }];
 }
 - (void)beginCapture {
     [SRRuntimeLog.shared record:@"capture_attempt" facts:[self diagnosticDraft]];
@@ -695,6 +789,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (path.row == 0) [self beginCapture];
         if (path.row == 1) [self showCapture];
         if (path.row == 2) [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, [self planVerifier]) animated:YES];
+        if (path.row == 3) [self beginSingleTextSend];
     }
     if (section == 3) {
         if (path.row == 0) [self chooseExclusions];

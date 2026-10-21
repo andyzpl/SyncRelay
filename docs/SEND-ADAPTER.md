@@ -1,6 +1,6 @@
 # 单群文字发送适配器门禁
 
-日期：2026-10-21。当前实现只完成“单群、单条文字、明确二次确认”的适配器门禁和模拟测试；生产初始化不注入发送操作，因此仍不会主动发送消息。
+日期：2026-10-21。当前实现已补充“单群、单条文字”的微信主机调用候选和 ABI 门禁，但生产初始化仍不注入发送操作，因此仍不会主动发送消息。
 
 ## 为什么先做门禁
 
@@ -19,7 +19,9 @@
 ## 文件与测试
 
 - `Adapter/SRWeChatTextSendAdapter.h/.m`：单目标文本 transport 门禁与脱敏状态。
+- `Adapter/SRWeChatTextSendHost.h/.m`：仅用于下一轮设备核对的 `MMContext → CMessageMgr → CMessageWrap` 文字构造候选；要求 `currentContext`、`getService:`、`initWithMsgType:`、文字 setter、`AddMsg:MsgWrap:` 和 `GetMsg:LocalID:` 的运行时编码一致。构造后只回读本地/服务器 ID；非零服务器 ID 仍只记为“主机关联”，不直接判定目标群送达。
 - `tests/single_text_send_adapter_test.m`：二次确认、版本/ABI、源快照冻结、默认关闭、一次性提交和禁止重试。
+- `tests/text_send_host_test.m`：模拟 `CMessageWrap` 构造、字段写入、`AddMsg` 调用、精确本地 ID 读回和“关联不等于送达”的回调门禁。
 - `Core/SRRunner.m`：仍未接入该适配器，避免在手机验证前打开主动发送路径。
 
-CI 会把该模拟测试与现有核心测试一起运行；当前 Windows 固定 SDK/libclang 检查已覆盖新增源码，arm64/arm64e 共 58 项语法检查全部通过。0.2.8 候选包只用于安装、门禁和诊断验证；构造字段、调用线程和可靠回执仍需一个明确授权测试群单独核对，不执行 100/200 群规则。
+CI 会把两个模拟测试与现有核心测试一起运行；当前 Windows 固定 SDK/libclang 检查已覆盖新增源码，arm64/arm64e 语法检查继续作为构建前门禁。主机候选尚未接入 `SRRunner` 或设置按钮；构造字段、调用线程和可靠回执仍需一个明确授权测试群单独核对，不执行 100/200 群规则。

@@ -54,6 +54,10 @@
 
 观察报告若出现 `manual_no_outgoing_observed`，只表示本窗口没有匹配回调；它不是发送失败证明。`observerOnly` 必须为 `true` 且 `sendingEnabled` 必须为 `false`，否则解析器会报 `manual_observation_not_read_only`，该报告不能用于适配放行。
 
+### 单群文字实验候选
+
+`singleTextSendCandidate` 记录下一轮设备核对用的 `MMContext → CMessageMgr → CMessageWrap` 候选能力。生产初始化不自动注入发送操作；面板里的实验开关也不持久化，关闭面板或重新打开后默认关闭。候选即使读到非零服务器 ID，也只表示主机关联，不能直接解释为目标群已送达。`singleTextSendExperimentEnabled` 仅表示当前面板会话是否明确开启该开关。
+
 捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束。错误码必须结合事件与模块看，不跨模块猜含义。
 
 ## 方向证据子格式 1 / 2

@@ -39,6 +39,7 @@ jobs:
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRPacing.c tests/plan_queries_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/plan-queries-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatSendProbe.m tests/send_probe_test.m -framework Foundation -o "$RUNNER_TEMP/send-probe-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatTextSendAdapter.m tests/single_text_send_adapter_test.m -framework Foundation -o "$RUNNER_TEMP/single-text-send-adapter-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatTextSendHost.m tests/text_send_host_test.m -framework Foundation -o "$RUNNER_TEMP/text-send-host-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatSettingsEntry.m Core/SREntryPreferences.m tests/settings_entry_test.m -framework Foundation -o "$RUNNER_TEMP/settings-entry-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRRuntimeLog.m tests/runtime_log_test.m -framework Foundation -o "$RUNNER_TEMP/runtime-log-test"
           for pass in 1 2 3; do
@@ -50,6 +51,7 @@ jobs:
             "$RUNNER_TEMP/plan-queries-test"
             "$RUNNER_TEMP/send-probe-test"
             "$RUNNER_TEMP/single-text-send-adapter-test"
+            "$RUNNER_TEMP/text-send-host-test"
             "$RUNNER_TEMP/settings-entry-test"
             "$RUNNER_TEMP/runtime-log-test"
           done
