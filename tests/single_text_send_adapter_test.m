@@ -82,6 +82,19 @@ int main(void) {
         }];
         CHECK(calls == 1);
 
+        __block SRSendCompletion delayed = nil; __block NSString *staleResult = nil;
+        SRWeChatTextSendAdapter *generation = [[SRWeChatTextSendAdapter alloc] initWithVersion:@"8.0.79"
+            classResolver:resolverFor(FakeMessageMgr.class) currentAccount:^NSString *{ return @"account"; }
+            environmentAllowed:^BOOL{ return YES; }
+            operation:^(__unused NSDictionary *value, SRSendCompletion completion) { delayed = [completion copy]; }];
+        CHECK([generation prepareForAccount:@"account" targetGroup:@"target@chatroom" sourceSnapshot:source() confirmed:YES error:NULL]);
+        [generation submitDelivery:delivery snapshot:source() completion:^(NSString *state, NSString *messageID, NSString *reason) {
+            (void)messageID; (void)reason; staleResult = state;
+        }];
+        CHECK(delayed != nil); [generation reset]; delayed(@"confirmed", @"late-server", nil);
+        CHECK(staleResult == nil && [generation.diagnostics[@"state"] isEqual:@"idle"] &&
+            [generation.diagnostics[@"callbackCount"] isEqual:@0]);
+
         SRWeChatTextSendAdapter *blocked = [[SRWeChatTextSendAdapter alloc] initWithVersion:@"8.0.79"
             classResolver:resolverFor(FakeMessageMgr.class) currentAccount:^NSString *{ return @"account"; }
             environmentAllowed:^BOOL{ return environment; } operation:^(__unused NSDictionary *request, __unused SRSendCompletion completion) {}];

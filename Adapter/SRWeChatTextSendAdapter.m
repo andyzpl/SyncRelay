@@ -19,6 +19,7 @@
 @property(nonatomic) BOOL wrapABIValidated;
 @property(nonatomic) BOOL submitted;
 @property(nonatomic) NSUInteger callbackCount;
+@property(nonatomic) NSUInteger generation;
 @end
 
 static const char *SRTextSendType(const char *type) {
@@ -125,7 +126,7 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
         if (self.submitted) return [self fail:@"Reset the previous single-target test before preparing again" error:error];
         self.account = account; self.group = group; self.snapshot = frozen;
         self.abiValidated = YES; self.wrapABIValidated = YES; self.state = @"prepared"; self.problem = nil;
-        self.outcome = @"not_determined"; self.callbackCount = 0;
+        self.outcome = @"not_determined"; self.callbackCount = 0; self.generation++;
     }
     return YES;
 }
@@ -143,9 +144,10 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
 }
 
 - (void)submitDelivery:(NSDictionary *)delivery snapshot:(NSDictionary *)snapshot completion:(SRSendCompletion)completion {
-    NSString *account, *group; NSDictionary *source; SRTextSendOperation operation; BOOL alreadySubmitted;
+    NSString *account, *group; NSDictionary *source; SRTextSendOperation operation; BOOL alreadySubmitted; NSUInteger generation;
     @synchronized (self) {
         account = self.account; group = self.group; source = self.snapshot; operation = self.operation; alreadySubmitted = self.submitted;
+        generation = self.generation;
     }
     NSString *reason = nil;
     if (alreadySubmitted) reason = @"A single-target test does not retry automatically";
@@ -166,7 +168,7 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
     __weak typeof(self) weakSelf = self;
     SRSendCompletion guarded = ^(NSString *state, NSString *messageID, NSString *callbackReason) {
         @synchronized (weakSelf) {
-            if (callbackUsed) return;
+            if (callbackUsed || weakSelf.generation != generation) return;
             callbackUsed = YES; weakSelf.callbackCount++;
             if ([state isEqual:@"confirmed"] && messageID.length) weakSelf.outcome = @"confirmed";
             else if ([state isEqual:@"failed"]) weakSelf.outcome = @"failed";
@@ -184,7 +186,7 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
 - (void)reset {
     @synchronized (self) {
         self.account = nil; self.group = nil; self.snapshot = nil; self.abiValidated = NO; self.wrapABIValidated = NO;
-        self.submitted = NO; self.state = @"idle"; self.problem = nil; self.outcome = @"not_determined"; self.callbackCount = 0;
+        self.submitted = NO; self.state = @"idle"; self.problem = nil; self.outcome = @"not_determined"; self.callbackCount = 0; self.generation++;
     }
 }
 
