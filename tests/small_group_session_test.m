@@ -209,35 +209,38 @@ int main(void) {
         CHECK([store claimTextExperiment:source(@"legacy") configuration:draft(3) account:@"account" target:@"target0@chatroom" error:NULL]);
         rules = makePlan(store, @"legacy", 3); CHECK(![store startSmallGroupRule:rules[0][@"id"] account:@"account" error:NULL]);
 
-        // Twenty targets survive a paused restart without replaying submitted targets.
-        rules = makePlan(store, @"twenty", 20); rule = rules[0][@"id"]; session = newSession();
-        CHECK([session startRule:rule account:@"account" error:NULL]); run = latest(store, rule);
-        CHECK([[SRExecutionProgress modelForStatus:session.status][@"total"] isEqual:@20]);
+        // Drain all main-thread weak-load temporaries between simulated processes.
+        rules = makePlan(store, @"twenty", 20); rule = rules[0][@"id"];
         NSUInteger batchStart = hosts.count;
         NSMutableSet *seenTargets = [NSMutableSet set];
-        for (NSUInteger i = 0; i < 20; i++) {
+        for (NSUInteger half = 0; half < 2; half++) {
             @autoreleasepool {
-            if (i == 10) {
-                CHECK(!old);
-                store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
-                CHECK(count(store, run, @"submitted") == 10 && count(store, run, @"pending") == 10);
-                session = newSession(); now += 1000; [session tick]; pump(session);
-                CHECK(hosts.count == batchStart + i);
-                CHECK([session resumeRun:run account:@"account" error:NULL]);
-            }
-            now += 9; [session tick]; pump(session); CHECK(hosts.count == batchStart + i);
-            now += 1; [session tick]; pump(session); CHECK(hosts.count == batchStart + i + 1);
-            NSString *target = hosts.lastObject.request[@"target"];
-            CHECK(![seenTargets containsObject:target]); [seenTargets addObject:target];
-            [hosts.lastObject finish]; [session tick];
-            CHECK(count(store, run, @"submitted") == i + 1);
-            if (i == 9) {
-                CHECK([session pauseForAccount:@"account" error:NULL]);
-                CHECK(!session.needsIdleTimer);
-                now += 1000; [session tick]; pump(session); CHECK(hosts.count == batchStart + 10);
-                // Drain temporary weak loads before simulating a fresh process owner.
-                old = session; session = nil;
-            }
+                if (half == 1) {
+                    CHECK(!old);
+                    store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
+                    CHECK(count(store, run, @"submitted") == 10 && count(store, run, @"pending") == 10);
+                }
+                session = newSession();
+                if (half == 0) {
+                    CHECK([session startRule:rule account:@"account" error:NULL]); run = latest(store, rule);
+                } else {
+                    now += 1000; [session tick]; pump(session); CHECK(hosts.count == batchStart + 10);
+                    CHECK([session resumeRun:run account:@"account" error:NULL]);
+                }
+                CHECK([[SRExecutionProgress modelForStatus:session.status][@"total"] isEqual:@20]);
+                for (NSUInteger i = half * 10; i < (half + 1) * 10; i++) {
+                    now += 9; [session tick]; pump(session); CHECK(hosts.count == batchStart + i);
+                    now += 1; [session tick]; pump(session); CHECK(hosts.count == batchStart + i + 1);
+                    NSString *target = hosts.lastObject.request[@"target"];
+                    CHECK(![seenTargets containsObject:target]); [seenTargets addObject:target];
+                    [hosts.lastObject finish]; [session tick];
+                    CHECK(count(store, run, @"submitted") == i + 1);
+                }
+                if (half == 0) {
+                    CHECK([session pauseForAccount:@"account" error:NULL]); CHECK(!session.needsIdleTimer);
+                    now += 1000; [session tick]; pump(session); CHECK(hosts.count == batchStart + 10);
+                    old = session; session = nil;
+                }
             }
         }
         CHECK(seenTargets.count == 20 && !session.busy && !session.needsIdleTimer);
