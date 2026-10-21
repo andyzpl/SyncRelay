@@ -56,7 +56,10 @@ int main(void) {
             }
             currentAccount:^NSString *{ return @"wxid_account"; }
             environmentAllowed:^BOOL{ return YES; }];
-        CHECK([host readyForAccount:@"wxid_account" error:NULL]);
+        NSError *readyError = nil;
+        BOOL ready = [host readyForAccount:@"wxid_account" error:&readyError];
+        if (!ready) fprintf(stderr, "ready error: %s\n", readyError.localizedDescription.UTF8String);
+        CHECK(ready);
         __block NSString *state = nil; __block NSString *reason = nil; __block BOOL callbackShapeOK = NO;
         [host submitRequest:@{ @"account": @"wxid_account", @"target": @"room@chatroom",
             @"payload": @{ @"text": @"hello" } } completion:^(NSString *value, NSString *messageID, NSString *detail) {
