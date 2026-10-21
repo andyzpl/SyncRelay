@@ -6,6 +6,8 @@
 
 离线快照能看到 `receiveMessageWrapWithType1/3/34/42/47/49/1000` 这些分支；其中只有 type 1 的 `m_nsContent` 文字读取和 type 3 的 `getMsgHdOrMiddleImg:` 图片读取得到过 payload 级证据。快照里的 `sendVideoMessage...`、`sendCardMsgWithShareUser...`、`AddAppMsg:` 和 `AddVideoMsg...` 是发送辅助方法，不是接收 ABI 证明。不要把常见枚举直接写成“43=视频”或“42=名片”。
 
+已核对的 Mikoto 2.5.0 注册编码如下（均为 `meta:PJHelper` 的类方法，返回对象，参数为 wrap 与用户名）：`receiveMessageWrapWithType1:WithUserName:` (`0x27943fc`)、`Type3` (`0x2798bf8`)、`Type49` (`0x2799388`)、`Type1000` (`0x279d7d4`)、`Type34` (`0x279e884`)、`Type47` (`0x279fdcc`)、`Type42` (`0x27a0324`)，统一 ABI `@32@0:8@16@24`。二进制中没有 `receiveMessageWrapWithType43` 注册。上述方法的存在不等于对应媒体 getter 或 payload schema 已知；目前仍禁止据此转发未知类型。
+
 ## 设备步骤
 
 1. 选择一个授权测试母群和一个确定的来源 wxid，只勾选“文字”，保存后点击“开始等待（不发送）”。这样未知媒体不会进入图片等待，最后的文字可用来结束本次采样。

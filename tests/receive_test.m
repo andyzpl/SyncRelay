@@ -305,18 +305,30 @@ static void checkImageCapture(void) {
     CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
     // Unknown host message types are observed for diagnostics but never
     // treated as capturable media. Keep the probe's uint32 boundary exact.
-    ReceiveWrap *unknown = wrap(); unknown.m_uiMessageType = 42; unknown.m_n64MesSvrID = 1001;
+    NSArray *unverifiedTypes = @[@34, @42, @43, @47, @49];
+    for (NSNumber *messageType in unverifiedTypes) {
+        ReceiveWrap *unknown = wrap(); unknown.m_uiMessageType = messageType.unsignedIntValue;
+        unknown.m_n64MesSvrID = 1001 + messageType.unsignedIntValue;
+        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:unknown];
+    }
     ReceiveWrap *maxType = wrap(); maxType.m_uiMessageType = UINT32_MAX; maxType.m_n64MesSvrID = 1002;
-    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:unknown];
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:maxType]; pump();
     NSArray *probeRows = receiver.diagnostics[@"messageTypeProbe"][@"rows"];
     NSArray *probeSequence = receiver.diagnostics[@"messageTypeProbe"][@"sequence"];
-    CHECK(probeRows.count == 2);
-    CHECK([probeRows[0][@"type"] unsignedLongLongValue] == 42 && [probeRows[0][@"count"] unsignedIntegerValue] == 1);
-    CHECK([probeRows[1][@"type"] unsignedLongLongValue] == UINT32_MAX && [probeRows[1][@"count"] unsignedIntegerValue] == 1);
-    CHECK(probeSequence.count == 2 && [probeSequence[0] unsignedLongLongValue] == 42 &&
-        [probeSequence[1] unsignedLongLongValue] == UINT32_MAX);
-    CHECK(!received.count && [receiver.diagnostics[@"counters"][@"receive_type_filtered"] unsignedIntegerValue] == 2);
+    CHECK(probeRows.count == unverifiedTypes.count + 1);
+    for (NSUInteger i = 0; i < unverifiedTypes.count; i++) {
+        CHECK([probeRows[i][@"type"] unsignedLongLongValue] == unverifiedTypes[i].unsignedLongLongValue);
+        CHECK([probeRows[i][@"count"] unsignedIntegerValue] == 1);
+        NSNumber *type = unverifiedTypes[i];
+        if ([type isEqual:@34] || [type isEqual:@42] || [type isEqual:@47] || [type isEqual:@49])
+            CHECK([probeRows[i][@"observedRoute"] isEqual:[NSString stringWithFormat:@"receiveMessageWrapWithType%@", type]]);
+        else CHECK(!probeRows[i][@"observedRoute"]); // 43 has no static route evidence.
+    }
+    CHECK([probeRows.lastObject[@"type"] unsignedLongLongValue] == UINT32_MAX &&
+        [probeRows.lastObject[@"count"] unsignedIntegerValue] == 1 && !probeRows.lastObject[@"observedRoute"]);
+    CHECK(probeSequence.count == unverifiedTypes.count + 1 &&
+        [probeSequence.lastObject unsignedLongLongValue] == UINT32_MAX);
+    CHECK(!received.count && [receiver.diagnostics[@"counters"][@"receive_type_filtered"] unsignedIntegerValue] == unverifiedTypes.count + 1);
     ReceiveWrap *text = wrap(); [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:text];
     ReceiveWrap *unselected = wrap(); unselected.m_uiMessageType = 3; unselected.m_nsRealChatUsr = @"wxid_other";
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:unselected]; pump();
