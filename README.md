@@ -2,13 +2,15 @@
 
 微信母群消息手动分批转发插件，目标环境 iOS 16.0.3、微信 8.0.76 / 8.0.79。
 
-## 当前状态：0.2.8 候选包，真实转发未启用
+## 当前状态：0.2.8 普通 DEB 已构建，真实转发未启用
 
 设置页按钮改为“保存”，成功提示“已保存”，相关说明统一称“设置/规则”，不改变按账号保存和历史隔离。插件自己的导航栏强制不透明，普通/滚动边缘/紧凑模式一致；不修改微信宿主或全局 appearance。0.2.8 候选包在 0.2.7 的消息读取修正基础上增加默认关闭的单群文字适配器门禁，真实转发仍未启用。手机步骤见 `docs/DEVICE-CHECK-0.2.7.md` 和 `docs/SEND-ADAPTER.md`。
 
-0.2.7 交付包当时通过本地 54 项 arm64/arm64e 语法检查、14 项 Python 测试（12 项诊断解析、2 项 UI 源码契约）；[私有 Actions 39469338784](https://github.com/andyzpl/SyncRelay/actions/runs/39469338784) 的 28 条核心 PASS、14 项 Python 测试、普通 DEB 构建/双架构检查/上传均通过。0.2.8 候选源码当前已通过 58 项 arm64/arm64e 语法检查和 17 项 Python 测试，等待本轮 CI 及 DEB 校验。下载后的包仍不等于手机捕获或视觉通过。
+0.2.7 交付包当时通过本地 54 项 arm64/arm64e 语法检查、14 项 Python 测试（12 项诊断解析、2 项 UI 源码契约）；[私有 Actions 39469338784](https://github.com/andyzpl/SyncRelay/actions/runs/39469338784) 的 28 条核心 PASS、14 项 Python 测试、普通 DEB 构建/双架构检查/上传均通过。0.2.8 已通过 58 项 arm64/arm64e 语法检查、17 项 Python 测试以及本轮 CI 的 31 条核心 PASS，普通 DEB 已完成双架构、载荷、签名存在性、依赖和 SHA-256 核验；包仍不等于手机捕获或视觉通过。
 
 上一轮安装包（0.2.7）：`dist/0.2.7-test-39469338784/andyz.syncrelay_0.2.7_iphoneos-arm.deb`，158344 字节；源码 `a9445759ba07a16e60c740438becd8260ac2caf2`，后续文档提交不改变包身份。SHA-256：`49ba337d125b7bba4725eef80a844687fc9912dc8d41d2a1c0d92747eea8b616`。0.2.8 包将单独记录源码提交、CI run 和 SHA-256，不覆盖这份历史产物。真实转发保持关闭。
+
+本轮 0.2.8 安装包：`dist/0.2.8-test-39520101009/andyz.syncrelay_0.2.8_iphoneos-arm.deb`，165014 字节；源码 `b60fee9cefe39384dc25de69a68bfc71e22b3648`；[私有 Actions 39520101009](https://github.com/andyzpl/SyncRelay/actions/runs/39520101009)，artifact `12310912776`。SHA-256：`49d8c2ef68fc3c8c9622d66645365b31ead3a40ac6284c0f7250ae7f9719ed75`。`ci-provenance.json`、`SHA256SUMS` 和 `DEVELOPMENT-NOTICE.txt` 在同目录；`deviceVerified=false`，请按 `docs/DEVICE-CHECK-0.2.8.md` 做单群测试。
 
 2026-10-21 收到该包的成功手机诊断：iOS 16.0.3、微信 8.0.79.35，构建提交/run 一致。本人文字方向 from/to 已可读（7），旧实例反射状态仍为 2；01:56:43.354 的本人发送回调最初无服务器 ID，经过待确认及一次精确本地 ID 回读尝试，01:56:44.402 被接受进入预览（offered 1、rejected 0、reason 0），随后自动停止等待，耗时约 1.048 秒。结合生产门禁可确认该次取得非零服务器 ID，不证明投递成功，也不能仅凭回读尝试事件断言最终 ID 来自回读对象。此报告不包含原始 ID/正文，仍须用户核对预览；他人成员、图片、母群切换、群池完整性、真实转发及顶部视觉不由此报告验收。详情见 `docs/DEVICE-CHECK-0.2.7.md`。
 
