@@ -2,13 +2,19 @@
 
 本人图片捕获和实际预览正确已获用户确认，记录见 `DEVICE-RESULT-0.2.14.md`。本轮只补充手机原生图片消息构造器与图片扩展的方法签名证据，不以离线模拟代替实际 ABI，也不把接口可用当作图片发出。
 
+## 本轮包身份（已核验，待手机检查）
+
+普通 DEB：`dist/0.2.15-test-39550309486/andyz.syncrelay_0.2.15_iphoneos-arm.deb`，215558 字节；SHA-256 `c0d7ceff8ced07223f6814dcb07f81feae1517d38628dbce719ee5618bc936e7`；[公开 Actions 39550309486](https://github.com/andyzpl/SyncRelay/actions/runs/39550309486)，编译源码 `b76ac5f051072f8e78116aadcf9e9a9a92b4f222`，artifact `12323397520`。
+
+本地 43 项 Python 测试和 74 项 arm64/arm64e 语法检查通过；公开 macOS CI 的 43 项 Python 测试、43 条原生 PASS、普通 DEB 构建/载荷校验及上传通过。下载后独立核对 artifact digest、包校验和、两架构构建身份/接口检查标记/签名载荷、系统依赖与微信主进程过滤。以上不等于手机接口或图片发送通过；本轮图片接口检查不调用图片 setter、消息服务或发送；既有单群文字实验门禁不变，图片实发/批量/自动重试仍关闭。
+
 ## 历史构建阻断与公开重建
 
 源码 `0139ee7c7e2d56ed5fb5341f0ed1d29969001070` 已推送私有库。手动打包 run `39549098574` / job `119053941936` 在分配 runner 前失败，`runner_id=0`、steps 为空。GitHub 注释为：
 
 > The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings
 
-同源码 push 测试 run `39549080751` 也失败。该次没有执行 CI 原生测试、编译或打包，无可交付包或哈希。此后用户明确要求改为公开项目，2026-10-21 已检查历史并切换为 public，准备使用公开标准 macOS runner 重新构建。切换成功不等于构建成功；新产物完成核验前，不把旧包重命名，也不要求在旧包中查找新按钮。重建结果与确切包身份另记。
+同源码 push 测试 run `39549080751` 也失败。该次没有执行 CI 原生测试、编译或打包，无可交付包或哈希。此后用户明确要求改为公开项目，2026-10-21 已检查历史并切换为 public，此后公开标准 macOS runner 已完成新的测试、构建和下载后核验，确切身份见本页包记录。原失败记录不变；不是旧包改名，不代表手机接口已通过。
 
 ## 安装与检查
 
