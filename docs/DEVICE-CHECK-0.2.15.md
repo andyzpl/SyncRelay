@@ -2,6 +2,8 @@
 
 本人图片捕获和实际预览正确已获用户确认，记录见 `DEVICE-RESULT-0.2.14.md`。本轮只补充手机原生图片消息构造器与图片扩展的方法签名证据，不以离线模拟代替实际 ABI，也不把接口可用当作图片发出。
 
+后续 1103 真机报告已确认：本轮构建在 iOS 16.0.3 / 微信 8.0.79.35 上检查通过，使用 origin 分支，未调用 setter 或发送。详见 `DEVICE-RESULT-0.2.15.md`；原测试设备无需重复本页检查，以下保留为检查流程及其他环境的证据范围。
+
 ## 本轮包身份（已核验，待手机检查）
 
 普通 DEB：`dist/0.2.15-test-39550309486/andyz.syncrelay_0.2.15_iphoneos-arm.deb`，215558 字节；SHA-256 `c0d7ceff8ced07223f6814dcb07f81feae1517d38628dbce719ee5618bc936e7`；[公开 Actions 39550309486](https://github.com/andyzpl/SyncRelay/actions/runs/39550309486)，编译源码 `b76ac5f051072f8e78116aadcf9e9a9a92b4f222`，artifact `12323397520`。

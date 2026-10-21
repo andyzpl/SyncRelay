@@ -36,7 +36,7 @@ class ImageContractTests(unittest.TestCase):
         report['sourceCapture']['state'] = 'preview'
         findings = analyze(report)
         self.assertIn('image_snapshot_ready', {row['code'] for row in findings})
-        self.assertIn('image sending is not enabled', next(row['message'] for row in findings if row['code'] == 'image_snapshot_ready'))
+        self.assertIn('preview alone does not send', next(row['message'] for row in findings if row['code'] == 'image_snapshot_ready'))
 
     def test_capture_uses_frozen_sender_and_type_filters(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')

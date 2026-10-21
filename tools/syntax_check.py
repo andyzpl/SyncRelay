@@ -26,13 +26,14 @@ for arch in ('arm64', 'arm64e'):
                  'Core/SRSourceMessage.m', 'Core/SRImageAssetStore.m', 'Core/SRSourceCapture.m', 'Core/SRRunner.m',
                  'Adapter/SRRuntime.m', 'Adapter/SRWeChatImageSource.m', 'Adapter/SRWeChatReader.m', 'Adapter/SRWeChatReceiver.m', 'Adapter/SRWeChatSendProbe.m',
                  'Adapter/SRWeChatTextSendAdapter.m', 'Adapter/SRWeChatTextSendHost.m', 'Adapter/SRWeChatImageSendProbe.m',
+                 'Adapter/SRWeChatImageSendHost.m', 'Adapter/SRWeChatImageMaterial.m',
                  'Adapter/SRWeChatSettingsEntry.m', 'Core/SREntryPreferences.m', 'Core/SRRuntimeLog.m',
                  'UI/SRPanel.m', 'UI/SRPlanScreens.m', 'UI/SRSettingsFallback.m',
                  'Tweak/SRBootstrap.m', 'tests/store_test.m', 'tests/adapter_test.m',
                  'tests/relay_pipeline_test.m', 'tests/group_planner_test.m',
                  'tests/receive_test.m', 'tests/plan_queries_test.m', 'tests/send_probe_test.m',
                  'tests/single_text_send_adapter_test.m', 'tests/text_send_host_test.m',
-                 'tests/image_source_test.m', 'tests/image_asset_test.m', 'tests/image_send_probe_test.m', 'tests/settings_entry_test.m', 'tests/runtime_log_test.m'):
+                 'tests/image_source_test.m', 'tests/image_asset_test.m', 'tests/image_send_probe_test.m', 'tests/image_send_host_test.m', 'tests/settings_entry_test.m', 'tests/runtime_log_test.m'):
         unit = index.parse(str(root / file), args=flags)
         diagnostics = [str(d) for d in unit.diagnostics]
         passed = not any(d.severity >= cindex.Diagnostic.Warning for d in unit.diagnostics)

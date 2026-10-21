@@ -76,6 +76,17 @@ int main(void) {
         SRStore *store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store);
         SRSourceCapture *capture = [[SRSourceCapture alloc] initWithStore:store];
         payload = [store.imageAssets saveData:data source:message error:NULL]; message[@"payload"] = payload;
+        CHECK(![store claimImageExperiment:message configuration:configuration() account:@"other" target:@"target@chatroom" error:NULL]);
+        CHECK(![store claimImageExperiment:message configuration:configuration() account:@"account" target:@"mother@chatroom" error:NULL]);
+        CHECK(![store claimImageExperiment:message configuration:configuration() account:@"account" target:@"unallocated@chatroom" error:NULL]);
+        CHECK([store claimImageExperiment:message configuration:configuration() account:@"account" target:@"target@chatroom" error:NULL]);
+        CHECK(![store claimImageExperiment:message configuration:configuration() account:@"account" target:@"target@chatroom" error:NULL]);
+        CHECK([[store imageExperimentSummaryForAccount:@"account" error:NULL][@"claimed"] boolValue]);
+        CHECK(![[store imageExperimentSummaryForAccount:@"other" error:NULL][@"claimed"] boolValue]);
+        NSMutableDictionary *asText = [message mutableCopy];
+        asText[@"type"] = @"text"; asText[@"payload"] = @{@"text": @"synthetic"};
+        NSMutableDictionary *both = configuration(); both[@"types"] = @[@"text", @"image"];
+        CHECK(![store claimTextExperiment:asText configuration:both account:@"account" target:@"target@chatroom" error:NULL]);
         CHECK([capture armForAccount:@"account" configuration:configuration() error:NULL] && [capture offerEnvelope:message]);
         [capture cancel]; CHECK(![store.imageAssets dataForPayload:payload source:message error:NULL]);
         payload = [store.imageAssets saveData:data source:message error:NULL]; message[@"payload"] = payload;
@@ -84,6 +95,8 @@ int main(void) {
         CHECK([store.imageAssets dataForPayload:payload source:message error:NULL]);
         capture = nil; store = nil; store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store);
         NSDictionary *restored = [store plan:plan account:@"account" error:NULL][@"snapshot"];
+        CHECK(![store claimImageExperiment:message configuration:configuration() account:@"account" target:@"target@chatroom" error:NULL]);
+        CHECK([[store imageExperimentSummaryForAccount:@"account" error:NULL][@"claimed"] boolValue]);
         CHECK([[store.imageAssets dataForPayload:restored[@"payload"] source:restored error:NULL] isEqual:data]);
         CHECK(![store plan:plan account:@"other" error:NULL]);
         NSMutableDictionary *orphanSource = source(); orphanSource[@"messageID"] = @"svr:99";

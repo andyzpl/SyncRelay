@@ -44,6 +44,7 @@ jobs:
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRRuntimeLog.m tests/runtime_log_test.m -framework Foundation -o "$RUNNER_TEMP/runtime-log-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatImageSource.m tests/image_source_test.m -framework Foundation -o "$RUNNER_TEMP/image-source-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRWeChatImageSendProbe.m tests/image_send_probe_test.m -framework Foundation -o "$RUNNER_TEMP/image-send-probe-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatImageSendHost.m Core/SRImageAssetStore.m tests/image_send_host_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -o "$RUNNER_TEMP/image-send-host-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRImageAssetStore.m Core/SRStore.m Core/SRSourceMessage.m Core/SRSourceCapture.m Core/SRConfiguration.m Core/SRPacing.c tests/image_asset_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/image-asset-test"
           for pass in 1 2 3; do
             "$RUNNER_TEMP/store-test"
@@ -59,6 +60,7 @@ jobs:
             "$RUNNER_TEMP/runtime-log-test"
             "$RUNNER_TEMP/image-source-test"
             "$RUNNER_TEMP/image-send-probe-test"
+            "$RUNNER_TEMP/image-send-host-test"
             "$RUNNER_TEMP/image-asset-test"
           done
       - name: Install build tools
@@ -108,7 +110,7 @@ jobs:
           otool -L "$dylib"
           cp "$deb" dist/
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
-          printf 'Development build. Batch rule sending is disabled; the panel only exposes an explicitly enabled single-target text experiment. Image send contract inspection allocates one unsent wrap and checks extension method ABIs only: no image setter, service or submission call. Image sending remains disabled. Device compatibility and delivery are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
+          printf 'Development build. Batch rule sending is disabled. Explicit single-target text or static-image experiments share one process attempt. Image loading can write native media before submission. No automatic retry; ID/status is not delivery proof. The separate image contract inspection remains unsent and does not call image setters. Device image loading/sending and compatibility are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         with:

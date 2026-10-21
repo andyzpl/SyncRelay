@@ -51,5 +51,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)claimTextExperiment:(NSDictionary *)source configuration:(NSDictionary *)configuration
                    account:(NSString *)account target:(NSString *)target error:(NSError **)error;
 - (nullable NSDictionary *)textExperimentSummaryForAccount:(NSString *)account error:(NSError **)error;
+/* Independent image ledger; both experiment ledgers reject a source already claimed by either type. */
+- (BOOL)claimImageExperiment:(NSDictionary *)source configuration:(NSDictionary *)configuration
+                    account:(NSString *)account target:(NSString *)target error:(NSError **)error;
+- (nullable NSDictionary *)imageExperimentSummaryForAccount:(NSString *)account error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

@@ -51,7 +51,10 @@ def analyze(report):
             add(code, message)
     direction_mismatch = any(isinstance(counters.get(key), (int, float)) and counters[key] > 0
                              for key in ('receive_wrong_direction', 'outgoing_wrong_direction'))
-    if direction_mismatch or receiver.get('directionEvidenceSchema') == 2:
+    has_direction_activity = (receiver.get('armed') is True or bool(receiver.get('directionSamples')) or
+                              any(type(counters.get(key)) is int and counters[key] > 0
+                                  for key in ('receive_callback', 'outgoing_callback')))
+    if direction_mismatch or receiver.get('directionEvidenceSchema') == 2 and has_direction_activity:
         samples = receiver.get('directionSamples')
         schema = receiver.get('directionEvidenceSchema')
         if type(schema) is not int or schema not in (1, 2):
@@ -121,7 +124,7 @@ def analyze(report):
             if image.get('state') == 'result_not_image':
                 add('image_result_invalid', 'Native image getter returned an object that was not a UIImage.')
             if receiver.get('imageState') == 'snapshot_ready':
-                add('image_snapshot_ready', 'An owned image snapshot passed preparation. Verify actual preview manually; image sending is not enabled.')
+                add('image_snapshot_ready', 'An owned image snapshot passed preparation. Verify actual preview manually; preparation or preview alone does not send an image.')
             preparation = receiver.get('imagePreparationCode')
             if type(preparation) is int and preparation == 3:
                 add('image_storage_quota', 'Owned image storage reached its quota; existing plan images were not evicted.')
@@ -303,6 +306,44 @@ def analyze(report):
                 value = candidate.get(key)
                 if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
                     add(code, message)
+
+    image_candidate = report.get('singleImageSendCandidate')
+    if image_candidate is not None:
+        if (not isinstance(image_candidate, dict) or type(image_candidate.get('schema')) is not int or
+                image_candidate['schema'] != 1 or flag(image_candidate.get('batchSendingEnabled')) is not False or
+                flag(image_candidate.get('submissionAttempted')) is None or flag(image_candidate.get('imageSetterInvoked')) is None):
+            add('invalid_image_candidate', 'Unsupported or malformed single-image experiment diagnostics.')
+        else:
+            invoked = flag(image_candidate.get('submissionAttempted')) is True
+            loaded = flag(image_candidate.get('imageSetterInvoked')) is True
+            if loaded:
+                add('image_setter_invoked', 'The native image setter ran or was attempted; host media writes are possible even if submission was later blocked. Do not retry or delete guessed host paths.')
+            if invoked:
+                add('image_host_invoked', 'A single-image host submission was attempted. Local/server IDs and status are not image-content or delivery proof.')
+                add('image_delivery_uncertain', 'Check the single authorized target manually; no automatic retry is allowed.')
+                if image_candidate.get('deliveryOutcome') != 'uncertain':
+                    add('image_delivery_outcome_invalid', 'This experiment has no reliable delivery receipt and must not automatically claim confirmation.')
+            else:
+                add('image_not_submitted', 'No image submission call is recorded for this host session.')
+            if image_candidate.get('observing') is True:
+                add('image_observing', 'Bounded exact-local-ID observation is active; keep the app in the foreground or explicitly stop it. Stopping cannot retract submission.')
+            if image_candidate.get('observationServiceCheckFailed') is True:
+                add('image_observation_service_changed', 'Service ABI/identity changed during image observation; observation stopped without retry.')
+            for key, code in (('lookupMisses', 'image_lookup_miss'), ('identityConflicts', 'image_identity_conflict')):
+                value = image_candidate.get(key)
+                if type(value) is int and value > 0:
+                    add(code, 'Exact image identity observation has misses or conflicts; do not substitute another message or infer non-delivery.')
+            if image_candidate.get('state') == 'blocked':
+                add('image_experiment_blocked', 'The image experiment stopped. Inspect sanitized stage/service fields; retain its persistent reservation, including after native loading without submission.')
+
+    image_history = report.get('singleImageExperimentHistory')
+    if image_history is not None:
+        if not isinstance(image_history, dict):
+            add('invalid_image_history', 'The image experiment reservation summary is not an object.')
+        elif flag(image_history.get('claimed')) is True:
+            add('image_attempt_claimed', 'A persistent image source reservation exists, possibly from an earlier session. It survives restart and must not be retried.')
+            if image_history.get('deliveryOutcome') != 'uncertain' or flag(image_history.get('automaticRetry')) is not False:
+                add('image_claim_policy_invalid', 'The image reservation must preserve unknown delivery and no automatic retry.')
 
     history = report.get('singleTextExperimentHistory')
     if history is not None:

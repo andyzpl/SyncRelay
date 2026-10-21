@@ -1,8 +1,8 @@
 Package: andyz.syncrelay
 Name: SyncRelay (Development)
-Version: 0.2.15
+Version: 0.2.16
 Architecture: iphoneos-arm
-Description: WeChat relay with unsent image-contract inspection and an explicit single-target text experiment. Image and batch sending are disabled.
+Description: WeChat relay with explicit single-target text or static-image experiments and unsent image-contract inspection. Default sending and batch sending are disabled.
 Maintainer: andyz
 Author: andyz
 Section: Tweaks
