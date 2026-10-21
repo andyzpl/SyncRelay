@@ -317,7 +317,7 @@ static void checkImageCapture(void) {
     NSArray *probeSequence = receiver.diagnostics[@"messageTypeProbe"][@"sequence"];
     CHECK(probeRows.count == unverifiedTypes.count + 1);
     for (NSUInteger i = 0; i < unverifiedTypes.count; i++) {
-        CHECK([probeRows[i][@"type"] unsignedLongLongValue] == unverifiedTypes[i].unsignedLongLongValue);
+        CHECK([probeRows[i][@"type"] unsignedLongLongValue] == [unverifiedTypes[i] unsignedLongLongValue]);
         CHECK([probeRows[i][@"count"] unsignedIntegerValue] == 1);
         NSNumber *type = unverifiedTypes[i];
         if ([type isEqual:@34] || [type isEqual:@42] || [type isEqual:@47] || [type isEqual:@49])
