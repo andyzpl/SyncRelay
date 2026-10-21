@@ -98,10 +98,15 @@ int main(void) {
                     SmallHost *host = [[SmallHost alloc] init]; host.allowed = allowed; host.ready = ready; [hosts addObject:host]; return host;
                 } clock:^double { return now; } random:^double { return 0.5; }];
         };
-        SRSmallGroupSession *session = newSession();
-        NSArray *rules = makePlan(store, @"first", 3); NSString *rule = rules[0][@"id"];
+        SRSmallGroupSession *session = nil;
+        NSArray *rules = nil; NSString *rule = nil, *run = nil;
+        __weak SRSmallGroupSession *old = nil;
+        // Drain main-queue block/weak-load temporaries before testing ownership.
+        @autoreleasepool {
+        session = newSession();
+        rules = makePlan(store, @"first", 3); rule = rules[0][@"id"];
         CHECK(![session startRule:rule account:@"other" error:NULL]); CHECK(!session.busy && !session.needsIdleTimer);
-        CHECK([session startRule:rule account:@"account" error:NULL]); NSString *run = latest(store, rule);
+        CHECK([session startRule:rule account:@"account" error:NULL]); run = latest(store, rule);
         CHECK(session.busy && session.needsIdleTimer && !session.usedNativeHost);
         CHECK([session progressBelongsToCurrentAccount]); account = @"other"; CHECK(![session progressBelongsToCurrentAccount]); account = @"account";
         CHECK([[SRExecutionProgress modelForStatus:session.status][@"total"] isEqual:@3]);
@@ -151,7 +156,9 @@ int main(void) {
         rules = makePlan(store, @"restart", 3); rule = rules[0][@"id"];
         CHECK([session startRule:rule account:@"account" error:NULL]); run = latest(store, rule);
         now += 10; [session tick]; pump(session); CHECK(hosts.count == 6);
-        __weak SRSmallGroupSession *old = session; session = nil; CHECK(!old); store = nil;
+        old = session; session = nil;
+        }
+        CHECK(!old); store = nil;
         store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
         CHECK(count(store, run, @"uncertain") == 1 && count(store, run, @"pending") == 2);
         session = newSession(); now += 1000; [session tick]; pump(session); CHECK(hosts.count == 6);
