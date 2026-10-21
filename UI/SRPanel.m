@@ -339,7 +339,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存”。" : @"所有规则共用来源条件；图片先捕获并预览，不自动发送。";
     if (section == 2) return @"下限至少 3 秒；默认 5–10 秒。上下限相同则固定间隔。";
     if (section == 4) return @"预览和确认不会启动规则；单群实验需单独开启并二次确认，切后台或锁屏会取消等待。";
-    return @"母群自动排除，每条最多 200 群；不足按实际数量分组。";
+    return @"母群自动排除，默认每条 100 群；200 群为高级规格，不足按实际数量分组。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     NSInteger section = SRPanelSection(path.section);
@@ -396,7 +396,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     } else if (section == 3) {
         NSArray *rules = self.draft[@"rules"];
         if (path.row == 0) { cell.textLabel.text = @"排除群聊"; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个", (unsigned long)[self.draft[@"excludedGroups"] count]]; }
-        else if (path.row == 1) { cell.textLabel.text = @"自动分组"; cell.detailTextLabel.text = @"100 / 200 群"; }
+        else if (path.row == 1) { cell.textLabel.text = @"自动分组"; cell.detailTextLabel.text = @"默认 100 群/条"; }
         else if (path.row == 2) cell.textLabel.text = @"手动选择群聊";
         else { NSDictionary *rule = rules[path.row - 3]; cell.textLabel.text = rule[@"name"]; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群", (unsigned long)[rule[@"targets"] count]]; }
     } else {
@@ -526,7 +526,8 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     for (NSDictionary *rule in self.draft[@"rules"]) [excluded addObjectsFromArray:[rule[@"targets"] valueForKey:@"id"]];
     __weak typeof(self) weakSelf = self;
     [self picker:@"选择目标群 · 自动拆分" rows:groups selected:@[] excluded:excluded multiple:YES excluding:NO completion:^(NSArray *chosen) {
-        NSUInteger size = chosen.count <= 100 ? 100 : 200;
+        // Manual selection follows the conservative product default: every rule is capped at 100 groups.
+        NSUInteger size = 100;
         NSUInteger count = chosen.count / size + (chosen.count % size ? 1 : 0);
         [weakSelf previewGroups:chosen recipe:@[@{@"size": @(size), @"count": @(count)}]];
     }];
@@ -573,9 +574,9 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }
     NSError *error = nil; NSArray *groups = [self.reader groups:&error];
     if (!groups) { SRAlert(self, @"无法读取群", error.localizedDescription); return; }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自动分配规则" message:@"只填写各自生成条数。先分配 100 群规则，再分配 200 群规则；0 或留空表示不生成。群不足按实际数量生成，最后一条可不足额。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自动分配规则" message:@"推荐每条 100 个群；200 群保留为高级规格。只填写各自生成条数，先分配 100 群规则，再分配 200 群规则；0 或留空表示不生成。群不足按实际数量生成，最后一条可不足额。" preferredStyle:UIAlertControllerStyleAlert];
     for (NSNumber *size in @[@100, @200]) [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.keyboardType = UIKeyboardTypeNumberPad; field.text = @"10";
+        field.keyboardType = UIKeyboardTypeNumberPad; field.text = size.unsignedIntegerValue == 100 ? @"10" : @"0";
         field.placeholder = [NSString stringWithFormat:@"每条 %@ 个群：生成多少条规则", size]; field.accessibilityLabel = field.placeholder;
         UILabel *label = [[UILabel alloc] init]; label.text = [NSString stringWithFormat:@"%@ 群/条 × ", size];
         label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1]; [label sizeToFit];
@@ -743,7 +744,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     view.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
     view.text = @"当前版本\n这是开发测试版，已开放每条 1–3 个授权群的真实串行转发。保存、捕获、预览及确认计划都不自动发送；确认计划后，进入内容计划点击规则，再点“开始小群测试”。不需要打开旧单群实验开关。100/200 群大规则和重新执行尚未开放。\n\n"
         @"来源条件\n所有规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片支持捕获、资源校验、实际预览及小群测试；发送的是已加载快照重新生成的 JPEG，不承诺原图质量或动态图片。等待资源最多 30 秒；如未就绪，请在母群点开图片加载后重新等待并发送一张新图。\n\n"
-        @"群聊与分组\n母群和已分配群自动排除。只需搜索并排除不想转发的群，再按每条 100 或 200 群自动分组；数量不足按实际生成，不建空规则。手动全选也会拆分为每条最多 200 群。\n\n"
+        @"群聊与分组\n母群和已分配群自动排除。只需搜索并排除不想转发的群，默认按每条 100 群自动分组；200 群保留为高级规格。数量不足按实际生成，不建空规则。手动全选也默认拆分为每条 100 群。\n\n"
         @"等待源消息\n先保存设置，再手动开始等待。关闭面板回母群，由指定成员或本人发一条文字；须取得服务器消息 ID 才进入预览。本人候选最多等待确认 30 秒，不用临时本地 ID 替代。\n\n"
         @"预览与计划\n第一条匹配内容锁定后停止等待。核对母群、发送者 wxid、类型和完整正文再确认；候选可能包含离线补同步，不能只凭回调时间判断新旧。确认只建立计划，不开始执行任何规则。\n\n"
         @"小群执行\n测试时手动只选 1–3 个群组成规则；大分组可以保存，但本轮不能实发。每条规则点一次开始，内部串行处理，不逐群弹窗。暂停后手动继续未尝试群；切后台、锁屏或账号改变会暂停，回前台或重启不自动继续。等待和在途观察时保持常亮，暂停收尾和完成时释放。已提交不等于确认送达，失败/未知不自动重发，当前规则结束不自动执行下一条。\n\n"

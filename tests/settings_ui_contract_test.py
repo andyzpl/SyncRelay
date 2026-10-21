@@ -58,6 +58,13 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertNotIn('SRHostCreateTextWrap(', preflight)
         self.assertNotIn('claimTextExperiment:', preflight)
 
+    def test_grouping_defaults_to_100_and_keeps_200_advanced(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertIn('NSUInteger size = 100;', panel)
+        self.assertNotIn('chosen.count <= 100 ? 100 : 200', panel)
+        self.assertIn('field.text = size.unsignedIntegerValue == 100 ? @"10" : @"0";', panel)
+        self.assertIn('默认 100 群/条', panel)
+
 
 if __name__ == '__main__':
     unittest.main()
