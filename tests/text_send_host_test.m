@@ -12,7 +12,26 @@
 @property(nonatomic) unsigned long long m_n64MesSvrID;
 @property(nonatomic) unsigned int m_uiCreateTime;
 @property(nonatomic) unsigned int m_uiStatus;
+@property(nonatomic) unsigned long long initializerArgument;
+@end
+
+@interface SRFakeMessageWrapI32 : SRFakeMessageWrap
+- (instancetype)initWithMsgType:(int)type;
+@end
+@interface SRFakeMessageWrapU32 : SRFakeMessageWrap
 - (instancetype)initWithMsgType:(unsigned int)type;
+@end
+@interface SRFakeMessageWrapI64 : SRFakeMessageWrap
+- (instancetype)initWithMsgType:(long long)type;
+@end
+@interface SRFakeMessageWrapU64 : SRFakeMessageWrap
+- (instancetype)initWithMsgType:(unsigned long long)type;
+@end
+@interface SRFakeMessageWrapFloat : SRFakeMessageWrap
+- (instancetype)initWithMsgType:(double)type;
+@end
+@interface SRFakeMessageWrapObject : SRFakeMessageWrap
+- (instancetype)initWithMsgType:(id)type;
 @end
 
 @interface SRFakeMessageMgr : NSObject
@@ -30,7 +49,24 @@
 @end
 
 @implementation SRFakeMessageWrap
-- (instancetype)initWithMsgType:(unsigned int)type { self = [super init]; if (self) _m_uiMessageType = type; return self; }
+@end
+@implementation SRFakeMessageWrapI32
+- (instancetype)initWithMsgType:(int)type { self = [super init]; if (self) { self.m_uiMessageType = (unsigned int)type; self.initializerArgument = (unsigned long long)type; } return self; }
+@end
+@implementation SRFakeMessageWrapU32
+- (instancetype)initWithMsgType:(unsigned int)type { self = [super init]; if (self) { self.m_uiMessageType = type; self.initializerArgument = type; } return self; }
+@end
+@implementation SRFakeMessageWrapI64
+- (instancetype)initWithMsgType:(long long)type { self = [super init]; if (self) { self.m_uiMessageType = (unsigned int)type; self.initializerArgument = (unsigned long long)type; } return self; }
+@end
+@implementation SRFakeMessageWrapU64
+- (instancetype)initWithMsgType:(unsigned long long)type { self = [super init]; if (self) { self.m_uiMessageType = (unsigned int)type; self.initializerArgument = type; } return self; }
+@end
+@implementation SRFakeMessageWrapFloat
+- (instancetype)initWithMsgType:(double)type { self = [super init]; if (self) self.m_uiMessageType = (unsigned int)type; return self; }
+@end
+@implementation SRFakeMessageWrapObject
+- (instancetype)initWithMsgType:(__unused id)type { return [super init]; }
 @end
 
 @implementation SRFakeMessageMgr
@@ -55,11 +91,14 @@
 - (id)getService:(Class)type { return type == SRFakeMessageMgr.class ? self.manager : nil; }
 @end
 
-static SRWeChatTextSendHost *makeHost(NSString *version, NSString *(^account)(void), BOOL (^allowed)(void)) {
+static SRWeChatTextSendHost *makeHostWithWrap(Class wrap, NSString *version, NSString *(^account)(void), BOOL (^allowed)(void)) {
     return [[SRWeChatTextSendHost alloc] initWithVersion:version classResolver:^Class(NSString *name) {
         return @{ @"MMContext": SRFakeMMContext.class, @"CMessageMgr": SRFakeMessageMgr.class,
-                  @"CMessageWrap": SRFakeMessageWrap.class }[name];
+                  @"CMessageWrap": wrap }[name];
     } currentAccount:account environmentAllowed:allowed];
+}
+static SRWeChatTextSendHost *makeHost(NSString *version, NSString *(^account)(void), BOOL (^allowed)(void)) {
+    return makeHostWithWrap(SRFakeMessageWrapI64.class, version, account, allowed);
 }
 
 int main(void) {
@@ -85,6 +124,9 @@ int main(void) {
         CHECK([manager.lastWrap.m_nsToUsr isEqual:@"room@chatroom"]);
         CHECK([manager.lastWrap.m_nsContent isEqual:@"hello"]);
         CHECK(manager.lastWrap.m_uiMessageType == 1 && manager.lastWrap.m_uiMesLocalID == 42);
+        CHECK(manager.lastWrap.initializerArgument == 1);
+        CHECK([host.diagnostics[@"initializerArgumentType"] isEqual:@"q"]);
+        CHECK([host.diagnostics[@"initializerCallType"] isEqual:@"q"]);
         CHECK(callbackShapeOK);
         CHECK([state isEqual:@"uncertain"]);
         CHECK([reason containsString:@"unknown"] || [reason containsString:@"delivery"]);
@@ -108,6 +150,29 @@ int main(void) {
             classResolver:^Class(__unused NSString *name) { return Nil; } currentAccount:account environmentAllowed:allowed];
         CHECK(![missing readyForAccount:@"wxid_account" error:NULL]);
         CHECK(manager.addCount == count);
+
+        NSArray *wraps = @[SRFakeMessageWrapI32.class, SRFakeMessageWrapU32.class, SRFakeMessageWrapI64.class, SRFakeMessageWrapU64.class];
+        NSArray *encodings = @[@"i", @"I", @"q", @"Q"];
+        for (NSUInteger index = 0; index < wraps.count; index++) {
+            SRWeChatTextSendHost *typed = makeHostWithWrap(wraps[index], @"8.0.79", account, allowed);
+            __block NSUInteger typedCompletions = 0;
+            [typed submitRequest:request completion:^(NSString *value, NSString *messageID, __unused NSString *detail) {
+                if ([value isEqual:@"uncertain"] && !messageID) typedCompletions++;
+            }];
+            CHECK(manager.addCount == ++count && typedCompletions == 1);
+            CHECK([manager.lastWrap isKindOfClass:wraps[index]] && manager.lastWrap.initializerArgument == 1);
+            CHECK([typed.diagnostics[@"initializerArgumentType"] isEqual:encodings[index]]);
+            CHECK([typed.diagnostics[@"initializerCallType"] isEqual:encodings[index]]);
+            CHECK([typed.diagnostics[@"deliveryOutcome"] isEqual:@"uncertain"]);
+        }
+        for (Class wrap in @[SRFakeMessageWrapFloat.class, SRFakeMessageWrapObject.class, SRFakeMessageWrap.class]) {
+            SRWeChatTextSendHost *wrongABI = makeHostWithWrap(wrap, @"8.0.79", account, allowed);
+            CHECK(![wrongABI readyForAccount:@"wxid_account" error:NULL]);
+            [wrongABI submitRequest:request completion:nil];
+            CHECK([wrongABI.diagnostics[@"problem"] isEqual:@"initializer_abi_incompatible"]);
+            CHECK([wrongABI.diagnostics[@"initializerArgumentType"] isEqual:@"unsupported"]);
+            CHECK(![wrongABI.diagnostics[@"submissionAttempted"] boolValue] && manager.addCount == count);
+        }
 
         manager.deferServerID = YES;
         SRWeChatTextSendHost *delayed = makeHost(@"8.0.76", account, allowed);
@@ -151,7 +216,7 @@ int main(void) {
         CHECK([exception.diagnostics[@"deliveryOutcome"] isEqual:@"uncertain"]);
         CHECK(![[exception.diagnostics description] containsString:@"private body"]);
         count = manager.addCount; [exception submitRequest:request completion:nil]; CHECK(manager.addCount == count);
-        puts("PASS: single-text ABI/account gates, one invocation, bounded observation, cancellation, conflicts and unknown delivery");
+        puts("PASS: exact i/I/q/Q initializer calls, single-text ABI/account gates, bounded observation, cancellation and unknown delivery");
     }
     return 0;
 }

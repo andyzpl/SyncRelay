@@ -760,6 +760,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             NSError *failure = nil;
             if (![panel.textSendHost readyForAccount:account error:&failure] ||
                 ![panel.textSendAdapter prepareForAccount:account targetGroup:target sourceSnapshot:source confirmed:YES error:&failure]) {
+                [SRRuntimeLog.shared record:@"text_test_blocked" facts:@{@"reasonCode": @1}];
                 SRAlert(panel, @"发送门禁未通过", failure.localizedDescription); return;
             }
             panel.textCountdown = YES; NSUInteger generation = ++panel.textGeneration;

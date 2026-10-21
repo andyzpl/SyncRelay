@@ -188,6 +188,15 @@ def analyze(report):
             if isinstance(problem, str):
                 if problem.endswith('_abi_incompatible'):
                     add('text_abi_blocked', 'A required host ABI is incompatible. Do not bypass the signature gate.')
+                if problem == 'initializer_abi_incompatible':
+                    build = report.get('build')
+                    methods = candidate.get('methods')
+                    if (isinstance(build, dict) and build.get('plugin') in ('0.2.9', '0.2.10')
+                            and isinstance(methods, list) and any(isinstance(method, dict)
+                                and method.get('selector') == 'initWithMsgType:'
+                                and method.get('encoding') in ('@24@0:8q16', '@24@0:8Q16')
+                                for method in methods)):
+                        add('text_initializer_width_mismatch', 'This older build only accepted a 32-bit initializer, but the host declares a 64-bit integer. Install the ABI-matched fix; do not disable validation.')
                 if problem in ('account_or_environment_changed', 'observation_environment_changed'):
                     add('text_environment_changed', 'The verified account or foreground environment changed; no automatic continuation is allowed.')
                 if problem == 'one_attempt_per_launch':

@@ -62,6 +62,7 @@
 - `singleTextExperimentHistory.claimed` 表示该账号有持久实验占位，调用前就写入，不能证明真的发送；`automaticRetry = false`。同源重复占位在重启后仍阻断。
 - `singleTextSendCountdown` / `singleTextExperimentIdleTimerHeld` 分别表示等待中及插件尚持有禁止自动锁屏请求；观察结束才恢复原值。
 - 解析器输出固定的 `text_abi_blocked`、`text_environment_changed`、`text_attempt_already_used`、`text_identity_conflict`、`text_delivery_uncertain` 等代码，不回显任意错误文本或私人字段。最新设备步骤见 `DEVICE-CHECK-0.2.10.md`。
+- 0.2.11 新增 `initializerArgumentType`（验证到的类型）/ `initializerCallType`（实际构造采用的类型），值限定为 `i/I/q/Q` 或固定的未检查/未调用/不支持状态，不导出任意宿主值。构造所用的 getter 也加入签名列表。旧 0.2.9/0.2.10 报告若明确出现 `q/Q` 编码与构造器拒绝，解析器输出 `text_initializer_width_mismatch`，指向匹配 ABI 的修正版而不是关闭校验；未知签名不推测原因。新步骤见 `DEVICE-CHECK-0.2.11.md`。
 
 捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束。错误码必须结合事件与模块看，不跨模块猜含义。
 

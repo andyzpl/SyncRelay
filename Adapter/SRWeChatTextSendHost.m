@@ -5,8 +5,17 @@
 #include <math.h>
 #include <string.h>
 
-@protocol SRTextWrapInitializer <NSObject>
+@protocol SRTextWrapInitializerI32 <NSObject>
+- (instancetype)initWithMsgType:(int)type;
+@end
+@protocol SRTextWrapInitializerU32 <NSObject>
 - (instancetype)initWithMsgType:(unsigned int)type;
+@end
+@protocol SRTextWrapInitializerI64 <NSObject>
+- (instancetype)initWithMsgType:(long long)type;
+@end
+@protocol SRTextWrapInitializerU64 <NSObject>
+- (instancetype)initWithMsgType:(unsigned long long)type;
 @end
 
 @interface SRWeChatTextSendHost ()
@@ -17,6 +26,8 @@
 @property(nonatomic, copy) NSString *state;
 @property(nonatomic, copy) NSString *problem;
 @property(nonatomic) BOOL abiValidated;
+@property(nonatomic, copy) NSString *initializerArgumentType;
+@property(nonatomic, copy) NSString *initializerCallType;
 @property(nonatomic) BOOL consumed;
 @property(nonatomic) BOOL addInvoked;
 @property(nonatomic) BOOL addReturned;
@@ -51,6 +62,22 @@ static BOOL SRHostInteger(const char *type) {
 static NSMethodSignature *SRHostSignature(Class type, NSString *name) {
     Method method = type ? class_getInstanceMethod(type, NSSelectorFromString(name)) : NULL;
     return method ? [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)] : nil;
+}
+static char SRHostInitializerType(Class type) {
+    NSMethodSignature *s = SRHostSignature(type, @"initWithMsgType:");
+    if (!s || s.numberOfArguments != 3 || !SRHostObject(s.methodReturnType)) return 0;
+    const char *argument = SRHostType([s getArgumentTypeAtIndex:2]);
+    return argument[0] && !argument[1] && strchr("iIqQ", argument[0]) ? argument[0] : 0;
+}
+static id SRHostCreateTextWrap(Class type, char argument) {
+    // Preserve init-family ARC ownership while matching the declared integer ABI.
+    switch (argument) {
+        case 'i': return [(id<SRTextWrapInitializerI32>)[type alloc] initWithMsgType:(int)1];
+        case 'I': return [(id<SRTextWrapInitializerU32>)[type alloc] initWithMsgType:(unsigned int)1];
+        case 'q': return [(id<SRTextWrapInitializerI64>)[type alloc] initWithMsgType:(long long)1];
+        case 'Q': return [(id<SRTextWrapInitializerU64>)[type alloc] initWithMsgType:(unsigned long long)1];
+        default: return nil;
+    }
 }
 static BOOL SRHostIdentifier(id value, BOOL group) {
     return [value isKindOfClass:NSString.class] && [value length] &&
@@ -112,6 +139,7 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
 }
 - (BOOL)validateClasses:(NSError **)error {
     self.abiValidated = NO;
+    self.initializerArgumentType = @"unchecked";
     Class context = self.resolver(@"MMContext"), manager = self.resolver(@"CMessageMgr"), wrap = self.resolver(@"CMessageWrap");
     NSMethodSignature *current = SRHostSignature(object_getClass(context), @"currentContext");
     NSMethodSignature *service = SRHostSignature(context, @"getService:");
@@ -125,9 +153,9 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
         !get || get.numberOfArguments != 4 || !SRHostObject(get.methodReturnType) ||
         !SRHostObject([get getArgumentTypeAtIndex:2]) || !SRHostInteger([get getArgumentTypeAtIndex:3]))
         return [self fail:@"message_manager_abi_incompatible" error:error];
-    NSMethodSignature *initializer = SRHostSignature(wrap, @"initWithMsgType:");
-    const char *argument = initializer && initializer.numberOfArguments == 3 ? SRHostType([initializer getArgumentTypeAtIndex:2]) : "";
-    if (!initializer || !SRHostObject(initializer.methodReturnType) || (strcmp(argument, "I") && strcmp(argument, "i")))
+    char argument = SRHostInitializerType(wrap);
+    self.initializerArgumentType = argument ? [NSString stringWithFormat:@"%c", argument] : @"unsupported";
+    if (!argument)
         return [self fail:@"initializer_abi_incompatible" error:error];
     for (NSString *name in @[@"setM_nsFromUsr:", @"setM_nsToUsr:", @"setM_nsContent:"]) {
         NSMethodSignature *s = SRHostSignature(wrap, name);
@@ -198,7 +226,9 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
                 Class contextClass = self.resolver(@"MMContext"), managerClass = self.resolver(@"CMessageMgr"), wrapClass = self.resolver(@"CMessageWrap");
                 id context = SRReadObject(contextClass, @"currentContext", @[], NULL);
                 id manager = SRReadObject(context, @"getService:", @[managerClass], NULL);
-                id message = [(id<SRTextWrapInitializer>)[wrapClass alloc] initWithMsgType:1];
+                char argument = SRHostInitializerType(wrapClass);
+                self.initializerCallType = argument ? [NSString stringWithFormat:@"%c", argument] : @"unsupported";
+                id message = SRHostCreateTextWrap(wrapClass, argument);
                 double now = NSDate.date.timeIntervalSince1970;
                 if (![context isKindOfClass:contextClass] || ![manager isKindOfClass:managerClass] || ![message isKindOfClass:wrapClass] ||
                     !isfinite(now) || now < 1 || now > UINT_MAX ||
@@ -269,10 +299,12 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
         [methods addObject:SRDescribeInstanceMethod(object_getClass(self.resolver(@"MMContext")), @"currentContext")];
         [methods addObject:SRDescribeInstanceMethod(self.resolver(@"MMContext"), @"getService:")];
         for (NSString *name in @[@"AddMsg:MsgWrap:", @"GetMsg:LocalID:"]) [methods addObject:SRDescribeInstanceMethod(self.resolver(@"CMessageMgr"), name)];
-        for (NSString *name in @[@"initWithMsgType:", @"setM_nsFromUsr:", @"setM_nsToUsr:", @"setM_nsContent:", @"setM_uiMesLocalID:", @"setM_uiCreateTime:"])
+        for (NSString *name in @[@"initWithMsgType:", @"setM_nsFromUsr:", @"setM_nsToUsr:", @"setM_nsContent:", @"setM_uiMesLocalID:", @"setM_uiCreateTime:",
+            @"m_nsFromUsr", @"m_nsToUsr", @"m_nsContent", @"m_uiMessageType", @"m_uiMesLocalID", @"m_n64MesSvrID", @"m_uiCreateTime", @"m_uiStatus"])
             [methods addObject:SRDescribeInstanceMethod(self.resolver(@"CMessageWrap"), name)];
     } @catch (__unused id exception) { }
     return @{@"schema": @1, @"wechatVersion": self.version, @"abiValidated": @(self.abiValidated),
+        @"initializerArgumentType": self.initializerArgumentType ?: @"unchecked", @"initializerCallType": self.initializerCallType ?: @"not_called",
         @"activeSendImplemented": @YES, @"batchSendingEnabled": @NO, @"deviceVerified": @NO,
         @"submissionAttempted": @(self.addInvoked), @"hostReturned": @(self.addReturned), @"observing": @(self.observing),
         @"localIDPresent": @(self.localID.unsignedLongLongValue > 0), @"serverIDPresent": @(self.serverID.unsignedLongLongValue > 0),

@@ -167,6 +167,34 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('wxid_secret', str(analyze(report)))
         self.assertNotIn('private message', str(analyze(report)))
 
+    def test_observed_64bit_initializer_block_in_old_build(self):
+        report = self.base()
+        report['build'] = {'plugin': '0.2.10'}
+        candidate = report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'submissionAttempted': False, 'state': 'blocked', 'problem': 'initializer_abi_incompatible',
+            'deliveryOutcome': 'not_submitted', 'methods': [
+                {'selector': 'initWithMsgType:', 'encoding': '@24@0:8q16', 'available': 1}]}
+        report['singleTextExperimentHistory'] = {'claimed': 0, 'deliveryOutcome': 'not_submitted', 'automaticRetry': False}
+        self.assertTrue({'text_not_submitted', 'text_abi_blocked', 'text_initializer_width_mismatch'} <= self.codes(report))
+        self.assertNotIn('text_host_invoked', self.codes(report))
+        self.assertNotIn('text_attempt_claimed', self.codes(report))
+        candidate['methods'][0]['encoding'] = '@24@0:8d16'
+        self.assertNotIn('text_initializer_width_mismatch', self.codes(report))
+        candidate['methods'][0]['encoding'] = '@24@0:8q16'
+        report['build']['plugin'] = '0.2.11'
+        self.assertNotIn('text_initializer_width_mismatch', self.codes(report))
+
+    def test_initializer_evidence_malformed_is_not_a_width_diagnosis(self):
+        report = self.base()
+        report['build'] = 'private content'
+        candidate = report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'state': 'blocked', 'problem': 'initializer_abi_incompatible', 'methods': ['private content']}
+        self.assertNotIn('text_initializer_width_mismatch', self.codes(report))
+        report['build'] = {'plugin': '0.2.10'}
+        candidate['methods'] = 'private content'
+        self.assertNotIn('text_initializer_width_mismatch', self.codes(report))
+        self.assertNotIn('private content', str(analyze(report)))
+
 
 if __name__ == '__main__':
     unittest.main()
