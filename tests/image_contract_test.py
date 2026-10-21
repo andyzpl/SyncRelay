@@ -43,9 +43,9 @@ class ImageContractTests(unittest.TestCase):
         capture = panel.split('- (void)beginCapture {', 1)[1]
         self.assertIn('[self.receiver armForAccount:account configuration:snapshot error:&error]', capture)
         receiver = (ROOT / 'Adapter/SRWeChatReceiver.m').read_text(encoding='utf-8')
-        incoming = receiver.split('- (void)observeSession:(id)session wrap:(id)wrap {', 1)[1]
+        incoming = receiver.split('- (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {', 1)[1]
         self.assertLess(incoming.index('allowsSender:sender type:type'), incoming.index('SRPendingImage *pending'))
-        outgoing = receiver.split('- (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap {', 1)[1]
+        outgoing = receiver.split('- (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {', 1)[1]
         self.assertLess(outgoing.index('allowsSender:account type:type'), outgoing.index('pending.wrap = wrap'))
 
     def test_preview_verifies_account_and_resource_on_foreground(self):

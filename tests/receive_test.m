@@ -6,6 +6,7 @@
 #import "Core/SRStore.h"
 #include <assert.h>
 #include <limits.h>
+#include <stdint.h>
 #define CHECK(...) assert((__VA_ARGS__))
 
 @interface ReceiveWrap : NSObject
@@ -115,6 +116,36 @@
 - (unsigned int)integer { return 3; }
 - (long long)throwing { @throw [NSException exceptionWithName:@"Fixture" reason:@"secret message body" userInfo:nil]; }
 @end
+@interface TimedReceiveWrap : ReceiveWrap
+@property(nonatomic) unsigned int m_uiCreateTime;
+@end
+@implementation TimedReceiveWrap
+@end
+@interface ReflectedTimeWrap : TimedReceiveWrap
+@end
+@implementation ReflectedTimeWrap
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    if (selector == @selector(m_uiCreateTime)) return [NSMethodSignature signatureWithObjCTypes:"v@:"];
+    return [super methodSignatureForSelector:selector];
+}
+@end
+@interface InvalidTimeWrap : ReceiveWrap
+- (double)m_uiCreateTime;
+@end
+@implementation InvalidTimeWrap
+- (double)m_uiCreateTime { abort(); }
+@end
+@interface TimeManager : ReceiveManager
+@property(nonatomic, copy) void (^duringOriginal)(void);
+@end
+@implementation TimeManager
+- (void)AsyncOnAddMsg:(id)session MsgWrap:(id)value {
+    [super AsyncOnAddMsg:session MsgWrap:value]; if (self.duringOriginal) self.duringOriginal();
+}
+- (void)AddMsg:(id)session MsgWrap:(id)value {
+    [super AddMsg:session MsgWrap:value]; if (self.duringOriginal) self.duringOriginal();
+}
+@end
 static ReceiveWrap *wrap(void) {
     ReceiveWrap *value = [[ReceiveWrap alloc] init];
     value.m_nsFromUsr = @"mother@chatroom"; value.m_nsToUsr = @"wxid_account";
@@ -131,12 +162,121 @@ static NSMutableDictionary *draft(void) {
 }
 @interface SRWeChatReceiver (ImageFixture)
 - (void)pollImage:(id)pending generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
+- (void)pollOutgoing:(id)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
 @end
 static NSDictionary *imagePayload(void) {
     return @{@"snapshotSchema": @1, @"mediaReference": @"11111111-2222-4333-8444-555555555555",
         @"sha256": [@"a" stringByPaddingToLength:64 withString:@"a" startingAtIndex:0],
         @"scopeSHA256": [@"b" stringByPaddingToLength:64 withString:@"b" startingAtIndex:0],
         @"byteCount": @100, @"pixelWidth": @2, @"pixelHeight": @3, @"format": @"png"};
+}
+static TimedReceiveWrap *timedWrap(unsigned int createdAt) {
+    TimedReceiveWrap *value = [TimedReceiveWrap new];
+    value.m_nsFromUsr = @"mother@chatroom"; value.m_nsToUsr = @"wxid_account";
+    value.m_nsRealChatUsr = @"wxid_sender"; value.m_nsContent = @"private timed source";
+    value.m_uiMessageType = 1; value.m_n64MesSvrID = 987654321; value.m_uiCreateTime = createdAt;
+    return value;
+}
+static void checkSourceTimeEvidence(void) {
+    ScalarTraps *traps = [ScalarTraps new];
+    CHECK(!SRReadDeclaredUnsignedInteger(traps, @"floating") && !SRReadDeclaredUnsignedInteger(traps, @"object"));
+    CHECK(!SRReadDeclaredUnsignedInteger(traps, @"pointer") && !SRReadDeclaredUnsignedInteger(traps, @"negative"));
+    CHECK(!SRReadDeclaredUnsignedInteger(traps, @"throwing") && !SRReadDeclaredUnsignedInteger(traps, @"missing"));
+    CHECK([SRReadDeclaredUnsignedInteger(traps, @"maximum") isEqual:@(ULLONG_MAX)]);
+    ReflectedTimeWrap *reflected = [ReflectedTimeWrap new]; reflected.m_uiCreateTime = 101;
+    CHECK(!SRReadUnsignedInteger(reflected, @"m_uiCreateTime", NULL));
+    CHECK([SRReadDeclaredUnsignedInteger(reflected, @"m_uiCreateTime") isEqual:@101]);
+
+    __block double now = 100.2; __block Class wrapClass = TimedReceiveWrap.class;
+    __block NSUInteger legacyCallbacks = 0, imageReads = 0, discards = 0;
+    __block BOOL imageReady = NO, mutateWhilePreparing = NO;
+    NSMutableArray *messages = [NSMutableArray array], *evidence = [NSMutableArray array];
+    SRWeChatReceiver *receiver = [[SRWeChatReceiver alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
+        return [name isEqual:@"CMessageMgr"] ? TimeManager.class : ([name isEqual:@"CMessageWrap"] ? wrapClass : Nil);
+    } currentAccount:^NSString *{ return @"wxid_account"; } received:^(__unused NSDictionary *message) { legacyCallbacks++; }
+        clock:^double { return now; }];
+    NSMutableDictionary *configuration = draft(); configuration[@"types"] = @[@"text"];
+    CHECK(![receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    receiver.receivedWithTimeEvidence = ^(NSDictionary *message, NSDictionary *facts) { [messages addObject:message]; [evidence addObject:facts]; };
+    wrapClass = ReceiveWrap.class;
+    CHECK(![receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    wrapClass = InvalidTimeWrap.class;
+    CHECK(![receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    wrapClass = TimedReceiveWrap.class;
+    CHECK([receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    TimeManager *manager = [TimeManager new]; now = 102;
+    for (NSNumber *time in @[@0, @80, @100, @103]) {
+        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:timedWrap(time.unsignedIntValue)]; pump();
+    }
+    CHECK(!messages.count && !legacyCallbacks);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:timedWrap(101)]; pump();
+    CHECK(messages.count == 1 && [evidence[0][@"createdAt"] isEqual:@101] && [evidence[0][@"receivedAt"] isEqual:@102]);
+    CHECK([evidence[0][@"listeningSince"] isEqual:@100.2]);
+    manager.duringOriginal = ^{ now = 99; };
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:timedWrap(101)]; pump(); CHECK(messages.count == 1);
+    now = 102;
+    TimedReceiveWrap *changed = timedWrap(101);
+    manager.duringOriginal = ^{ changed.m_uiCreateTime = 102; };
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:changed]; pump(); CHECK(messages.count == 1);
+    CHECK([receiver.diagnostics[@"counters"][@"source_time_changed"] unsignedIntegerValue] == 1);
+    manager.duringOriginal = nil;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:timedWrap(101)];
+    [receiver stop]; now = 104.2;
+    CHECK([receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    pump(); CHECK(messages.count == 1); // An already queued text belongs to the old arm.
+
+    // Retain receipt time while waiting for an own message's server ID.
+    [receiver stop]; now = 200.2;
+    configuration[@"senders"] = @[@{@"id": @"wxid_account", @"name": @"Self"}];
+    CHECK([receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    TimedReceiveWrap *own = timedWrap(201); own.m_nsFromUsr = @"wxid_account"; own.m_nsToUsr = @"mother@chatroom";
+    own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0; now = 202;
+    [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); CHECK(messages.count == 1);
+    own.m_n64MesSvrID = 99; now = 215;
+    [receiver pollOutgoing:[receiver valueForKey:@"pendingOutgoing"] group:@"mother@chatroom" account:@"wxid_account"
+        generation:[[receiver valueForKey:@"generation"] unsignedIntegerValue] remaining:30];
+    pump(); CHECK(messages.count == 2 && [evidence.lastObject[@"receivedAt"] isEqual:@202]);
+
+    // Historical images never start native preparation. A fresh delayed image
+    // carries its initial evidence through preparation and callback delivery.
+    [receiver stop]; now = 300.2; configuration = draft(); configuration[@"types"] = @[@"image"];
+    receiver.prepareImage = ^NSDictionary *(id value, __unused NSDictionary *source, __unused NSError **error) {
+        imageReads++;
+        if (mutateWhilePreparing) ((TimedReceiveWrap *)value).m_uiCreateTime++;
+        return imageReady ? imagePayload() : nil;
+    };
+    receiver.discardImage = ^(__unused NSDictionary *payload) { discards++; };
+    CHECK([receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    TimedReceiveWrap *image = timedWrap(250); image.m_uiMessageType = 3; now = 302;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump(); CHECK(!imageReads);
+    image.m_uiCreateTime = 301;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump(); CHECK(imageReads == 1 && messages.count == 2);
+    imageReady = YES; now = 315;
+    [receiver pollImage:[receiver valueForKey:@"pendingImage"] generation:[[receiver valueForKey:@"generation"] unsignedIntegerValue] remaining:29];
+    CHECK(messages.count == 3 && [evidence.lastObject[@"receivedAt"] isEqual:@302] && [evidence.lastObject[@"createdAt"] isEqual:@301]);
+    CHECK(!legacyCallbacks && [receiver.diagnostics[@"creationTimeGetterABICompatible"] boolValue]);
+    CHECK(![receiver.diagnostics[@"sourceTimeSemanticsVerified"] boolValue]);
+    NSString *diagnostics = receiver.diagnostics.description;
+    for (NSString *secret in @[@"private timed source", @"wxid_account", @"mother@chatroom", @"987654321"])
+        CHECK(![diagnostics containsString:secret]);
+    [receiver stop];
+    now = 320.2; mutateWhilePreparing = YES;
+    CHECK([receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    image.m_uiCreateTime = 321; now = 322;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
+    CHECK(messages.count == 3 && discards == 1 && ![receiver.diagnostics[@"armed"] boolValue]);
+    mutateWhilePreparing = NO;
+    // Stop/rearm during the original host method cannot attribute its callback
+    // to the new generation, even when the receiver object is unchanged.
+    now = 400.2; configuration[@"types"] = @[@"text"];
+    CHECK([receiver armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    __weak SRWeChatReceiver *weak = receiver;
+    manager.duringOriginal = ^{
+        [weak stop]; CHECK([weak armForAccount:@"wxid_account" configuration:configuration newMessagesOnly:YES error:NULL]);
+    };
+    now = 402; [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:timedWrap(401)]; pump();
+    CHECK(messages.count == 3); manager.duringOriginal = nil; [receiver stop];
+    puts("PASS: declared time ABI, strict new/old/same-second boundary, immutable receipt evidence, delayed own/image events and late generations");
 }
 static void checkImageCapture(void) {
     __block NSString *account = @"wxid_account";
@@ -163,6 +303,20 @@ static void checkImageCapture(void) {
     NSMutableDictionary *configuration = draft(); configuration[@"types"] = @[@"image"];
     ReceiveManager *manager = [[ReceiveManager alloc] init];
     CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    // Unknown host message types are observed for diagnostics but never
+    // treated as capturable media. Keep the probe's uint32 boundary exact.
+    ReceiveWrap *unknown = wrap(); unknown.m_uiMessageType = 42; unknown.m_n64MesSvrID = 1001;
+    ReceiveWrap *maxType = wrap(); maxType.m_uiMessageType = UINT32_MAX; maxType.m_n64MesSvrID = 1002;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:unknown];
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:maxType]; pump();
+    NSArray *probeRows = receiver.diagnostics[@"messageTypeProbe"][@"rows"];
+    NSArray *probeSequence = receiver.diagnostics[@"messageTypeProbe"][@"sequence"];
+    CHECK(probeRows.count == 2);
+    CHECK([probeRows[0][@"type"] unsignedLongLongValue] == 42 && [probeRows[0][@"count"] unsignedIntegerValue] == 1);
+    CHECK([probeRows[1][@"type"] unsignedLongLongValue] == UINT32_MAX && [probeRows[1][@"count"] unsignedIntegerValue] == 1);
+    CHECK(probeSequence.count == 2 && [probeSequence[0] unsignedLongLongValue] == 42 &&
+        [probeSequence[1] unsignedLongLongValue] == UINT32_MAX);
+    CHECK(!received.count && [receiver.diagnostics[@"counters"][@"receive_type_filtered"] unsignedIntegerValue] == 2);
     ReceiveWrap *text = wrap(); [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:text];
     ReceiveWrap *unselected = wrap(); unselected.m_uiMessageType = 3; unselected.m_nsRealChatUsr = @"wxid_other";
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:unselected]; pump();
@@ -218,6 +372,14 @@ static void checkImageCapture(void) {
     NSString *diagnostics = receiver.diagnostics.description;
     for (NSString *secret in @[@"wxid_account", @"mother@chatroom", @"9007199254740995", @"mediaReference", @"sha256"])
         CHECK(![diagnostics containsString:secret]);
+    // Once offered, a callback may have persisted the asset before throwing.
+    // Do not delete that transferred asset in the receiver's exception handler.
+    receiver.receivedWithTimeEvidence = ^(__unused NSDictionary *message, __unused NSDictionary *evidence) { @throw @"private consumer exception"; };
+    configuration[@"senders"] = @[@{@"id": @"wxid_sender", @"name": @"Sender"}];
+    NSUInteger transferredDiscards = discards;
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
+    CHECK(discards == transferredDiscards && ![receiver.diagnostics[@"armed"] boolValue]);
 }
 static void checkDirectionEvidence(void) {
     __block NSUInteger accepted = 0;
@@ -501,6 +663,7 @@ int main(void) {
         checkDirectionEvidence();
         checkReflectedMessage();
         checkImageCapture();
+        checkSourceTimeEvidence();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }

@@ -123,7 +123,7 @@ static NSMapTable *SROwners(void) {
     if (current) _inflight = nil;
     NSDictionary *summary = [_store summaryForRun:run error:&error];
     if (!summary) { [self halt:error.localizedDescription]; return; }
-    if ([summary[@"state"] isEqual:@"completed"]) {
+    if ([@[@"completed", @"ended"] containsObject:summary[@"state"]]) {
         [self releaseOwner]; _run = nil; _halted = YES; _problem = nil;
     } else if (current && [state isEqual:@"uncertain"]) {
         [self halt:@"Attempt outcome is unknown; manual continuation sends only remaining unattempted targets"];

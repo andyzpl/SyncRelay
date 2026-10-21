@@ -17,6 +17,9 @@ FOUNDATION_EXPORT NSString * _Nullable SRReadDeclaredString(id _Nullable target,
                                                            SRStringReadState * _Nullable state);
 /* Exact zero-argument scalar getters only; rejects negatives, floats and pointers. */
 FOUNDATION_EXPORT NSNumber * _Nullable SRReadUnsignedInteger(id _Nullable target, NSString *selector, NSError **error);
+/* Declared runtime ABI is authoritative, including when reflection is overridden.
+ * Does not invoke forwarding-only, floating-point or negative-valued getters. */
+FOUNDATION_EXPORT NSNumber * _Nullable SRReadDeclaredUnsignedInteger(id _Nullable target, NSString *selector);
 /* Read-only object(object, integer) lookup. Rejects overflow instead of truncating IDs. */
 FOUNDATION_EXPORT id _Nullable SRReadObjectWithObjectAndUnsignedInteger(id _Nullable target, NSString *selector,
                                                                        id object, NSNumber *integer, NSError **error);

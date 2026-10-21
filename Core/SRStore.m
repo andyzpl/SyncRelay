@@ -4,6 +4,7 @@
 #import "SRSourceMessage.h"
 #import "SRImageAssetStore.h"
 #import <sqlite3.h>
+#include <math.h>
 
 @interface SRStore () {
     sqlite3 *_db;
@@ -91,7 +92,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         [self query:@"PRAGMA journal_mode=WAL" values:@[]];
         [self query:@"PRAGMA synchronous=FULL" values:@[]];
         version = [[self query:@"PRAGMA user_version" values:@[]].firstObject[@"user_version"] integerValue];
-        SRRequire(version >= 0 && version <= 8, @"Unsupported database schema; do not downgrade");
+        SRRequire(version >= 0 && version <= 11, @"Unsupported database schema; do not downgrade");
         if (version < 8) {
             rebuildRules = [self query:@"SELECT name FROM sqlite_master WHERE type='table' AND name='rules'" values:@[]].count > 0;
             [self query:@"PRAGMA foreign_keys=OFF" values:@[]];
@@ -101,6 +102,7 @@ static void SRRequire(BOOL condition, NSString *message) {
     if (!setup) return nil;
     id migrated = [self perform:^id{
         NSArray *schema = @[
+            @"CREATE TABLE IF NOT EXISTS operations_preferences(account TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)))",
             @"CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, account TEXT NOT NULL, source_group TEXT NOT NULL, senders TEXT NOT NULL, types TEXT NOT NULL, snapshot TEXT NOT NULL)",
             @"CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), name TEXT NOT NULL, position INTEGER NOT NULL, minimum REAL NOT NULL CHECK(minimum>=3), maximum REAL NOT NULL CHECK(maximum>=minimum), UNIQUE(plan_id,position))",
             @"CREATE TABLE IF NOT EXISTS allocations(plan_id TEXT NOT NULL REFERENCES plans(id), target TEXT NOT NULL, rule_id TEXT NOT NULL REFERENCES rules(id), position INTEGER NOT NULL, PRIMARY KEY(plan_id,target))",
@@ -118,14 +120,18 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"CREATE TABLE IF NOT EXISTS image_experiments(account TEXT NOT NULL, source_group TEXT NOT NULL, source_message_id TEXT NOT NULL, target TEXT NOT NULL, claimed_at REAL NOT NULL, PRIMARY KEY(account,source_group,source_message_id))",
             @"CREATE TABLE IF NOT EXISTS submission_receipts(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), submitted_at REAL NOT NULL)",
             @"CREATE TABLE IF NOT EXISTS small_group_runs(run_id TEXT PRIMARY KEY REFERENCES runs(id), authorized_at REAL NOT NULL)",
-            @"CREATE TABLE IF NOT EXISTS native_attempt_claims(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), claimed_at REAL NOT NULL)"
+            @"CREATE TABLE IF NOT EXISTS native_attempt_claims(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), claimed_at REAL NOT NULL)",
+            @"CREATE TABLE IF NOT EXISTS operations_contents(id TEXT PRIMARY KEY, account TEXT NOT NULL, source_group TEXT NOT NULL, message_id TEXT NOT NULL, configuration TEXT NOT NULL, envelope TEXT NOT NULL, captured_at REAL NOT NULL, plan_id TEXT UNIQUE REFERENCES plans(id), archived_at REAL, UNIQUE(account,source_group,message_id))",
+            @"CREATE UNIQUE INDEX IF NOT EXISTS one_operations_content ON operations_contents(account) WHERE archived_at IS NULL",
+            @"CREATE TABLE IF NOT EXISTS operations_cancellations(run_id TEXT PRIMARY KEY REFERENCES runs(id), requested_at REAL NOT NULL, drained_at REAL)",
+            @"CREATE TABLE IF NOT EXISTS operations_legacy_adoptions(content_id TEXT PRIMARY KEY REFERENCES operations_contents(id), run_id TEXT NOT NULL UNIQUE REFERENCES runs(id), adopted_at REAL NOT NULL)"
         ];
         for (NSString *sql in schema) [self query:sql values:@[]];
         if (rebuildRules) [self migrateRuleIntervalConstraint];
-        if (version < 8) {
+        if (version < 11) {
             SRRequire([self query:@"PRAGMA foreign_key_check" values:@[]].count == 0,
                       @"Database migration found broken foreign key references");
-            [self query:@"PRAGMA user_version=8" values:@[]];
+            [self query:@"PRAGMA user_version=11" values:@[]];
         }
         return @YES;
     } transaction:YES error:error];
@@ -138,7 +144,7 @@ static void SRRequire(BOOL condition, NSString *message) {
     if (!migrated || !enforced) return nil;
     id retained = [self perform:^id{
         NSMutableSet *references = [NSMutableSet set];
-        for (NSDictionary *row in [self query:@"SELECT snapshot FROM plans" values:@[]]) {
+        for (NSDictionary *row in [self query:@"SELECT snapshot FROM plans UNION ALL SELECT envelope AS snapshot FROM operations_contents UNION ALL SELECT snapshot FROM runs WHERE state IN ('running','paused','awaiting_resume')" values:@[]]) {
             NSData *data = [row[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding];
             NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
             // A damaged plan is not proof that its files are unreferenced.
@@ -159,10 +165,184 @@ static void SRRequire(BOOL condition, NSString *message) {
 
 - (void)dealloc { if (_db) sqlite3_close(_db); }
 
+- (NSNumber *)operationsEnabledForAccount:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length > 0, @"Verified account is required");
+        NSDictionary *row = [self query:@"SELECT enabled FROM operations_preferences WHERE account=?" values:@[account]].firstObject;
+        return row ? @([row[@"enabled"] boolValue]) : @NO;
+    } transaction:NO error:error];
+}
+
+- (BOOL)setOperationsEnabled:(BOOL)enabled account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length > 0, @"Verified account is required");
+        if (enabled) {
+            NSDictionary *row = [self query:@"SELECT payload FROM configurations WHERE account=?" values:@[account]].firstObject;
+            NSData *data = [row[@"payload"] dataUsingEncoding:NSUTF8StringEncoding];
+            NSDictionary *config = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+            SRRequire([SRConfiguration operationsRequirementsForDraft:config].count == 0,
+                      @"Save a complete source and target configuration before enabling operations");
+        }
+        [self query:@"INSERT OR REPLACE INTO operations_preferences(account,enabled) VALUES(?,?)" values:@[account, @(enabled)]];
+        return @YES;
+    } transaction:YES error:error] != nil;
+}
+
 - (NSString *)json:(id)object {
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:NSJSONWritingSortedKeys error:nil];
     SRRequire(data != nil, @"Invalid source snapshot");
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+}
+
+- (NSString *)saveOperationsContent:(NSDictionary *)envelope configuration:(NSDictionary *)configuration
+                            account:(NSString *)account capturedAt:(NSTimeInterval)capturedAt error:(NSError **)error {
+    NSDictionary *draft = [SRSourceMessage frozenJSON:configuration], *message = [SRSourceMessage frozenJSON:envelope];
+    return [self perform:^id{
+        SRRequire(isfinite(capturedAt) && capturedAt > 0 &&
+                  [SRConfiguration operationsRequirementsForDraft:draft].count == 0 &&
+                  [SRSourceMessage matchesEnvelope:message configuration:draft account:account], @"Invalid prepared operations content");
+        NSDictionary *existing = [self query:@"SELECT id,archived_at FROM operations_contents WHERE account=? AND source_group=? AND message_id=?"
+            values:@[account, message[@"group"], message[@"messageID"]]].firstObject;
+        if (existing) {
+            SRRequire(existing[@"archived_at"] == NSNull.null, @"This source was already processed or discarded");
+            return existing[@"id"];
+        }
+        SRRequire([self query:@"SELECT id FROM operations_contents WHERE account=? AND archived_at IS NULL" values:@[account]].count == 0,
+                  @"Current content is occupied; new messages are not queued");
+        SRRequire([self query:@"SELECT id FROM runs WHERE account=? AND state IN ('running','paused','awaiting_resume') LIMIT 1" values:@[account]].count == 0,
+                  @"An existing run must be handled before capturing new content");
+        SRRequire([self query:@"SELECT plan_id FROM source_claims WHERE account=? AND source_group=? AND message_id=?"
+            values:@[account, message[@"group"], message[@"messageID"]]].count == 0, @"Source already belongs to a plan");
+        for (NSString *table in @[@"text_experiments", @"image_experiments"])
+            SRRequire([self query:[NSString stringWithFormat:@"SELECT target FROM %@ WHERE account=? AND source_group=? AND source_message_id=?", table]
+                values:@[account, message[@"group"], message[@"messageID"]]].count == 0, @"Source already has an experimental attempt");
+        if ([message[@"type"] isEqual:@"image"])
+            SRRequire([self.imageAssets dataForPayload:message[@"payload"] source:message error:NULL] != nil, @"Image is not ready or has changed");
+        NSString *identifier = NSUUID.UUID.UUIDString;
+        [self query:@"INSERT INTO operations_contents(id,account,source_group,message_id,configuration,envelope,captured_at) VALUES(?,?,?,?,?,?,?)"
+            values:@[identifier, account, message[@"group"], message[@"messageID"], [self json:draft], [self json:message], @(capturedAt)]];
+        return identifier;
+    } transaction:YES error:error];
+}
+
+- (NSDictionary *)operationsContentForAccount:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length > 0, @"Verified account is required");
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        for (NSString *kind in @[@"current", @"recent"]) {
+            NSString *sql = [kind isEqual:@"current"] ?
+                @"SELECT * FROM operations_contents WHERE account=? AND archived_at IS NULL" :
+                @"SELECT * FROM operations_contents WHERE account=? AND archived_at IS NOT NULL ORDER BY archived_at DESC,rowid DESC LIMIT 1";
+            NSMutableDictionary *row = [[self query:sql values:@[account]].firstObject mutableCopy];
+            if (!row) { result[kind] = NSNull.null; continue; }
+            for (NSString *key in @[@"configuration", @"envelope"]) {
+                NSDictionary *decoded = [NSJSONSerialization JSONObjectWithData:[row[key] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+                SRRequire([decoded isKindOfClass:NSDictionary.class], @"Stored operations content is unreadable");
+                row[key] = decoded;
+            }
+            SRRequire([SRSourceMessage matchesEnvelope:row[@"envelope"] configuration:row[@"configuration"] account:account], @"Stored operations content is invalid");
+            SRRequire([row[@"source_group"] isEqual:row[@"envelope"][@"group"]] &&
+                [row[@"message_id"] isEqual:row[@"envelope"][@"messageID"]], @"Stored content identity is inconsistent");
+            NSDictionary *adoption = [self query:@"SELECT run_id,adopted_at FROM operations_legacy_adoptions WHERE content_id=?" values:@[row[@"id"]]].firstObject;
+            SRRequire(adoption || (isfinite([row[@"captured_at"] doubleValue]) && [row[@"captured_at"] doubleValue] > 0),
+                @"Stored capture time is invalid");
+            if (row[@"plan_id"] != NSNull.null) {
+                NSDictionary *plan = [self query:@"SELECT account,source_group,snapshot FROM plans WHERE id=?" values:@[row[@"plan_id"]]].firstObject;
+                NSDictionary *snapshot = plan ? [NSJSONSerialization JSONObjectWithData:[plan[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL] : nil;
+                SRRequire([plan[@"account"] isEqual:account] && [plan[@"source_group"] isEqual:row[@"source_group"]] &&
+                    [snapshot isEqual:row[@"envelope"]], @"Stored content plan belongs to a different source or account");
+            }
+            row[@"legacyAdoption"] = adoption ?: (id)NSNull.null;
+            row[@"captureTimeKnown"] = @(adoption == nil);
+            if (adoption) row[@"captured_at"] = NSNull.null;
+            result[kind] = row;
+        }
+        NSDictionary *legacy = [self query:@"SELECT x.*,r.plan_id FROM runs x JOIN rules r ON r.id=x.rule_id WHERE x.account=? AND x.state IN ('running','paused','awaiting_resume') AND NOT EXISTS(SELECT 1 FROM operations_contents c WHERE c.account=x.account AND c.plan_id=r.plan_id AND c.archived_at IS NULL) LIMIT 1" values:@[account]].firstObject;
+        result[@"unlinkedActiveRun"] = @(legacy != nil);
+        result[@"legacyRun"] = legacy ? [self runCard:legacy] : (id)NSNull.null;
+        return result;
+    } transaction:NO error:error];
+}
+
+- (NSString *)adoptLegacyOperationsRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && run.length, @"Account and legacy run are required");
+        NSDictionary *batch = [self query:@"SELECT x.*,r.plan_id FROM runs x JOIN rules r ON r.id=x.rule_id JOIN small_group_runs s ON s.run_id=x.id WHERE x.id=? AND x.account=?" values:@[run, account]].firstObject;
+        SRRequire(batch != nil, @"Legacy run has no authorized source for this account");
+        NSDictionary *existing = [self query:@"SELECT c.id,c.archived_at FROM operations_contents c JOIN operations_legacy_adoptions a ON a.content_id=c.id WHERE a.run_id=? AND c.account=?" values:@[run, account]].firstObject;
+        if (existing) {
+            SRRequire(existing[@"archived_at"] == NSNull.null, @"Legacy content was already archived");
+            return existing[@"id"];
+        }
+        SRRequire([@[@"paused", @"awaiting_resume"] containsObject:batch[@"state"]] &&
+            [self query:@"SELECT id FROM deliveries WHERE run_id=? AND state='submitting' LIMIT 1" values:@[run]].count == 0,
+            @"Pause and drain or recover the legacy run before adoption");
+        SRRequire([self query:@"SELECT id FROM operations_contents WHERE account=? AND archived_at IS NULL" values:@[account]].count == 0,
+            @"Handle the occupied content before adopting another source");
+        NSDictionary *plan = [self query:@"SELECT * FROM plans WHERE id=? AND account=?" values:@[batch[@"plan_id"], account]].firstObject;
+        SRRequire(plan && [plan[@"snapshot"] isEqual:batch[@"snapshot"]], @"Legacy run source differs from its plan");
+        NSDictionary *message = [NSJSONSerialization JSONObjectWithData:[plan[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        NSArray *senders = [NSJSONSerialization JSONObjectWithData:[plan[@"senders"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        NSArray *types = [NSJSONSerialization JSONObjectWithData:[plan[@"types"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        SRRequire([message isKindOfClass:NSDictionary.class] && [senders isKindOfClass:NSArray.class] && [types isKindOfClass:NSArray.class], @"Legacy source is unreadable; records were retained");
+        NSMutableDictionary *draft = [SRConfiguration emptyDraft];
+        draft[@"sourceGroup"] = @{@"id": plan[@"source_group"], @"name": plan[@"source_group"]};
+        NSMutableArray *members = [NSMutableArray array], *rules = [NSMutableArray array];
+        for (id sender in senders) {
+            SRRequire([sender isKindOfClass:NSString.class] && [sender length], @"Legacy sender is invalid");
+            [members addObject:@{@"id": sender, @"name": sender}];
+        }
+        draft[@"senders"] = members; draft[@"types"] = types;
+        draft[@"minimum"] = batch[@"minimum"]; draft[@"maximum"] = batch[@"maximum"];
+        for (NSDictionary *rule in [self query:@"SELECT * FROM rules WHERE plan_id=? ORDER BY position" values:@[plan[@"id"]]]) {
+            SRRequire([rule[@"minimum"] isEqual:batch[@"minimum"]] && [rule[@"maximum"] isEqual:batch[@"maximum"]],
+                @"Legacy rules have differing intervals; explicit recovery is required");
+            NSMutableArray *targets = [NSMutableArray array];
+            for (NSDictionary *row in [self query:@"SELECT target FROM allocations WHERE plan_id=? AND rule_id=? ORDER BY position" values:@[plan[@"id"], rule[@"id"]]])
+                [targets addObject:@{@"id": row[@"target"], @"name": row[@"target"]}];
+            [rules addObject:@{@"id": rule[@"id"], @"name": rule[@"name"], @"targets": targets}];
+        }
+        draft[@"rules"] = rules;
+        SRRequire([SRConfiguration operationsRequirementsForDraft:draft].count == 0 &&
+            [SRSourceMessage matchesEnvelope:message configuration:draft account:account], @"Legacy content cannot be verified; records were retained");
+        SRRequire([self query:@"SELECT plan_id FROM source_claims WHERE account=? AND source_group=? AND message_id=? AND plan_id=?"
+            values:@[account, message[@"group"], message[@"messageID"], plan[@"id"]]].count == 1, @"Legacy source claim is missing or inconsistent");
+        NSArray *targets = [self query:@"SELECT target,position FROM deliveries WHERE run_id=? ORDER BY position" values:@[run]];
+        NSArray *allocated = [self query:@"SELECT target,position FROM allocations WHERE plan_id=? AND rule_id=? ORDER BY position" values:@[plan[@"id"], batch[@"rule_id"]]];
+        SRRequire(targets.count > 0 && targets.count <= 20 && [targets isEqual:allocated], @"Legacy targets differ from the authorized rule");
+        NSString *identifier = NSUUID.UUID.UUIDString;
+        // Zero is only a storage sentinel for a pre-upgrade unknown capture time.
+        [self query:@"INSERT INTO operations_contents(id,account,source_group,message_id,configuration,envelope,captured_at,plan_id) VALUES(?,?,?,?,?,?,0,?)"
+            values:@[identifier, account, message[@"group"], message[@"messageID"], [self json:draft], plan[@"snapshot"], plan[@"id"]]];
+        [self query:@"INSERT INTO operations_legacy_adoptions(content_id,run_id,adopted_at) VALUES(?,?,?)"
+            values:@[identifier, run, @(NSDate.date.timeIntervalSince1970)]];
+        return identifier;
+    } transaction:YES error:error];
+}
+
+- (NSString *)planForOperationsContent:(NSString *)content account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        NSDictionary *row = [self query:@"SELECT * FROM operations_contents WHERE id=? AND account=? AND archived_at IS NULL" values:@[content, account]].firstObject;
+        SRRequire(row != nil, @"Active content is unavailable for this account");
+        if (row[@"plan_id"] != NSNull.null) return row[@"plan_id"];
+        NSDictionary *draft = [NSJSONSerialization JSONObjectWithData:[row[@"configuration"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        NSDictionary *message = [NSJSONSerialization JSONObjectWithData:[row[@"envelope"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        NSString *plan = [self createPlanUncheckedFromConfiguration:draft envelope:message account:account];
+        [self query:@"UPDATE operations_contents SET plan_id=? WHERE id=?" values:@[plan, content]];
+        return plan;
+    } transaction:YES error:error];
+}
+
+- (BOOL)archiveOperationsContent:(NSString *)content account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        NSDictionary *row = [self query:@"SELECT plan_id,archived_at FROM operations_contents WHERE id=? AND account=?" values:@[content, account]].firstObject;
+        SRRequire(row != nil, @"Content is unavailable for this account");
+        if (row[@"archived_at"] != NSNull.null) return @YES;
+        SRRequire([self query:@"SELECT x.id FROM runs x JOIN rules r ON r.id=x.rule_id WHERE r.plan_id=? AND (x.state IN ('running','paused','awaiting_resume') OR EXISTS(SELECT 1 FROM deliveries d WHERE d.run_id=x.id AND d.state='submitting')) LIMIT 1"
+            values:@[row[@"plan_id"]]].count == 0, @"End or drain the current run before archiving content");
+        [self query:@"UPDATE operations_contents SET archived_at=? WHERE id=?" values:@[@(NSDate.date.timeIntervalSince1970), content]];
+        return @YES;
+    } transaction:YES error:error] != nil;
 }
 
 - (NSString *)createPlanForAccount:(NSString *)account sourceGroup:(NSString *)group
@@ -310,8 +490,39 @@ static void SRRequire(BOOL condition, NSString *message) {
     } transaction:YES error:error] != nil;
 }
 
+- (void)finishOperationsCancellationUnchecked:(NSString *)run {
+    if ([self query:@"SELECT run_id FROM operations_cancellations WHERE run_id=? AND drained_at IS NULL" values:@[run]].count == 0) return;
+    if ([self query:@"SELECT id FROM deliveries WHERE run_id=? AND state='submitting' LIMIT 1" values:@[run]].count) return;
+    NSNumber *now = @(NSDate.date.timeIntervalSince1970);
+    [self query:@"UPDATE runs SET state='ended',ended_at=? WHERE id=? AND state IN ('running','paused','awaiting_resume')" values:@[now, run]];
+    [self query:@"UPDATE operations_cancellations SET drained_at=? WHERE run_id=? AND drained_at IS NULL" values:@[now, run]];
+}
+
+- (BOOL)cancelOperationsRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        NSDictionary *row = [self query:@"SELECT state FROM runs WHERE id=? AND account=?" values:@[run, account]].firstObject;
+        SRRequire(row != nil, @"Run is unavailable for this account");
+        if ([self query:@"SELECT run_id FROM operations_cancellations WHERE run_id=?" values:@[run]].count) return @YES;
+        SRRequire([@[@"running", @"paused", @"awaiting_resume"] containsObject:row[@"state"]], @"Run is already terminal");
+        [self query:@"INSERT INTO operations_cancellations(run_id,requested_at) VALUES(?,?)" values:@[run, @(NSDate.date.timeIntervalSince1970)]];
+        [self query:@"UPDATE runs SET state='paused' WHERE id=? AND state='running'" values:@[run]];
+        [self query:@"UPDATE deliveries SET state='cancelled',reason='User cancelled remaining targets' WHERE run_id=? AND state='pending'" values:@[run]];
+        [self finishOperationsCancellationUnchecked:run];
+        return @YES;
+    } transaction:YES error:error] != nil;
+}
+
+- (NSDictionary *)operationsCancellationForRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire([self query:@"SELECT id FROM runs WHERE id=? AND account=?" values:@[run, account]].count == 1, @"Run is unavailable for this account");
+        return [self query:@"SELECT requested_at,drained_at FROM operations_cancellations WHERE run_id=?" values:@[run]].firstObject ?: @{};
+    } transaction:NO error:error];
+}
+
 - (BOOL)resumeRun:(NSString *)run error:(NSError **)error {
     return [self perform:^id{
+        SRRequire([self query:@"SELECT run_id FROM operations_cancellations WHERE run_id=?" values:@[run]].count == 0,
+                  @"Cancelled runs cannot be resumed; an explicit new batch is required");
         SRRequire([self query:@"SELECT id FROM deliveries WHERE run_id=? AND state='submitting' LIMIT 1" values:@[run]].count == 0,
                   @"Wait for the current in-flight attempt before continuing");
         [self query:@"UPDATE runs SET state='running' WHERE id=? AND state IN ('paused','awaiting_resume')" values:@[run]];
@@ -326,6 +537,8 @@ static void SRRequire(BOOL condition, NSString *message) {
             values:@[@(NSDate.date.timeIntervalSince1970)]];
         [self query:@"UPDATE deliveries SET state='uncertain',reason='Process interrupted' WHERE state='submitting'" values:@[]];
         [self query:@"UPDATE runs SET state='awaiting_resume' WHERE state IN ('running','paused')" values:@[]];
+        for (NSDictionary *row in [self query:@"SELECT run_id FROM operations_cancellations WHERE drained_at IS NULL" values:@[]])
+            [self finishOperationsCancellationUnchecked:row[@"run_id"]];
         [self query:@"UPDATE runs SET state='completed',ended_at=? WHERE state='awaiting_resume' AND EXISTS(SELECT 1 FROM deliveries d WHERE d.run_id=runs.id) AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.run_id=runs.id AND d.state IN ('pending','submitting'))"
             values:@[@(NSDate.date.timeIntervalSince1970)]];
         return @YES;
@@ -377,6 +590,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         if ([state isEqual:@"uncertain"] && !receipt)
             [self query:@"UPDATE runs SET state='paused' WHERE id=? AND state='running'" values:@[row[@"run_id"]]];
         NSArray *remaining = [self query:@"SELECT id FROM deliveries WHERE run_id=? AND state IN ('pending','submitting') LIMIT 1" values:@[row[@"run_id"]]];
+        [self finishOperationsCancellationUnchecked:row[@"run_id"]];
         if (!remaining.count) [self query:@"UPDATE runs SET state='completed',ended_at=? WHERE id=? AND state IN ('running','paused','awaiting_resume')"
             values:@[@(NSDate.date.timeIntervalSince1970), row[@"run_id"]]];
         return @YES;
@@ -385,6 +599,12 @@ static void SRRequire(BOOL condition, NSString *message) {
 
 - (BOOL)endRun:(NSString *)run error:(NSError **)error {
     return [self perform:^id{
+        if ([self query:@"SELECT run_id FROM operations_cancellations WHERE run_id=?" values:@[run]].count) {
+            [self finishOperationsCancellationUnchecked:run];
+            SRRequire([self query:@"SELECT id FROM deliveries WHERE run_id=? AND state='submitting' LIMIT 1" values:@[run]].count == 0,
+                      @"Cancellation is still draining; preserve the in-flight result");
+            return @YES;
+        }
         [self query:@"UPDATE runs SET state='ended',ended_at=? WHERE id=? AND state IN ('running','paused','awaiting_resume')"
             values:@[@(NSDate.date.timeIntervalSince1970), run]];
         SRRequire(sqlite3_changes(self->_db) == 1, @"Run is already ended or unknown");
@@ -440,6 +660,10 @@ static void SRRequire(BOOL condition, NSString *message) {
     NSDictionary *draft = [SRSourceMessage frozenJSON:configuration];
     NSDictionary *message = [SRSourceMessage frozenJSON:envelope];
     return [self perform:^id{
+        return [self createPlanUncheckedFromConfiguration:draft envelope:message account:account];
+    } transaction:YES error:error];
+}
+- (NSString *)createPlanUncheckedFromConfiguration:(NSDictionary *)draft envelope:(NSDictionary *)message account:(NSString *)account {
         SRRequire([SRSourceMessage matchesEnvelope:message configuration:draft account:account] && [draft[@"rules"] count], @"Captured source does not match the configured rule");
         if ([message[@"type"] isEqual:@"image"])
             SRRequire([self.imageAssets dataForPayload:message[@"payload"] source:message error:NULL] != nil, @"Image snapshot is missing or changed; capture it again");
@@ -456,7 +680,6 @@ static void SRRequire(BOOL condition, NSString *message) {
                 values:@[plan, target[@"id"], ruleID, @(targetPosition++)]];
         }
         return plan;
-    } transaction:YES error:error];
 }
 - (NSArray *)rulesForPlan:(NSString *)plan error:(NSError **)error {
     return [self perform:^id{

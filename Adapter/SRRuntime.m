@@ -106,6 +106,37 @@ NSString *SRReadDeclaredString(id target, NSString *name, SRStringReadState *sta
     if (state) *state = result;
     return string;
 }
+NSNumber *SRReadDeclaredUnsignedInteger(id target, NSString *name) {
+    @try {
+        SEL selector = NSSelectorFromString(name);
+        Method method = target ? class_getInstanceMethod(object_getClass(target), selector) : NULL;
+        NSMethodSignature *signature = method ? [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)] : nil;
+        const char *type = signature ? SRType(signature.methodReturnType) : "";
+        if (signature.numberOfArguments != 2 || !type[0] || type[1] ||
+            strcmp(SRType([signature getArgumentTypeAtIndex:0]), "@") ||
+            strcmp(SRType([signature getArgumentTypeAtIndex:1]), ":")) return nil;
+        switch (type[0]) {
+#define SR_DECLARED_SIGNED(encoding, ctype) \
+            case encoding: { ctype value = ((ctype (*)(id, SEL))objc_msgSend)(target, selector); \
+                return value < 0 ? nil : @((unsigned long long)value); }
+#define SR_DECLARED_UNSIGNED(encoding, ctype) \
+            case encoding: return @((unsigned long long)((ctype (*)(id, SEL))objc_msgSend)(target, selector));
+            SR_DECLARED_SIGNED('i', int)
+            SR_DECLARED_UNSIGNED('I', unsigned int)
+            SR_DECLARED_SIGNED('q', long long)
+            SR_DECLARED_UNSIGNED('Q', unsigned long long)
+            SR_DECLARED_SIGNED('l', long)
+            SR_DECLARED_UNSIGNED('L', unsigned long)
+            SR_DECLARED_SIGNED('s', short)
+            SR_DECLARED_UNSIGNED('S', unsigned short)
+            SR_DECLARED_SIGNED('c', signed char)
+            SR_DECLARED_UNSIGNED('C', unsigned char)
+#undef SR_DECLARED_SIGNED
+#undef SR_DECLARED_UNSIGNED
+        }
+    } @catch (__unused id exception) { }
+    return nil;
+}
 NSNumber *SRReadUnsignedInteger(id target, NSString *name, NSError **error) {
     @try {
         SEL selector = NSSelectorFromString(name);

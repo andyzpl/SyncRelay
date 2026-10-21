@@ -35,6 +35,25 @@ NS_ASSUME_NONNULL_BEGIN
 /* Configuration drafts do not create plans, runs or deliveries. */
 - (nullable NSDictionary *)configurationForAccount:(NSString *)account error:(NSError **)error;
 - (BOOL)saveConfiguration:(NSDictionary *)configuration account:(NSString *)account error:(NSError **)error;
+/* Account business preference, independent of the legacy floating shortcut.
+ * Missing rows are disabled. Enabling validates the saved configuration. */
+- (nullable NSNumber *)operationsEnabledForAccount:(NSString *)account error:(NSError **)error;
+- (BOOL)setOperationsEnabled:(BOOL)enabled account:(NSString *)account error:(NSError **)error;
+/* Prepared source + frozen configuration commit before any captured UI. No run
+ * is created. Duplicate active source returns its ID without changing content. */
+- (nullable NSString *)saveOperationsContent:(NSDictionary *)envelope configuration:(NSDictionary *)configuration
+                                    account:(NSString *)account capturedAt:(NSTimeInterval)capturedAt error:(NSError **)error;
+- (nullable NSDictionary *)operationsContentForAccount:(NSString *)account error:(NSError **)error;
+/* Explicit upgrade of a drained, authorized legacy run. Reuses its original
+ * plan/source/allocations; never creates a run, changes claims or resumes it.
+ * Legacy capture time is unknown and is projected as null, not adoption time. */
+- (nullable NSString *)adoptLegacyOperationsRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+- (nullable NSString *)planForOperationsContent:(NSString *)content account:(NSString *)account error:(NSError **)error;
+- (BOOL)archiveOperationsContent:(NSString *)content account:(NSString *)account error:(NSError **)error;
+/* Cancel pending only. A submitting attempt retains its callback/timeout and
+ * the account's active-run slot until drained; never resumable afterwards. */
+- (BOOL)cancelOperationsRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+- (nullable NSDictionary *)operationsCancellationForRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
 /* Captured source claim, frozen rules and target allocations commit atomically. */
 - (nullable NSString *)createPlanFromConfiguration:(NSDictionary *)configuration envelope:(NSDictionary *)envelope
                                           account:(NSString *)account error:(NSError **)error;
@@ -57,7 +76,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)claimImageExperiment:(NSDictionary *)source configuration:(NSDictionary *)configuration
                     account:(NSString *)account target:(NSString *)target error:(NSError **)error;
 - (nullable NSDictionary *)imageExperimentSummaryForAccount:(NSString *)account error:(NSError **)error;
-/* Explicit device checkpoint: 1..3 targets, initial execution only. These
+/* Explicit device checkpoint: 1..20 targets, initial execution only. These
  * authorizations and per-delivery native claims survive process restarts. */
 - (nullable NSString *)startSmallGroupRule:(NSString *)rule account:(NSString *)account error:(NSError **)error;
 - (nullable NSDictionary *)smallGroupRulePreview:(NSString *)rule account:(NSString *)account error:(NSError **)error;

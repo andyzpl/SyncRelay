@@ -266,6 +266,27 @@ int main(void) {
         CHECK(![session endRun:lastRun account:@"other" error:NULL]);
         CHECK([session endRun:lastRun account:@"account" error:NULL]); CHECK(!session.busy && !session.needsIdleTimer);
         CHECK(count(store, lastRun, @"cancelled") == 1);
+        // v2 cancellation preserves actual in-flight readback and releases only after drain.
+        rules = makePlan(store, @"cancel-drain", 2); session = newSession();
+        CHECK([session startRule:rules[0][@"id"] account:@"account" error:NULL]);
+        run = latest(store, rules[0][@"id"]);
+        now += 10; [session tick]; pump(session);
+        CHECK(count(store, run, @"submitting") == 1 && hosts.lastObject.calls == 1);
+        CHECK([session cancelRun:run account:@"account" error:NULL]);
+        CHECK(session.busy && session.needsIdleTimer && count(store, run, @"cancelled") == 1);
+        CHECK(![session resumeRun:run account:@"account" error:NULL]);
+        CHECK(![session startRule:rules[1][@"id"] account:@"account" error:NULL]);
+        [hosts.lastObject finish]; [session tick];
+        CHECK(count(store, run, @"submitted") == 1 && count(store, run, @"cancelled") == 1);
+        CHECK(!session.busy && !session.needsIdleTimer && [session.status[@"state"] isEqual:@"ended"]);
+        CHECK([session.status[@"targetLimit"] isEqual:@20]);
+        NSNumber *endedAt = [store summaryForRun:run error:NULL][@"ended_at"];
+        CHECK([session cancelRun:run account:@"account" error:NULL]);
+        CHECK([[store summaryForRun:run error:NULL][@"ended_at"] isEqual:endedAt]);
+        CHECK([session startRule:rules[1][@"id"] account:@"account" error:NULL]);
+        lastRun = latest(store, rules[1][@"id"]);
+        CHECK([session cancelRun:lastRun account:@"account" error:NULL]);
+        CHECK(!session.busy && !session.needsIdleTimer && count(store, lastRun, @"cancelled") == 1);
         NSData *report = [NSJSONSerialization dataWithJSONObject:session.diagnostics options:0 error:NULL]; CHECK(report);
         NSString *json = [[NSString alloc] initWithData:report encoding:NSUTF8StringEncoding];
         for (NSString *secret in @[@"mother@chatroom", @"target0@chatroom", @"Synthetic text only", @"sourceMessageID"])

@@ -17,6 +17,9 @@ int main(void) {
         NSError *error = nil;
         SRStore *store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store && !error);
+        assert(![[store operationsEnabledForAccount:@"account" error:&error] boolValue]);
+        assert(![store setOperationsEnabled:YES account:@"account" error:NULL]);
+        assert(![store setOperationsEnabled:YES account:@"" error:NULL]);
         NSMutableDictionary *draft = [SRConfiguration emptyDraft];
         assert([draft[@"minimum"] isEqual:@5] && [draft[@"maximum"] isEqual:@10]);
         draft[@"maximum"] = @30;
@@ -35,6 +38,24 @@ int main(void) {
         experimentDraft[@"types"] = @[ @"text" ];
         experimentDraft[@"rules"] = @[ @{ @"id": @"experiment-rule", @"name": @"Rule 1", @"targets": @[ @{ @"id": @"target@chatroom", @"name": @"Target" } ] } ];
         assert([SRConfiguration validateDraft:experimentDraft error:&error]);
+        assert([store saveConfiguration:experimentDraft account:@"account" error:&error]);
+        assert([store setOperationsEnabled:YES account:@"account" error:&error]);
+        assert([[store operationsEnabledForAccount:@"account" error:&error] boolValue]);
+        assert(![[store operationsEnabledForAccount:@"other-account" error:&error] boolValue]);
+        SRStore *reopened = [[SRStore alloc] initWithPath:path error:&error];
+        assert([[reopened operationsEnabledForAccount:@"account" error:&error] boolValue]);
+        assert([reopened setOperationsEnabled:NO account:@"account" error:&error]);
+        assert(![[store operationsEnabledForAccount:@"account" error:&error] boolValue]);
+        assert([[store configurationForAccount:@"account" error:&error] isEqual:experimentDraft]);
+        sqlite3 *faultDB = NULL;
+        assert(sqlite3_open(path.fileSystemRepresentation, &faultDB) == SQLITE_OK);
+        assert(sqlite3_exec(faultDB, "CREATE TRIGGER reject_operations BEFORE INSERT ON operations_preferences BEGIN SELECT RAISE(ABORT,'test write failure'); END", NULL, NULL, NULL) == SQLITE_OK);
+        assert(![store setOperationsEnabled:YES account:@"account" error:NULL]);
+        assert(![[store operationsEnabledForAccount:@"account" error:&error] boolValue]);
+        assert(sqlite3_exec(faultDB, "DROP TRIGGER reject_operations", NULL, NULL, NULL) == SQLITE_OK);
+        assert(sqlite3_close(faultDB) == SQLITE_OK);
+        reopened = nil;
+        assert([store saveConfiguration:draft account:@"account" error:&error]);
         NSDictionary *experimentSource = @{ @"account": @"account", @"group": @"source@chatroom", @"sender": @"wxid_sender",
             @"messageID": @"experiment-source", @"type": @"text", @"generatedByRelay": @NO, @"payload": @{ @"text": @"hello" } };
         assert([store claimTextExperiment:experimentSource configuration:experimentDraft account:@"account" target:@"target@chatroom" error:&error]);

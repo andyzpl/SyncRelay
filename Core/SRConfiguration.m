@@ -7,6 +7,25 @@
               @"minimum": @(SR_PACING_DEFAULT_MINIMUM_SECONDS), @"maximum": @(SR_PACING_DEFAULT_MAXIMUM_SECONDS),
               @"rules": @[], @"excludedGroups": @[]} mutableCopy];
 }
++ (NSArray<NSString *> *)operationsRequirementsForDraft:(NSDictionary *)draft {
+    if (![draft isKindOfClass:NSDictionary.class] || ![draft[@"schema"] isEqual:@1]) return @[@"configuration_invalid"];
+    NSMutableArray *missing = [NSMutableArray array];
+    if (![self row:draft[@"sourceGroup"] group:YES]) [missing addObject:@"source_group"];
+    NSArray *senders = draft[@"senders"], *types = draft[@"types"], *rules = draft[@"rules"];
+    BOOL membersValid = [senders isKindOfClass:NSArray.class] && senders.count > 0;
+    if (membersValid) for (id row in senders) if (![self row:row group:NO]) membersValid = NO;
+    if (!membersValid) [missing addObject:@"source_members"];
+    BOOL typesValid = [types isKindOfClass:NSArray.class] && types.count > 0 && types.count <= 2;
+    if (typesValid) for (id type in types) if (![@[@"text", @"image"] containsObject:type]) typesValid = NO;
+    if (!typesValid) [missing addObject:@"message_types"];
+    SRPacing pacing = {0};
+    if (![draft[@"minimum"] isKindOfClass:NSNumber.class] || ![draft[@"maximum"] isKindOfClass:NSNumber.class] ||
+        !SRPacingConfigure(&pacing, [draft[@"minimum"] doubleValue], [draft[@"maximum"] doubleValue]))
+        [missing addObject:@"send_interval"];
+    if (![rules isKindOfClass:NSArray.class] || !rules.count) [missing addObject:@"target_groups"];
+    if (!missing.count && ![self validateDraft:draft error:NULL]) [missing addObject:@"configuration_invalid"];
+    return missing;
+}
 + (BOOL)row:(id)row group:(BOOL)group {
     if (![row isKindOfClass:NSDictionary.class]) return NO;
     NSString *identifier = row[@"id"];

@@ -3,7 +3,10 @@
 #import "Core/SRSourceMessage.h"
 #import "Core/SRConfiguration.h"
 #import "Core/SRImageAssetStore.h"
+#import "Core/SROperationsState.h"
 #import <objc/runtime.h>
+#include <math.h>
+#include <stdint.h>
 #include <string.h>
 
 @class SRReceiveTap;
@@ -13,6 +16,7 @@
 @property(nonatomic, copy) NSString *text;
 @property(nonatomic, copy) NSNumber *localID;
 @property(nonatomic, copy) NSNumber *messageType;
+@property(nonatomic, copy) NSDictionary *timeEvidence;
 @end
 @implementation SRPendingOwnText
 @end
@@ -20,6 +24,7 @@
 @interface SRPendingImage : NSObject
 @property(nonatomic, strong) id wrap;
 @property(nonatomic, copy) NSDictionary *source;
+@property(nonatomic, copy) NSDictionary *timeEvidence;
 @property(nonatomic) NSTimeInterval deadline;
 @end
 @implementation SRPendingImage
@@ -38,6 +43,7 @@
 @property(nonatomic, copy) Class (^resolver)(NSString *);
 @property(nonatomic, copy) NSString *(^currentAccount)(void);
 @property(nonatomic, copy) void (^received)(NSDictionary *);
+@property(nonatomic, copy) NSTimeInterval (^clock)(void);
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSString *group;
 @property(nonatomic, copy) NSString *problem;
@@ -56,15 +62,22 @@
 @property(nonatomic) NSUInteger directionDropped;
 @property(nonatomic, copy) NSSet *senderIDs;
 @property(nonatomic, copy) NSSet *selectedTypes;
+/* Bounded, numeric-only probe for device evidence. This does not make an
+ * unsupported type capturable or relayable. */
+@property(nonatomic, strong) NSMutableDictionary *observedMessageTypes;
+@property(nonatomic, strong) NSMutableArray *observedMessageTypeSequence;
 @property(nonatomic, strong) SRPendingImage *pendingImage;
 @property(nonatomic, copy) NSString *imageState;
 @property(nonatomic) NSUInteger imageReads;
 @property(nonatomic) NSUInteger queuedImages;
 @property(nonatomic) NSUInteger imagePreparationCode;
+@property(nonatomic) BOOL newMessagesOnly;
 - (SRDirectionObservation *)beginDirectionForSession:(id)session wrap:(id)wrap;
 - (void)finishDirection:(SRDirectionObservation *)observation path:(NSString *)path wrap:(id)wrap;
-- (void)observeSession:(id)session wrap:(id)wrap;
-- (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap;
+- (NSDictionary *)beginTimeEvidenceForSession:(id)session wrap:(id)wrap;
+- (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence;
+- (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence;
+- (void)observeMessageType:(NSNumber *)type;
 - (void)pollOutgoing:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
 @end
 
@@ -104,6 +117,13 @@ static BOOL SRReceiveGetter(Class type, NSString *name, BOOL integer) {
         return integer ? strchr("iIqQlLsScC", result[0]) != NULL : (result[0] == '@' && result[1] != '?');
     } @catch (__unused id exception) { return NO; }
 }
+static BOOL SRReceiveTimeGetter(Class type) {
+    if (!SRReceiveGetter(type, @"m_uiCreateTime", YES)) return NO;
+    Method method = class_getInstanceMethod(type, NSSelectorFromString(@"m_uiCreateTime"));
+    NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+    const char *result = SRReceiveType(signature.methodReturnType);
+    return result[0] && !result[1] && strchr("iIqQlL", result[0]) != NULL;
+}
 
 // Reflection is diagnostic evidence, never a substitute for the declared getter ABI.
 static NSUInteger SRDirectionReflection(id wrap, NSString *name) {
@@ -136,12 +156,74 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         @"typeReadable": @(type != nil), @"messageType": type ?: @0};
 }
 
+static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *sequence) {
+    NSMutableArray *rows = [NSMutableArray array];
+    NSArray *keys = [counts.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *left, NSString *right) {
+        unsigned long long a = (unsigned long long)left.longLongValue, b = (unsigned long long)right.longLongValue;
+        return a < b ? NSOrderedAscending : (a > b ? NSOrderedDescending : [left compare:right]);
+    }];
+    for (NSString *key in keys) {
+        NSNumber *type = @((unsigned long long)key.longLongValue);
+        NSNumber *count = counts[key];
+        if (type.unsignedLongLongValue > UINT32_MAX || ![count isKindOfClass:NSNumber.class]) continue;
+        [rows addObject:@{ @"type": type, @"count": count }];
+    }
+    return @{ @"schema": @1, @"rows": rows, @"sequence": sequence ?: @[] };
+}
+
 @implementation SRWeChatReceiver
 - (instancetype)initWithVersion:(NSString *)version classResolver:(Class (^)(NSString *))resolver
                 currentAccount:(NSString *(^)(void))currentAccount received:(void (^)(NSDictionary *))received {
+    return [self initWithVersion:version classResolver:resolver currentAccount:currentAccount received:received
+        clock:^NSTimeInterval { return NSDate.date.timeIntervalSince1970; }];
+}
+- (instancetype)initWithVersion:(NSString *)version classResolver:(Class (^)(NSString *))resolver
+                currentAccount:(NSString *(^)(void))currentAccount received:(void (^)(NSDictionary *))received clock:(NSTimeInterval (^)(void))clock {
     self = [super init];
-    if (self) { _version = [version copy]; _resolver = [resolver copy]; _currentAccount = [currentAccount copy]; _received = [received copy]; }
+    if (self) {
+        _version = [version copy]; _resolver = [resolver copy]; _currentAccount = [currentAccount copy];
+        _received = [received copy]; _clock = [clock copy];
+    }
     return self;
+}
+- (NSTimeInterval)observationTime {
+    @try { NSTimeInterval time = self.clock(); return isfinite(time) && time > 0 ? time : 0; }
+    @catch (__unused id exception) { return 0; }
+}
+- (NSDictionary *)beginTimeEvidenceForSession:(id)session wrap:(id)wrap {
+    NSUInteger generation; NSTimeInterval since;
+    @synchronized(self) {
+        if (!self.armed || ![session isKindOfClass:NSString.class] || ![session isEqual:self.group]) return nil;
+        generation = self.generation; since = self.armedAt;
+    }
+    NSTimeInterval received = [self observationTime];
+    NSNumber *created = SRReadDeclaredUnsignedInteger(wrap, @"m_uiCreateTime");
+    // JSON/double time evidence must remain exact; never round a large host ID.
+    if (!created.unsignedLongLongValue || created.unsignedLongLongValue > 9007199254740991ULL) created = nil;
+    return @{@"schema": @1, @"generation": @(generation), @"createdAt": created ?: (id)NSNull.null,
+        @"receivedAt": @(received), @"listeningSince": @(since)};
+}
+- (BOOL)acceptsTimeEvidence:(NSDictionary *)evidence wrap:(id)wrap generation:(NSUInteger)generation {
+    BOOL strict;
+    @synchronized(self) {
+        if (!evidence || !self.armed || self.generation != generation || [evidence[@"generation"] unsignedIntegerValue] != generation) return NO;
+        strict = self.newMessagesOnly;
+    }
+    if (!strict) return YES;
+    NSNumber *created = evidence[@"createdAt"];
+    if (![created isKindOfClass:NSNumber.class] ||
+        !SROpsNewMessage(created.doubleValue, [evidence[@"listeningSince"] doubleValue], [evidence[@"receivedAt"] doubleValue]) ||
+        [evidence[@"receivedAt"] doubleValue] > [self observationTime]) {
+        [self note:@"source_time_rejected"]; return NO;
+    }
+    if (![SRReadDeclaredUnsignedInteger(wrap, @"m_uiCreateTime") isEqual:created]) {
+        [self note:@"source_time_changed"]; return NO;
+    }
+    return YES;
+}
+- (void)deliverMessage:(NSDictionary *)message timeEvidence:(NSDictionary *)evidence {
+    if (self.receivedWithTimeEvidence) self.receivedWithTimeEvidence(message, evidence);
+    else self.received(message);
 }
 - (BOOL)fail:(NSString *)reason error:(NSError **)error {
     @synchronized(self) { self.problem = reason; }
@@ -211,12 +293,17 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
             tap = [[SRReceiveTap alloc] init]; tap.original = method_getImplementation(method);
             SRReceiveTap *installed = tap;
             IMP replacement = imp_implementationWithBlock(^(id object, id session, id wrap) {
+                SRWeChatReceiver *listener = installed.listener;
                 SRDirectionObservation *observation = nil;
-                @try { observation = [installed.listener beginDirectionForSession:session wrap:wrap]; } @catch (__unused id exception) { }
+                NSDictionary *evidence = nil;
+                @try {
+                    evidence = [listener beginTimeEvidenceForSession:session wrap:wrap];
+                    observation = [listener beginDirectionForSession:session wrap:wrap];
+                } @catch (__unused id exception) { }
                 ((void (*)(id, SEL, id, id))installed.original)(object, selector, session, wrap);
                 // Never let optional observation exceptions change WeChat's receive behavior.
                 @try { [installed.listener finishDirection:observation path:@"receive" wrap:wrap]; } @catch (__unused id exception) { }
-                @try { [installed.listener observeSession:session wrap:wrap]; } @catch (__unused id exception) { }
+                @try { if (installed.listener == listener) [listener observeSession:session wrap:wrap timeEvidence:evidence]; } @catch (__unused id exception) { }
             });
             if (!class_addMethod(manager, selector, replacement, method_getTypeEncoding(method)))
                 tap.original = method_setImplementation(class_getInstanceMethod(manager, selector), replacement);
@@ -224,12 +311,15 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         }
         @synchronized(self) {
             self.account = account; self.group = group; self.problem = nil; self.generation++;
-            self.counters = [NSMutableDictionary dictionary]; self.armedAt = NSDate.date.timeIntervalSince1970; self.lastCallbackAt = 0;
+            self.counters = [NSMutableDictionary dictionary]; self.armedAt = [self observationTime]; self.lastCallbackAt = 0;
             self.directionSamples = [NSMutableArray array]; self.directionReservations = 0; self.directionDropped = 0;
             self.pendingOutgoing = nil; self.queuedOutgoing = 0; self.ownTextState = @"unavailable";
             self.senderIDs = nil; self.selectedTypes = [NSSet setWithObject:@"text"];
+            self.observedMessageTypes = [NSMutableDictionary dictionary];
+            self.observedMessageTypeSequence = [NSMutableArray array];
             self.pendingImage = nil; self.imageState = @"disabled"; self.imageReads = 0; self.queuedImages = 0;
             self.imagePreparationCode = 0;
+            self.newMessagesOnly = NO;
             self.tap = tap; self.armed = YES; tap.listener = self;
         }
         // Optional outgoing observation. Never invoke AddMsg ourselves.
@@ -242,11 +332,16 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
                 outgoing = [[SRReceiveTap alloc] init]; outgoing.original = method_getImplementation(outgoingMethod);
                 SRReceiveTap *installed = outgoing;
                 IMP replacement = imp_implementationWithBlock(^(id object, id session, id wrap) {
+                    SRWeChatReceiver *listener = installed.listener;
                     SRDirectionObservation *observation = nil;
-                    @try { observation = [installed.listener beginDirectionForSession:session wrap:wrap]; } @catch (__unused id exception) { }
+                    NSDictionary *evidence = nil;
+                    @try {
+                        evidence = [listener beginTimeEvidenceForSession:session wrap:wrap];
+                        observation = [listener beginDirectionForSession:session wrap:wrap];
+                    } @catch (__unused id exception) { }
                     ((void (*)(id, SEL, id, id))installed.original)(object, outgoingSelector, session, wrap);
                     @try { [installed.listener finishDirection:observation path:@"outgoing" wrap:wrap]; } @catch (__unused id exception) { }
-                    @try { [installed.listener observeOutgoingManager:object session:session wrap:wrap]; } @catch (__unused id exception) { }
+                    @try { if (installed.listener == listener) [listener observeOutgoingManager:object session:session wrap:wrap timeEvidence:evidence]; } @catch (__unused id exception) { }
                 });
                 if (!class_addMethod(manager, outgoingSelector, replacement, method_getTypeEncoding(outgoingMethod)))
                     outgoing.original = method_setImplementation(class_getInstanceMethod(manager, outgoingSelector), replacement);
@@ -261,15 +356,22 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     return YES;
 }
 - (BOOL)armForAccount:(NSString *)account configuration:(NSDictionary *)configuration error:(NSError **)error {
+    return [self armForAccount:account configuration:configuration newMessagesOnly:NO error:error];
+}
+- (BOOL)armForAccount:(NSString *)account configuration:(NSDictionary *)configuration newMessagesOnly:(BOOL)newMessagesOnly error:(NSError **)error {
     if (![SRConfiguration validateDraft:configuration error:NULL] || ![configuration[@"senders"] count])
         return [self fail:@"Capture requires validated sender and type filters" error:error];
     if ([configuration[@"types"] containsObject:@"image"] && (!self.prepareImage || !self.discardImage))
         return [self fail:@"Image snapshot preparation is unavailable" error:error];
+    if (newMessagesOnly && (!self.receivedWithTimeEvidence ||
+        !SRReceiveTimeGetter(self.resolver(@"CMessageWrap")) || [self observationTime] <= 0))
+        return [self fail:@"A declared creation-time getter, valid clock and evidence callback are required" error:error];
     if (![self armForAccount:account sourceGroup:configuration[@"sourceGroup"][@"id"] error:error]) return NO;
     @synchronized(self) {
         self.senderIDs = [NSSet setWithArray:[configuration[@"senders"] valueForKey:@"id"]];
         self.selectedTypes = [NSSet setWithArray:configuration[@"types"]];
         self.imageState = [self.selectedTypes containsObject:@"image"] ? @"waiting" : @"disabled";
+        self.newMessagesOnly = newMessagesOnly;
     }
     return YES;
 }
@@ -281,7 +383,7 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         return YES;
     }
 }
-- (void)observeSession:(id)session wrap:(id)wrap {
+- (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {
     NSString *account, *group; NSUInteger generation;
     @synchronized(self) {
         if (!self.armed) return;
@@ -302,8 +404,10 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         [sender rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) { [self note:@"receive_invalid_sender"]; return; }
     NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
     NSNumber *serverID = SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL);
+    [self observeMessageType:type];
     if (![self allowsSender:sender type:type]) return;
     if (!serverID.unsignedLongLongValue) { [self note:@"receive_no_server_id"]; return; }
+    if (![self acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
     if ([type isEqual:@3]) {
         NSDictionary *identity = @{@"account": account, @"group": group, @"sender": sender,
             @"messageID": [@"svr:" stringByAppendingString:serverID.stringValue], @"type": @"image", @"generatedByRelay": @NO};
@@ -319,6 +423,7 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
                 receiver.queuedImages--;
                 if (receiver.pendingImage) return;
                 SRPendingImage *pending = [[SRPendingImage alloc] init]; pending.wrap = wrap; pending.source = identity;
+                pending.timeEvidence = evidence;
                 pending.deadline = NSProcessInfo.processInfo.systemUptime + 30;
                 receiver.pendingImage = pending; receiver.imageState = @"awaiting_native_image";
             }
@@ -344,13 +449,29 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
                 [receiver stop]; [receiver fail:@"Account changed; receive capture stopped" error:NULL]; return;
             }
             @synchronized(receiver) { if (!receiver.armed || receiver.generation != generation) return; }
-            [receiver note:@"source_candidate"]; receiver.received(message);
+            if (![receiver acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
+            [receiver note:@"source_candidate"]; [receiver deliverMessage:message timeEvidence:evidence];
         } @catch (__unused id exception) {
             [receiver stop]; [receiver fail:@"Receive callback failed; capture stopped" error:NULL];
         }
     });
 }
-- (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap {
+- (void)observeMessageType:(NSNumber *)type {
+    if (![type isKindOfClass:NSNumber.class] || type.unsignedLongLongValue > UINT32_MAX) return;
+    @synchronized(self) {
+        if (!self.observedMessageTypes) self.observedMessageTypes = [NSMutableDictionary dictionary];
+        if (!self.observedMessageTypeSequence) self.observedMessageTypeSequence = [NSMutableArray array];
+        /* Keep diagnostics bounded even if a host emits malformed values. */
+        NSString *key = type.stringValue;
+        if (!self.observedMessageTypes[key] && self.observedMessageTypes.count >= 32) return;
+        NSUInteger count = [self.observedMessageTypes[key] unsignedIntegerValue];
+        self.observedMessageTypes[key] = @(count == NSUIntegerMax ? count : count + 1);
+        /* The order is numeric only, so one device run can correlate each
+         * sent fixture with a callback without retaining message content. */
+        if (self.observedMessageTypeSequence.count < 64) [self.observedMessageTypeSequence addObject:type];
+    }
+}
+- (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {
     NSString *account, *group; NSUInteger generation;
     @synchronized(self) {
         if (!self.armed) return;
@@ -363,10 +484,12 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     }
     NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
     if (![self allowsSender:account type:type]) return;
+    if (![self acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
     NSString *text = [type isEqual:@1] ? [SRReadDeclaredString(wrap, @"m_nsContent", NULL) copy] : nil;
     if ([type isEqual:@1] && !text.length) return;
     SRPendingOwnText *pending = [[SRPendingOwnText alloc] init];
     pending.wrap = wrap; pending.manager = manager; pending.text = text;
+    pending.timeEvidence = evidence;
     pending.messageType = type;
     pending.localID = SRReadUnsignedInteger(wrap, @"m_uiMesLocalID", NULL);
     @synchronized(self) {
@@ -398,7 +521,8 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     @synchronized(self) { if (!self.armed || self.generation != generation || self.pendingOutgoing != pending) return; }
     @try {
         if (![self.currentAccount() isEqual:account]) { [self note:@"account_changed"]; [self stop]; return; }
-        if (![self ownWrap:pending.wrap matchesPending:pending group:group account:account]) {
+        if (![self ownWrap:pending.wrap matchesPending:pending group:group account:account] ||
+            ![self acceptsTimeEvidence:pending.timeEvidence wrap:pending.wrap generation:generation]) {
             self.pendingOutgoing = nil; self.ownTextState = @"conflict";
             [self note:@"own_conflict"];
             [self fail:@"Own message fields changed; no source was captured" error:NULL]; return;
@@ -408,11 +532,16 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         if (!SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL).unsignedLongLongValue && pending.localID.unsignedLongLongValue) {
             id stored = SRReadObjectWithObjectAndUnsignedInteger(pending.manager, @"GetMsg:LocalID:", group, pending.localID, NULL);
             [self note:@"own_readback"];
-            if (stored && [self ownWrap:stored matchesPending:pending group:group account:account]) wrap = stored;
+            if (stored && [self ownWrap:stored matchesPending:pending group:group account:account]) {
+                if (![self acceptsTimeEvidence:pending.timeEvidence wrap:stored generation:generation]) {
+                    self.pendingOutgoing = nil; self.ownTextState = @"conflict"; [self note:@"own_conflict"]; return;
+                }
+                wrap = stored;
+            }
         }
         if (SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL).unsignedLongLongValue) {
             if (![self.currentAccount() isEqual:account]) { [self stop]; return; }
-            [self observeSession:group wrap:wrap]; self.pendingOutgoing = nil; self.ownTextState = @"source_candidate"; return;
+            [self observeSession:group wrap:wrap timeEvidence:pending.timeEvidence]; self.pendingOutgoing = nil; self.ownTextState = @"source_candidate"; return;
         }
         if (!remaining) {
             self.pendingOutgoing = nil; self.ownTextState = @"timed_out";
@@ -440,10 +569,14 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
 - (void)pollImage:(SRPendingImage *)pending generation:(NSUInteger)generation remaining:(NSUInteger)remaining {
     @synchronized(self) { if (!self.armed || self.generation != generation || self.pendingImage != pending) return; }
     NSDictionary *payload = nil;
+    BOOL offered = NO;
     @try {
         if (![self.currentAccount() isEqual:pending.source[@"account"]]) { [self note:@"account_changed"]; [self stop]; return; }
         if (![self imageWrap:pending.wrap matches:pending.source]) {
             self.imageState = @"identity_conflict"; [self note:@"image_conflict"]; [self stop]; return;
+        }
+        if (![self acceptsTimeEvidence:pending.timeEvidence wrap:pending.wrap generation:generation]) {
+            self.imageState = @"time_unverified"; [self stop]; return;
         }
         if (!remaining || NSProcessInfo.processInfo.systemUptime >= pending.deadline) {
             self.imageState = @"timed_out"; [self note:@"image_timeout"]; [self stop];
@@ -468,7 +601,8 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         // Native preparation may reenter host code. Recheck ownership and all source fields.
         BOOL live;
         @synchronized(self) { live = self.armed && self.generation == generation && self.pendingImage == pending; }
-        BOOL identityMatches = live && [self.currentAccount() isEqual:pending.source[@"account"]] && [self imageWrap:pending.wrap matches:pending.source];
+        BOOL identityMatches = live && [self.currentAccount() isEqual:pending.source[@"account"]] &&
+            [self imageWrap:pending.wrap matches:pending.source] && [self acceptsTimeEvidence:pending.timeEvidence wrap:pending.wrap generation:generation];
         @synchronized(self) { live = self.armed && self.generation == generation && self.pendingImage == pending; }
         if (!live || !identityMatches) {
             if (payload && self.discardImage) self.discardImage(payload);
@@ -478,14 +612,16 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         if (payload) {
             NSMutableDictionary *message = [pending.source mutableCopy]; message[@"payload"] = payload;
             self.pendingImage = nil; self.imageState = @"snapshot_ready"; [self note:@"image_ready"];
-            [self note:@"source_candidate"]; self.received([SRSourceMessage frozenJSON:message]); return;
+            offered = YES;
+            [self note:@"source_candidate"]; [self deliverMessage:[SRSourceMessage frozenJSON:message] timeEvidence:pending.timeEvidence]; return;
         }
         __weak typeof(self) weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             [weakSelf pollImage:pending generation:generation remaining:remaining - 1];
         });
     } @catch (__unused id exception) {
-        if (payload && self.discardImage) self.discardImage(payload);
+        // The consumer may have durably retained the asset before throwing.
+        if (payload && !offered && self.discardImage) self.discardImage(payload);
         self.imagePreparationCode = 10; self.imageState = @"preparation_failed"; [self note:@"image_failed"]; [self stop];
         [self fail:@"Image observation failed; export diagnostics" error:NULL];
     }
@@ -512,7 +648,7 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         NSMutableArray *methods = [NSMutableArray arrayWithObject:SRDescribeInstanceMethod(manager, @"AsyncOnAddMsg:MsgWrap:")];
         [methods addObject:SRDescribeInstanceMethod(manager, @"AddMsg:MsgWrap:")];
         [methods addObject:SRDescribeInstanceMethod(manager, @"GetMsg:LocalID:")];
-        for (NSString *name in @[@"m_nsFromUsr", @"m_nsToUsr", @"m_nsRealChatUsr", @"m_uiMessageType", @"m_n64MesSvrID", @"m_nsContent", @"m_uiMesLocalID"])
+        for (NSString *name in @[@"m_nsFromUsr", @"m_nsToUsr", @"m_nsRealChatUsr", @"m_uiMessageType", @"m_n64MesSvrID", @"m_nsContent", @"m_uiMesLocalID", @"m_uiCreateTime"])
             [methods addObject:SRDescribeInstanceMethod(wrap, name)];
         return @{@"wechatVersion": self.version, @"armed": @(self.armed), @"installed": @(self.tap != nil),
             @"ownTextHookAvailable": @(self.outgoingTap != nil), @"ownTextPending": @(self.pendingOutgoing != nil),
@@ -521,9 +657,12 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
             @"directionEvidenceSchema": @2, @"stringReadStrategy": @"declared_runtime", @"directionSampleLimit": @12,
             @"directionSamples": [self.directionSamples copy] ?: @[],
             @"directionSamplesDropped": @(self.directionDropped),
+            @"messageTypeProbe": SRMessageTypeProbeSnapshot(self.observedMessageTypes ?: @{}, [self.observedMessageTypeSequence copy] ?: @[]),
             @"textOnlyCandidate": @(![self.selectedTypes containsObject:@"image"]), @"imageCaptureSchema": @1, @"imageState": self.imageState ?: @"idle",
             @"imagePending": @(self.pendingImage != nil), @"imageReads": @(self.imageReads), @"imageWaitLimit": @30,
             @"imagePreparationCode": @(self.imagePreparationCode),
+            @"sourceTimeEvidenceSchema": @1, @"newMessagesOnly": @(self.newMessagesOnly),
+            @"creationTimeGetterABICompatible": @(SRReceiveTimeGetter(wrap)), @"sourceTimeSemanticsVerified": @NO,
             @"senderFilterCount": @(self.senderIDs.count), @"sendingEnabled": @NO, @"problem": self.problem ?: @"", @"methods": methods};
     }
 }

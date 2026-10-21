@@ -194,8 +194,8 @@ int main(void) {
         CHECK(sqlite3_open(migrationPath.fileSystemRepresentation, &db) == SQLITE_OK);
         sqlite3_stmt *statement = NULL;
         CHECK(sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &statement, NULL) == SQLITE_OK);
-        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 8); sqlite3_finalize(statement);
-        CHECK(sqlite3_exec(db, "PRAGMA user_version=9", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
+        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 11); sqlite3_finalize(statement);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=12", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
         CHECK(![[SRStore alloc] initWithPath:migrationPath error:NULL]);
 
         // A pre-v8 rules table has a CHECK(minimum>=10); rebuilding it must allow the new 3-second floor.

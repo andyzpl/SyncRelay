@@ -138,6 +138,19 @@ static BOOL SRSmallSubmitted(NSDictionary *evidence, NSDictionary *source, NSStr
     if (result && attached) { (void)[self status]; self.busy = NO; self.run = nil; self.source = nil; }
     return result;
 }
+- (BOOL)cancelRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    if (!NSThread.isMainThread || (self.busy && ![self.run isEqual:run])) return SRSmallFail(error, @"Another run is active");
+    if ([self.run isEqual:run] && ![self.account isEqual:account]) return SRSmallFail(error, @"Account does not own this run");
+    BOOL attached = [self.run isEqual:run];
+    if (attached) { [self setEnabled:NO]; [self.runner pause:NULL]; }
+    // Keep generation, host and observation alive for a real in-flight receipt.
+    BOOL result = [self.store cancelOperationsRun:run account:account error:error];
+    if (result && attached && [[self.store summaryForRun:run error:NULL][@"state"] isEqual:@"ended"]) {
+        [self.runner end:NULL]; (void)[self status];
+        self.busy = NO; self.run = nil; self.source = nil;
+    }
+    return result;
+}
 - (void)submit:(NSDictionary *)delivery source:(NSDictionary *)source completion:(SRSendCompletion)completion {
     if (!NSThread.isMainThread || !delivery || !source || ![self cachedReady:source[@"account"]] || self.host ||
         ![delivery[@"run_id"] isEqual:self.run] || ![source isEqual:self.source] || ![self environmentForAccount:self.account]) {
@@ -231,7 +244,7 @@ static BOOL SRSmallSubmitted(NSDictionary *evidence, NSDictionary *source, NSStr
         for (NSDictionary *row in summary[@"counts"]) counts[row[@"state"]] = row[@"count"];
         self.lastSummary = @{@"state": state, @"counts": [counts copy]};
     }
-    return @{@"schema": @1, @"targetLimit": @3, @"state": state, @"busy": @(self.busy),
+    return @{@"schema": @1, @"targetLimit": @20, @"state": state, @"busy": @(self.busy),
         @"dispatchEnabled": @(self.dispatchEnabled), @"needsIdleTimer": @(self.needsIdleTimer), @"usedNativeHost": @(self.usedNativeHost),
         @"problem": self.problem ?: @"", @"nativeProblem": self.nativeProblem ?: @"", @"counts": counts, @"deviceMultiGroupVerified": @NO,
         @"automaticRetry": @NO, @"automaticNextRule": @NO, @"deliveryOutcome": @"not_determined"};
