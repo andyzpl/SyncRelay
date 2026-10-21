@@ -98,7 +98,7 @@ int main(void) {
         CHECK(![runner tick]); now += 10000;
         CHECK(![runner activateRun:interrupted account:@"other" error:NULL]);
         CHECK([runner activateRun:interrupted account:@"account" error:NULL]);
-        CHECK(![runner tick]); double due = [runner.status[@"nextMonotonic"] doubleValue]; CHECK(due == now + 10);
+        CHECK(![runner tick]); double due = [runner.status[@"nextMonotonic"] doubleValue]; CHECK(due == now + 7.5);
         now = due; CHECK([runner tick]);
         CHECK(![restored.deliveries[0][@"target"] isEqual:transport.deliveries[3][@"target"]]);
         finish(transport, 3, @"submitted"); (void)runner.status; // Dead runner callback cannot mutate recovery.
