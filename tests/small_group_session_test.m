@@ -216,11 +216,9 @@ int main(void) {
         NSUInteger batchStart = hosts.count;
         NSMutableSet *seenTargets = [NSMutableSet set];
         for (NSUInteger i = 0; i < 20; i++) {
+            @autoreleasepool {
             if (i == 10) {
-                CHECK([session pauseForAccount:@"account" error:NULL]);
-                CHECK(!session.needsIdleTimer);
-                now += 1000; [session tick]; pump(session); CHECK(hosts.count == batchStart + i);
-                session = nil;
+                CHECK(!old);
                 store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
                 CHECK(count(store, run, @"submitted") == 10 && count(store, run, @"pending") == 10);
                 session = newSession(); now += 1000; [session tick]; pump(session);
@@ -233,6 +231,14 @@ int main(void) {
             CHECK(![seenTargets containsObject:target]); [seenTargets addObject:target];
             [hosts.lastObject finish]; [session tick];
             CHECK(count(store, run, @"submitted") == i + 1);
+            if (i == 9) {
+                CHECK([session pauseForAccount:@"account" error:NULL]);
+                CHECK(!session.needsIdleTimer);
+                now += 1000; [session tick]; pump(session); CHECK(hosts.count == batchStart + 10);
+                // Drain temporary weak loads before simulating a fresh process owner.
+                old = session; session = nil;
+            }
+            }
         }
         CHECK(seenTargets.count == 20 && !session.busy && !session.needsIdleTimer);
         CHECK(count(store, run, @"pending") == 0 && count(store, run, @"confirmed") == 0);
