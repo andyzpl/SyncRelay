@@ -1,6 +1,6 @@
 Package: andyz.syncrelay
 Name: SyncRelay (Development)
-Version: 0.2.7
+Version: 0.2.8
 Architecture: iphoneos-arm
 Description: Read-only WeChat contact diagnostics and relay configuration drafts. Sending is disabled.
 Maintainer: andyz
