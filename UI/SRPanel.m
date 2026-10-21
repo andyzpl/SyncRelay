@@ -1155,7 +1155,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
             SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
-            return entry && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled && panel.ownsIdleTimer &&
+            return entry && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled &&
                 panel.viewIfLoaded.window && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !panel.dirty && ![entry.capture.status[@"state"] isEqual:@"waiting"] &&
                 ![entry.sendProbe.diagnostics[@"armed"] boolValue] && ![entry.textSendHost.diagnostics[@"submissionAttempted"] boolValue];

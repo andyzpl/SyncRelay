@@ -68,6 +68,14 @@ class ImageExperimentContractTests(unittest.TestCase):
         for forbidden in ('contentsOfFile:', 'URLWithString:', 'valueForKey:', 'object_getIvar'):
             self.assertNotIn(forbidden, source)
 
+    def test_preflight_precedes_idle_claim_and_does_not_require_it(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        action = panel.split('- (void)beginSingleImageSend {', 1)[1].split('- (void)beginSingleTextSend {', 1)[0]
+        self.assertLess(action.index('readyForAccount:account'), action.index('panel.ownsIdleTimer = YES'))
+        environment = panel.split('self.imageSendHost = [[SRWeChatImageSendHost alloc]', 1)[1].split('materialLoader:', 1)[0]
+        self.assertIn('panel.singleImageSendEnabled', environment)
+        self.assertNotIn('panel.ownsIdleTimer', environment)
+
 
 if __name__ == '__main__':
     unittest.main()
