@@ -151,8 +151,9 @@ static NSError *SRHostError(NSString *reason) {
         !SRHostIntegerType([initializer getArgumentTypeAtIndex:2]))
         return [self fail:@"CMessageWrap initWithMsgType: ABI is incompatible" error:error];
     for (NSString *name in @[@"m_nsFromUsr", @"m_nsToUsr", @"m_nsContent"]) {
-        NSString *setter = [@"set" stringByAppendingString:name];
-        setter = [setter stringByAppendingString:@":"];
+        NSString *capitalized = [name stringByReplacingCharactersInRange:NSMakeRange(0, 1)
+                                                                 withString:[[name substringToIndex:1] uppercaseString]];
+        NSString *setter = [NSString stringWithFormat:@"set%@:", capitalized];
         Method method = class_getInstanceMethod(wrap, NSSelectorFromString(setter));
         NSMethodSignature *signature = method ? [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)] : nil;
         if (!signature || signature.numberOfArguments != 3 || strcmp(SRHostType(signature.methodReturnType), "v") != 0 ||
