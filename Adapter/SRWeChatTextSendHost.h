@@ -7,8 +7,8 @@ typedef void (^SRWeChatTextSendHostCompletion)(NSString *state, NSString * _Null
 
 /*
  * Version-gated, single-target text construction and host submission candidate.
- * It is deliberately not installed by the production bootstrap yet; the first
- * device check must confirm the constructed wrap and callback association.
+ * Shared for the process lifetime. Allows at most one host invocation per
+ * launch; the caller must persist an attempt claim before submission.
  */
 @interface SRWeChatTextSendHost : NSObject
 - (instancetype)initWithVersion:(NSString *)version
@@ -19,8 +19,12 @@ typedef void (^SRWeChatTextSendHostCompletion)(NSString *state, NSString * _Null
 /* Main-thread only. This performs ABI checks but does not submit a message. */
 - (BOOL)readyForAccount:(NSString *)account error:(NSError **)error;
 
-/* Main-thread only. One request, one target, no automatic retry. */
-- (void)submitRequest:(NSDictionary *)request completion:(SRWeChatTextSendHostCompletion)completion;
+/* Main-thread only. Completes after bounded observation or an earlier block/stop. No retry. */
+- (void)submitRequest:(NSDictionary *)request completion:(SRWeChatTextSendHostCompletion _Nullable)completion;
+
+/* Bounded exact-ID observation only. Neither method submits or retries. */
+- (void)poll;
+- (void)stopObservation;
 
 /* Sanitized host capability and last-attempt state. */
 - (NSDictionary *)diagnostics;

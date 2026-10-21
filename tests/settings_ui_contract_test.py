@@ -34,6 +34,18 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertNotIn('host.navigationBar.standardAppearance =', navigation)
         self.assertNotIn('[UINavigationBar appearance]', navigation)
 
+    def test_single_text_idle_claim_survives_countdown_until_host_completion(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        experiment = panel.split('- (void)beginSingleTextSend {', 1)[1].split('- (UIAlertController *)textTestResult:', 1)[0]
+        self.assertIn('UIApplication.sharedApplication.idleTimerDisabled = YES;', experiment)
+        countdown = experiment.split('panel.textCountdown = NO;', 1)[1].split('[panel.textSendAdapter submitDelivery:', 1)[0]
+        self.assertNotIn('[panel restoreTextIdleTimer]', countdown)
+        self.assertIn('[panel restoreTextIdleTimer]; panel.singleTextSendEnabled = NO;', experiment)
+        cancel = panel.split('- (void)cancelTextExperiment {', 1)[1].split('\n}', 1)[0]
+        self.assertLess(cancel.index('self.textGeneration++'), cancel.index('[self.textSendHost stopObservation]'))
+        self.assertIn('[self restoreTextIdleTimer]', cancel)
+        self.assertIn('![panel.draft isEqual:configuration]', experiment)
+
 
 if __name__ == '__main__':
     unittest.main()

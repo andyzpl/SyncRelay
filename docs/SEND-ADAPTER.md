@@ -1,6 +1,6 @@
 # 单群文字发送适配器门禁
 
-日期：2026-10-21。当前实现已补充“单群、单条文字”的微信主机调用候选和 ABI 门禁，但生产初始化仍不注入发送操作，因此仍不会主动发送消息。
+日期：2026-10-21。0.2.10 开放默认关闭的“单群、单条文字”实验；只有用户开启本次开关、选择一个规则内目标并二次确认，至少等待 10 秒后才允许一次主机调用。批量规则、图片和自动重试仍未接入。设备检查见 `DEVICE-CHECK-0.2.10.md`。
 
 ## 为什么先做门禁
 
@@ -8,12 +8,15 @@
 
 ## 当前契约
 
-- 仅允许微信 `8.0.76` / `8.0.79`，并校验 `CMessageMgr AddMsg:MsgWrap:` 为 `void(object, object)`，以及 `CMessageWrap` 的已观察字符串/整数 getter 编码；未知类或签名直接阻断。尚未假定任何未由设备证据确认的构造器或 setter ABI。
+- 仅允许微信 `8.0.76` / `8.0.79`，并校验 `MMContext` 服务、`CMessageMgr AddMsg:MsgWrap:` / `GetMsg:LocalID:`、`CMessageWrap initWithMsgType:`、文字/整数 setter 及 getter 编码；未知类或签名直接阻断。运行时 ABI 一致不代表构造字段语义或真机兼容已经通过。
 - `prepareForAccount:targetGroup:sourceSnapshot:confirmed:error:` 必须在主线程调用，`confirmed` 必须为真，源快照必须来自当前账号、母群且类型为 `text`；目标群必须是一个不同于母群的稳定 `@chatroom` ID。
 - 源快照通过 JSON 冻结，提交时再次逐字比对；目标、状态或快照改变会进入 `uncertain`，不改用其他消息或群。
 - 一个适配器实例只允许一次提交；重复提交明确返回 `uncertain`，不会自动重试。
 - 每次准备/重置都会推进内部代次；旧提交的迟到回调会被丢弃，不能污染下一次测试的状态。
-- 生产初始化的 `operation` 为 `nil`，即使 ABI 通过，`canSendForAccount:` 仍返回假。测试只注入一个内存模拟 operation，不调用微信私有接口。
+- 面板注入 `SRWeChatTextSendHost` 操作，但 `environmentAllowed` 仍要求本次显式实验开关和前台状态；开关不持久化，关闭面板、失活或结果返回后关闭。启动不发送，不创建 runner。
+- 主机实例由入口持有，整个微信进程最多调用一次 `AddMsg`，重新打开面板不重置资格。SQLite schema v4 在调用前持久化 `(account, source_group, source_message_id)` 实验占位；崩溃、重启或未知结果均不允许同源再次实验。占位不等于已调用或送达。
+- 目标只能来自捕获时冻结的规则，排除母群及明确排除项；提交前重新核对当前群列表、账号、前台、源快照和当前设置。设置与旧预览不一致时要求重新捕获。
+- 从 10 秒等待开始到最多 30 秒精确 ID 观察结束请求禁止自动锁屏；取消、面板关闭、账号改变、失活、门禁失败和观察结束均恢复此前值。不能阻止手动锁屏或系统挂起，回前台不自动续发。
 - 模拟 operation 的回调只接受 `confirmed`（必须带消息 ID）或 `failed`；其他结果统一转为 `uncertain`。`confirmed` 只是 transport 提供的关联结果，仍需后续验证其真实含义。
 
 ## 文件与测试
@@ -21,7 +24,8 @@
 - `Adapter/SRWeChatTextSendAdapter.h/.m`：单目标文本 transport 门禁与脱敏状态。
 - `Adapter/SRWeChatTextSendHost.h/.m`：仅用于下一轮设备核对的 `MMContext → CMessageMgr → CMessageWrap` 文字构造候选；要求 `currentContext`、`getService:`、`initWithMsgType:`、文字 setter、`AddMsg:MsgWrap:` 和 `GetMsg:LocalID:` 的运行时编码一致。构造后只回读本地/服务器 ID；非零服务器 ID 仍只记为“主机关联”，不直接判定目标群送达。
 - `tests/single_text_send_adapter_test.m`：二次确认、版本/ABI、源快照冻结、默认关闭、一次性提交和禁止重试。
-- `tests/text_send_host_test.m`：模拟 `CMessageWrap` 构造、字段写入、`AddMsg` 调用、精确本地 ID 读回和“关联不等于送达”的回调门禁。
+- `tests/text_send_host_test.m`：模拟构造/字段写入、版本/账号/环境门禁、单次调用、延迟服务器 ID、有限回读、停止/失活/身份冲突/异常和仅一次完成回调；不调用真实微信。
+- `tests/store_test.m`：验证调用前实验占位、重开后同源阻断、规则目标限制和活动批次互斥。
 - `Core/SRRunner.m`：仍未接入该适配器，避免在手机验证前打开主动发送路径。
 
-CI 会把两个模拟测试与现有核心测试一起运行；当前 Windows 固定 SDK/libclang 检查已覆盖新增源码，arm64/arm64e 语法检查继续作为构建前门禁。主机候选尚未接入 `SRRunner` 或设置按钮；构造字段、调用线程和可靠回执仍需一个明确授权测试群单独核对，不执行 100/200 群规则。
+主机候选始终回调 `uncertain`，不会把 local/server ID 或状态数字转成真实送达成功。完成回调在有限观察结束后触发，不在刚调用 `AddMsg` 时提前结束常亮生命周期。构造字段、调用线程和目标群实际表现仍需一个授权测试群核对，不执行 100/200 群规则。

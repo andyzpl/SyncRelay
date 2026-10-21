@@ -25,6 +25,16 @@ int main(void) {
         draft[@"minimum"] = @5;
         assert(![store saveConfiguration:draft account:@"account" error:NULL]);
         assert([[store configurationForAccount:@"account" error:&error][@"minimum"] isEqual:@10]);
+        NSMutableDictionary *experimentDraft = [SRConfiguration emptyDraft];
+        experimentDraft[@"sourceGroup"] = @{ @"id": @"source@chatroom", @"name": @"Source" };
+        experimentDraft[@"senders"] = @[ @{ @"id": @"wxid_sender", @"name": @"Sender" } ];
+        experimentDraft[@"types"] = @[ @"text" ];
+        experimentDraft[@"rules"] = @[ @{ @"name": @"Rule 1", @"targets": @[ @{ @"id": @"target@chatroom", @"name": @"Target" } ] } ];
+        NSDictionary *experimentSource = @{ @"account": @"account", @"group": @"source@chatroom", @"sender": @"wxid_sender",
+            @"messageID": @"experiment-source", @"type": @"text", @"generatedByRelay": @NO, @"payload": @{ @"text": @"hello" } };
+        assert([store claimTextExperiment:experimentSource configuration:experimentDraft account:@"account" target:@"target@chatroom" error:&error]);
+        assert(![store claimTextExperiment:experimentSource configuration:experimentDraft account:@"account" target:@"target@chatroom" error:NULL]);
+        assert([[store textExperimentSummaryForAccount:@"account" error:&error][@"deliveryOutcome"] isEqual:@"uncertain"]);
         NSString *plan = [store createPlanForAccount:@"account" sourceGroup:@"source@chatroom"
             senders:@[@"wxid_sender"] types:@[@"text", @"image"] sourceSnapshot:@{@"id": @"source-message", @"text": @"test"} error:&error];
         assert(plan);
@@ -41,6 +51,8 @@ int main(void) {
         assert(![store startRule:second replay:NO error:NULL]);
         NSString *run = [store startRule:first replay:NO error:&error];
         assert(run);
+        NSMutableDictionary *nextExperiment = [experimentSource mutableCopy]; nextExperiment[@"messageID"] = @"experiment-source-2";
+        assert(![store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"target@chatroom" error:NULL]);
         assert(![store startRule:first replay:YES error:NULL]);
         NSDictionary *delivery = [store claimNextForRun:run error:&error];
         assert(delivery);
@@ -50,6 +62,8 @@ int main(void) {
         assert(![store claimNextForRun:run error:NULL]);
         store = nil;
         store = [[SRStore alloc] initWithPath:path error:&error];
+        assert(![store claimTextExperiment:experimentSource configuration:experimentDraft account:@"account" target:@"target@chatroom" error:NULL]);
+        assert([[store textExperimentSummaryForAccount:@"account" error:&error][@"claimed"] boolValue]);
         assert([[store configurationForAccount:@"account" error:&error][@"maximum"] isEqual:@30]);
         assert([store recoverInterruptedRuns:&error]);
         NSDictionary *summary = [store summaryForRun:run error:&error];
@@ -90,6 +104,10 @@ int main(void) {
         assert([store recordResultForDelivery:failed[@"id"] attempt:failed[@"attempt_id"] state:@"failed" messageID:nil reason:@"test failure" error:&error]);
         assert(![[store summaryForRun:secondRun error:&error][@"state"] isEqual:@"completed"]);
         assert([store endRun:secondRun error:&error]);
+        assert(![store claimTextExperiment:experimentSource configuration:experimentDraft account:@"account" target:@"target@chatroom" error:NULL]);
+        assert(![store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"source@chatroom" error:NULL]);
+        assert(![store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"unallocated@chatroom" error:NULL]);
+        assert([store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"target@chatroom" error:&error]);
         assert(count([store summaryForRun:run error:&error], @"confirmed") == 2000);
         store = nil;
         sqlite3 *legacy = NULL;

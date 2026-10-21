@@ -134,6 +134,39 @@ class ReportTests(unittest.TestCase):
         report['manualSendObservation'] = 'private observation'
         self.assertIn('invalid_manual_observation', self.codes(report))
 
+    def test_text_experiment_invocation_never_proves_delivery(self):
+        report = self.base()
+        report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'submissionAttempted': True, 'observing': True, 'serverIDPresent': True,
+            'deliveryOutcome': 'uncertain', 'problem': '', 'lookupMisses': 1}
+        report['singleTextExperimentHistory'] = {'claimed': True, 'deliveryOutcome': 'uncertain', 'automaticRetry': False}
+        self.assertTrue({'text_host_invoked', 'text_delivery_uncertain', 'text_observing',
+            'text_server_association', 'text_lookup_miss', 'text_attempt_claimed'} <= self.codes(report))
+        report['singleTextSendCandidate']['deliveryOutcome'] = 'confirmed'
+        report['singleTextExperimentHistory']['automaticRetry'] = True
+        self.assertTrue({'text_delivery_outcome_invalid', 'text_claim_policy_invalid'} <= self.codes(report))
+
+    def test_text_experiment_abi_account_and_duplicate_gates(self):
+        report = self.base()
+        candidate = report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': 0,
+            'submissionAttempted': 0, 'state': 'blocked', 'problem': 'initializer_abi_incompatible'}
+        self.assertTrue({'text_not_submitted', 'text_abi_blocked'} <= self.codes(report))
+        candidate['problem'] = 'account_or_environment_changed'
+        self.assertIn('text_environment_changed', self.codes(report))
+        candidate['problem'] = 'one_attempt_per_launch'
+        self.assertIn('text_attempt_already_used', self.codes(report))
+
+    def test_text_experiment_malformed_and_private_data_not_echoed(self):
+        report = self.base()
+        report['singleTextSendCandidate'] = 'private message'
+        report['singleTextExperimentHistory'] = 'wxid_secret'
+        self.assertTrue({'invalid_text_candidate', 'invalid_text_history'} <= self.codes(report))
+        report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'problem': 'wxid_secret', 'identityConflicts': 1, 'payload': 'private message'}
+        self.assertIn('text_identity_conflict', self.codes(report))
+        self.assertNotIn('wxid_secret', str(analyze(report)))
+        self.assertNotIn('private message', str(analyze(report)))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -192,7 +192,7 @@ static NSDictionary *SRTextSendFrozenDictionary(NSDictionary *dictionary) {
 
 - (NSDictionary *)diagnostics {
     @synchronized (self) {
-        return @{@"wechatVersion": self.version ?: @"", @"observerOnly": @NO, @"sendingEnabled": @NO,
+        return @{@"wechatVersion": self.version ?: @"", @"observerOnly": @NO, @"sendingEnabled": @(self.operation != nil),
             @"adapterCandidate": @YES, @"operationInjected": @(self.operation != nil),
             @"abiValidated": @(self.abiValidated), @"wrapABIValidated": @(self.wrapABIValidated),
             @"prepared": @(self.snapshot != nil),

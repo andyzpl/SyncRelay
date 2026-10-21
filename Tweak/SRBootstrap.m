@@ -4,7 +4,7 @@
 #import "Core/SRRuntimeLog.h"
 #import "Core/SRVersion.h"
 
-/* Manual receive candidate/settings entry. No private send API or automatic execution. */
+/* Startup restores storage and settings only. Single-text tests require explicit UI actions. */
 static SRStore *SRRepository;
 
 static void SRShowSettings(SRStore *store) {
@@ -34,7 +34,7 @@ __attribute__((constructor)) static void SRInitialize(void) {
                 }
                 SRShowSettings(SRRepository);
                 [SRRuntimeLog.shared record:@"boot" facts:@{@"storageReady": @YES}];
-                NSLog(@"[SyncRelay] %@ initialized. Native settings entry is guarded; sending is disabled.", SR_PLUGIN_VERSION);
+                NSLog(@"[SyncRelay] %@ initialized. Single-text experiment defaults off; batch sending is disabled.", SR_PLUGIN_VERSION);
             }
         });
     }

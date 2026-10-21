@@ -44,5 +44,10 @@ NS_ASSUME_NONNULL_BEGIN
                                             limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)exceptionsForRun:(NSString *)run account:(NSString *)account
                                                limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
+/* Persist before the experimental host call. Same source cannot be submitted
+ * again after reopening a panel or process; no run/delivery is created. */
+- (BOOL)claimTextExperiment:(NSDictionary *)source configuration:(NSDictionary *)configuration
+                   account:(NSString *)account target:(NSString *)target error:(NSError **)error;
+- (nullable NSDictionary *)textExperimentSummaryForAccount:(NSString *)account error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

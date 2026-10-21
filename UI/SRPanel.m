@@ -158,6 +158,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic) BOOL ready;
 @property(nonatomic) BOOL dirty;
 @property(nonatomic) BOOL singleTextSendEnabled;
+@property(nonatomic) BOOL textCountdown;
+@property(nonatomic) NSUInteger textGeneration;
+@property(nonatomic) BOOL ownsIdleTimer;
+@property(nonatomic) BOOL previousIdleTimer;
 @property(nonatomic, copy) void (^didClose)(void);
 @end
 
@@ -171,13 +175,6 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     self.reader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
     __weak typeof(self) weakSelf = self;
-    self.textSendHost = [[SRWeChatTextSendHost alloc] initWithVersion:version
-        classResolver:^Class(NSString *name) { return NSClassFromString(name); }
-        currentAccount:^NSString * { SRPanel *panel = weakSelf; return panel && [panel.reader connect:NULL] ? panel.reader.accountID : nil; }
-        environmentAllowed:^BOOL {
-            SRPanel *panel = weakSelf;
-            return panel && panel.singleTextSendEnabled && UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
-        }];
     self.textSendAdapter = [[SRWeChatTextSendAdapter alloc] initWithVersion:version
         classResolver:^Class(NSString *name) { return NSClassFromString(name); }
         currentAccount:^NSString * { SRPanel *panel = weakSelf; return panel && [panel.reader connect:NULL] ? panel.reader.accountID : nil; }
@@ -192,12 +189,31 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         }];
     self.draft = [SRConfiguration emptyDraft];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(captureChanged:) name:SRRelayStateChangedNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(textExperimentInactive:) name:UIApplicationWillResignActiveNotification object:nil];
     [self loadAccount];
 }
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)dealloc {
+    if (_ownsIdleTimer) UIApplication.sharedApplication.idleTimerDisabled = _previousIdleTimer;
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+- (void)restoreTextIdleTimer {
+    if (self.ownsIdleTimer) {
+        self.ownsIdleTimer = NO;
+        UIApplication.sharedApplication.idleTimerDisabled = self.previousIdleTimer;
+    }
+}
+- (void)cancelTextExperiment {
+    self.textGeneration++; self.textCountdown = NO;
+    [self.textSendHost stopObservation];
+    [self restoreTextIdleTimer];
+}
+- (void)textExperimentInactive:(__unused NSNotification *)notification {
+    [self cancelTextExperiment]; self.singleTextSendEnabled = NO;
+}
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     if (self.ready && ![self.reader verifyAccount:self.account error:NULL]) {
+        [self cancelTextExperiment];
         self.ready = NO; self.status = @"账号无法核对或已经改变，请重新读取。原账号的设置没有写入新账号。";
         self.singleTextSendEnabled = NO; [self.textSendAdapter reset];
         [self.receiver stop]; [self.capture cancel];
@@ -206,6 +222,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 - (void)captureChanged:(__unused NSNotification *)notification { [self refresh]; }
 - (void)loadAccount {
+    [self cancelTextExperiment];
     NSError *error = nil;
     if (!self.store) {
         self.ready = NO; self.draft = [SRConfiguration emptyDraft]; self.dirty = NO;
@@ -230,6 +247,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (BOOL)checkAccount {
     NSError *error = nil;
     if (!self.ready || ![self.reader verifyAccount:self.account error:&error]) {
+        [self cancelTextExperiment];
         self.ready = NO;
         self.singleTextSendEnabled = NO; [self.textSendAdapter reset];
         [self.receiver stop]; [self.capture cancel];
@@ -245,6 +263,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.tableView reloadData];
 }
 - (void)changed {
+    [self cancelTextExperiment];
     self.dirty = YES;
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) {
         [self.receiver stop]; [self.capture cancel];
@@ -254,6 +273,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self refresh];
 }
 - (void)close {
+    [self cancelTextExperiment]; self.singleTextSendEnabled = NO;
     if (!self.dirty) { [self dismissViewControllerAnimated:YES completion:self.didClose]; return; }
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"放弃未保存的修改？" message:@"已经保存的设置不会被删除。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
@@ -366,10 +386,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     self.entryPreferences.floatingEntryEnabled = toggle.on;
 }
 - (void)singleTextSendChanged:(UISwitch *)toggle {
-    if (!toggle.on) { self.singleTextSendEnabled = NO; [self.textSendAdapter reset]; [self refresh]; return; }
+    if (!toggle.on) { [self cancelTextExperiment]; self.singleTextSendEnabled = NO; [self refresh]; return; }
     toggle.on = NO;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"开启单群实验发送？"
-        message:@"只允许对一个明确选择的目标群提交一条文字；不会启动规则、不会批量发送、不会自动重试。非零服务器 ID 只能证明主机关联，不能直接证明目标群已送达。"
+        message:@"本次微信启动只允许提交一次、一个目标群，确认后至少等待 10 秒。不会启动规则、批量发送或自动重试。同一源消息即使重启也不能重复实验。服务器 ID 不代表送达；请只用授权测试群。"
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开启本次实验" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
@@ -594,7 +614,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     NSMutableDictionary *report = [[self.reader diagnostics] mutableCopy];
     report[@"reportSchema"] = @1;
     report[@"generatedAt"] = @([NSDate.date timeIntervalSince1970]);
-    report[@"build"] = @{@"plugin": SR_PLUGIN_VERSION, @"commit": SR_BUILD_COMMIT, @"ciRun": SR_BUILD_RUN, @"sendingEnabled": @NO};
+    report[@"build"] = @{@"plugin": SR_PLUGIN_VERSION, @"commit": SR_BUILD_COMMIT, @"ciRun": SR_BUILD_RUN,
+        @"singleTextExperimentImplemented": @YES, @"batchSendingEnabled": @NO, @"defaultSendingEnabled": @NO};
+    report[@"sendingEnabled"] = @(self.singleTextSendEnabled);
+    report[@"batchSendingEnabled"] = @NO;
     report[@"settingsEntry"] = self.settingsEntry.diagnostics;
     report[@"settingsFooterRecoveryActive"] = @(self.settingsFooterActive);
     report[@"storageReady"] = @(self.store != nil);
@@ -606,6 +629,9 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"manualSendObservation"] = self.sendProbe.diagnostics;
     report[@"singleTextSendCandidate"] = self.textSendHost.diagnostics;
     report[@"singleTextSendExperimentEnabled"] = @(self.singleTextSendEnabled);
+    report[@"singleTextSendCountdown"] = @(self.textCountdown);
+    report[@"singleTextExperimentIdleTimerHeld"] = @(self.ownsIdleTimer);
+    if (self.ready) report[@"singleTextExperimentHistory"] = [self.store textExperimentSummaryForAccount:self.account error:NULL] ?: @{@"state": @"unavailable"};
     report[@"iOS"] = UIDevice.currentDevice.systemVersion;
     report[@"wechatBuild"] = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown";
     return report;
@@ -701,40 +727,87 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (void)beginSingleTextSend {
     if (!self.singleTextSendEnabled) { SRAlert(self, @"实验开关未开启", @"请先在“更多设置”开启单群文字实验发送；默认关闭。" ); return; }
     if (![self checkAccount]) return;
+    if (self.ownsIdleTimer) { SRAlert(self, @"已有活动实验", @"请先取消倒计时或停止观察，不会叠加第二次提交。" ); return; }
+    if (self.dirty || [self.sendProbe.diagnostics[@"armed"] boolValue]) { SRAlert(self, @"请先保存并停止手动观察", @"单群实验与设置修改、手动发送观察分开进行。" ); return; }
+    if ([self.textSendHost.diagnostics[@"submissionAttempted"] boolValue]) { SRAlert(self, @"本次实验已使用", @"请先导出诊断并核对目标群，不要重复发送。重新打开面板也不会再次提交。" ); return; }
     if (![self.capture.status[@"state"] isEqual:@"preview"] || ![self.capture.preview[@"type"] isEqual:@"text"]) {
         SRAlert(self, @"还没有可发送的文字预览", @"先保存设置并等待一条母群文字，核对 wxid 和正文后再进行单群实验。" ); return;
     }
+    NSDictionary *source = [SRSourceMessage frozenJSON:self.capture.preview];
+    NSDictionary *configuration = [SRSourceMessage frozenJSON:self.capture.status[@"configuration"]];
+    if (![self.draft isEqual:configuration]) { SRAlert(self, @"来源预览的设置已过期", @"请放弃旧预览，使用当前已保存的设置重新等待一条文字。" ); return; }
+    NSString *account = self.account;
     NSError *error = nil; NSArray *groups = [self.reader groups:&error];
     if (!groups) { SRAlert(self, @"无法读取目标群", error.localizedDescription); return; }
-    NSString *source = self.capture.preview[@"group"]; NSMutableArray *targets = [NSMutableArray array];
-    for (NSDictionary *group in groups) if (![group[@"id"] isEqual:source]) [targets addObject:group];
+    NSMutableSet *allowed = [NSMutableSet set];
+    for (NSDictionary *rule in configuration[@"rules"]) for (NSDictionary *row in rule[@"targets"]) [allowed addObject:row[@"id"]];
+    [allowed removeObject:source[@"group"]];
+    [allowed minusSet:[NSSet setWithArray:[configuration[@"excludedGroups"] valueForKey:@"id"] ?: @[]]];
+    NSMutableArray *targets = [NSMutableArray array];
+    for (NSDictionary *group in groups) if ([allowed containsObject:group[@"id"]]) [targets addObject:group];
+    if (!targets.count) { SRAlert(self, @"没有可核对的目标", @"只允许选择捕获时规则中的非母群、未排除且目前仍能读取的目标群。" ); return; }
     __weak typeof(self) weakSelf = self;
     [self picker:@"单群实验：只选一个目标群" rows:targets selected:@[] excluded:NSSet.set multiple:NO excluding:NO completion:^(NSArray *chosen) {
         SRPanel *panel = weakSelf; if (!panel || !chosen.count || ![panel checkAccount]) return;
         NSString *target = chosen.firstObject[@"id"]; NSString *name = chosen.firstObject[@"name"] ?: target;
         UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"最后确认：只发送一次"
-            message:[NSString stringWithFormat:@"目标群：%@\n\n将使用已锁定的母群文字提交一次。不会发送到其他群；无法确认送达时不会自动重试。", name]
+            message:[NSString stringWithFormat:@"目标群：%@\n%@\n来源 wxid：%@\n\n文字：%@\n\n确认后等待至少 10 秒再提交一次；切后台、关闭面板或修改设置会取消倒计时。", name, target, source[@"sender"], [source[@"payload"][@"text"] substringToIndex:MIN((NSUInteger)300, [source[@"payload"][@"text"] length])]]
             preferredStyle:UIAlertControllerStyleAlert];
         [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [confirm addAction:[UIAlertAction actionWithTitle:@"发送一次" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-            if (![panel checkAccount]) return;
-            [panel.textSendAdapter reset];
+            if (![panel checkAccount] || !panel.singleTextSendEnabled || panel.ownsIdleTimer || panel.dirty ||
+                ![panel.account isEqual:account] || ![panel.capture.preview isEqual:source] || ![panel.draft isEqual:configuration]) return;
             NSError *failure = nil;
-            if (![panel.textSendAdapter prepareForAccount:panel.account targetGroup:target sourceSnapshot:panel.capture.preview confirmed:YES error:&failure]) {
+            if (![panel.textSendHost readyForAccount:account error:&failure] ||
+                ![panel.textSendAdapter prepareForAccount:account targetGroup:target sourceSnapshot:source confirmed:YES error:&failure]) {
                 SRAlert(panel, @"发送门禁未通过", failure.localizedDescription); return;
             }
-            NSDictionary *delivery = @{ @"target": target, @"state": @"submitting" };
-            [panel.textSendAdapter submitDelivery:delivery snapshot:panel.capture.preview completion:^(NSString *state, NSString *messageID, NSString *reason) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    NSString *detail = reason ?: @"没有可核对的主机结果";
-                    NSString *title = [state isEqual:@"failed"] ? @"主机明确失败" : @"已提交，待核对";
-                    SRAlert(panel, title, messageID.length ? [NSString stringWithFormat:@"消息关联 ID：%@\n%@", messageID, detail] : detail);
+            panel.textCountdown = YES; NSUInteger generation = ++panel.textGeneration;
+            panel.previousIdleTimer = UIApplication.sharedApplication.idleTimerDisabled;
+            panel.ownsIdleTimer = YES; UIApplication.sharedApplication.idleTimerDisabled = YES;
+            UIAlertController *countdown = [UIAlertController alertControllerWithTitle:@"10 秒后仅提交一次" message:@"保持本页和微信前台；你可以取消。提交后无自动重试，结果必须核对。" preferredStyle:UIAlertControllerStyleAlert];
+            [countdown addAction:[UIAlertAction actionWithTitle:@"取消 / 停止观察" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *a) { [panel cancelTextExperiment]; panel.singleTextSendEnabled = NO; [panel refresh]; }]];
+            SRPresentAlert(panel, countdown);
+            [SRRuntimeLog.shared record:@"text_test_countdown" facts:@{}];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                if (!panel.textCountdown || panel.textGeneration != generation) return;
+                // Keep the idle-timer claim until the host's bounded observation ends.
+                panel.textCountdown = NO;
+                NSError *error = nil;
+                if (!panel.singleTextSendEnabled || UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
+                    !panel.viewIfLoaded.window || panel.dirty || ![panel checkAccount] || ![panel.account isEqual:account] ||
+                    ![panel.capture.preview isEqual:source] || ![panel.capture.status[@"configuration"] isEqual:configuration] ||
+                    ![panel.draft isEqual:configuration] || [panel.sendProbe.diagnostics[@"armed"] boolValue]) {
+                    [panel cancelTextExperiment]; return;
+                }
+                NSArray *currentGroups = [panel.reader groups:&error];
+                if (![[currentGroups valueForKey:@"id"] containsObject:target] ||
+                    ![panel.textSendHost readyForAccount:account error:&error] ||
+                    ![panel.store claimTextExperiment:source configuration:configuration account:account target:target error:&error]) {
+                    [panel cancelTextExperiment];
+                    SRPresentAlert(panel, [panel textTestResult:@"提交前已阻断（未发送）" message:error.localizedDescription ?: @"目标群已无法核对" ]); return;
+                }
+                [SRRuntimeLog.shared record:@"text_test_claimed" facts:@{}];
+                countdown.title = @"单群文字提交与观察";
+                countdown.message = @"最多观察 30 秒。提交后不能由此撤回；停止观察不会重试，也不代表发送失败。请保持微信前台。";
+                [panel.textSendAdapter submitDelivery:@{@"target": target, @"state": @"submitting"} snapshot:source completion:^(__unused NSString *state, __unused NSString *messageID, NSString *reason) {
+                    BOOL invoked = [panel.textSendHost.diagnostics[@"submissionAttempted"] boolValue];
+                    [SRRuntimeLog.shared record:invoked ? @"text_test_submitted" : @"text_test_blocked" facts:@{}];
+                    if (panel.textGeneration != generation) return;
+                    [panel restoreTextIdleTimer]; panel.singleTextSendEnabled = NO;
+                    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive || !panel.viewIfLoaded.window) return;
+                    SRPresentAlert(panel, [panel textTestResult:invoked ? @"已调用，送达待核对" : @"发送门禁阻断"
+                        message:[NSString stringWithFormat:@"%@\n\n请核对目标群是否收到，并导出运行诊断。同一条源消息不会自动重试。", reason ?: @"没有可靠送达回执"]]);
                     [panel refresh];
-                });
-            }];
+                }];
+            });
         }]];
         SRPresentAlert(panel, confirm);
     }];
+}
+- (UIAlertController *)textTestResult:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]]; return alert;
 }
 - (void)beginCapture {
     [SRRuntimeLog.shared record:@"capture_attempt" facts:[self diagnosticDraft]];
@@ -806,6 +879,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
+@property(nonatomic, strong) SRWeChatTextSendHost *textSendHost;
 @property(nonatomic, strong) SRWeChatReader *identityReader;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
@@ -858,6 +932,16 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             return [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
         } clock:^double { return NSProcessInfo.processInfo.systemUptime; } changed:^{
             [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+        }];
+    self.textSendHost = [[SRWeChatTextSendHost alloc] initWithVersion:version
+        classResolver:^Class(NSString *name) { return NSClassFromString(name); }
+        currentAccount:^NSString * {
+            SREntry *entry = weakSelf;
+            return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
+        } environmentAllowed:^BOOL {
+            SREntry *entry = weakSelf;
+            return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+                ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue];
         }];
 }
 - (void)install {
@@ -912,6 +996,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleGrouped]; panel.store = self.store;
     panel.capture = self.capture; panel.receiver = self.receiver;
     panel.sendProbe = self.sendProbe;
+    panel.textSendHost = self.textSendHost;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
     panel.settingsFooterActive = self.settingsFooterActive;
     __weak typeof(self) weakSelf = self;
@@ -931,6 +1016,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (void)resigningActive:(__unused NSNotification *)notification {
     [SRRuntimeLog.shared record:@"inactive" facts:@{}];
     [self.sendProbe cancelForInactivity];
+    [self.textSendHost stopObservation];
     [self.receiver stop];
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) [self.capture cancel];
     [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];

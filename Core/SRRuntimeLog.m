@@ -19,7 +19,8 @@ static NSSet *SRLogEvents(void) {
         @"receive_callback", @"receive_wrong_session", @"receive_wrong_direction", @"receive_invalid_sender",
         @"receive_not_text", @"receive_no_server_id", @"receive_empty_text", @"outgoing_callback",
         @"outgoing_wrong_session", @"outgoing_wrong_direction", @"outgoing_not_text", @"own_pending",
-        @"own_conflict", @"own_timeout", @"own_readback", @"account_changed", @"receiver_stopped", @"receiver_arm"]]; });
+        @"own_conflict", @"own_timeout", @"own_readback", @"account_changed", @"receiver_stopped", @"receiver_arm",
+        @"text_test_countdown", @"text_test_claimed", @"text_test_submitted", @"text_test_blocked"]]; });
     return values;
 }
 static NSDictionary *SRLogFacts(NSDictionary *facts) {

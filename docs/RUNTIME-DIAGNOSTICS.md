@@ -56,7 +56,12 @@
 
 ### 单群文字实验候选
 
-`singleTextSendCandidate` 记录下一轮设备核对用的 `MMContext → CMessageMgr → CMessageWrap` 候选能力。生产初始化不自动注入发送操作；面板里的实验开关也不持久化，关闭面板或重新打开后默认关闭。候选即使读到非零服务器 ID，也只表示主机关联，不能直接解释为目标群已送达。`singleTextSendExperimentEnabled` 仅表示当前面板会话是否明确开启该开关。
+`singleTextSendCandidate`（子格式 `schema = 1`）记录 `MMContext → CMessageMgr → CMessageWrap` 候选能力和上次实验状态。0.2.10 面板接入显式、一次、单目标文字操作；开关不持久化，关闭面板或重新打开后默认关闭。`build.defaultSendingEnabled = false`、`batchSendingEnabled = false` 与当前 `singleTextSendExperimentEnabled` 分开，不再用一个永远为假的标记掩盖显式单群调用。候选读到服务器 ID 仍只表示主机关联，不是送达。
+
+- `submissionAttempted` / `hostReturned` 区分已尝试调用与主机正常返回；`observing` 表示精确 ID 有限观察尚未结束，`deliveryOutcome` 只能是 `not_submitted` / `uncertain`。
+- `singleTextExperimentHistory.claimed` 表示该账号有持久实验占位，调用前就写入，不能证明真的发送；`automaticRetry = false`。同源重复占位在重启后仍阻断。
+- `singleTextSendCountdown` / `singleTextExperimentIdleTimerHeld` 分别表示等待中及插件尚持有禁止自动锁屏请求；观察结束才恢复原值。
+- 解析器输出固定的 `text_abi_blocked`、`text_environment_changed`、`text_attempt_already_used`、`text_identity_conflict`、`text_delivery_uncertain` 等代码，不回显任意错误文本或私人字段。最新设备步骤见 `DEVICE-CHECK-0.2.10.md`。
 
 捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束。错误码必须结合事件与模块看，不跨模块猜含义。
 

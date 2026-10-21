@@ -79,7 +79,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         [self query:@"PRAGMA journal_mode=WAL" values:@[]];
         [self query:@"PRAGMA synchronous=FULL" values:@[]];
         NSInteger version = [[self query:@"PRAGMA user_version" values:@[]].firstObject[@"user_version"] integerValue];
-        SRRequire(version >= 0 && version <= 3, @"Unsupported database schema; do not downgrade");
+        SRRequire(version >= 0 && version <= 4, @"Unsupported database schema; do not downgrade");
         return @YES;
     } transaction:NO error:error];
     if (!setup) return nil;
@@ -98,7 +98,8 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"CREATE INDEX IF NOT EXISTS plans_by_account ON plans(account)",
             @"CREATE INDEX IF NOT EXISTS runs_by_rule ON runs(rule_id)",
             @"CREATE INDEX IF NOT EXISTS allocations_by_rule ON allocations(rule_id)",
-            @"PRAGMA user_version=3"
+            @"CREATE TABLE IF NOT EXISTS text_experiments(account TEXT NOT NULL, source_group TEXT NOT NULL, source_message_id TEXT NOT NULL, target TEXT NOT NULL, claimed_at REAL NOT NULL, PRIMARY KEY(account,source_group,source_message_id))",
+            @"PRAGMA user_version=4"
         ];
         for (NSString *sql in schema) [self query:sql values:@[]];
         return @YES;
@@ -378,6 +379,28 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"Run is unavailable for this account");
         return [self query:@"SELECT id,target,position,state,reason,attempt_id,message_id FROM deliveries WHERE run_id=? AND state IN ('failed','uncertain','cancelled') ORDER BY position LIMIT ? OFFSET ?"
             values:@[run, @(limit), @(offset)]];
+    } transaction:NO error:error];
+}
+- (BOOL)claimTextExperiment:(NSDictionary *)source configuration:(NSDictionary *)configuration
+                   account:(NSString *)account target:(NSString *)target error:(NSError **)error {
+    NSDictionary *message = [SRSourceMessage frozenJSON:source], *draft = [SRSourceMessage frozenJSON:configuration];
+    return [self perform:^id{
+        SRRequire([SRSourceMessage matchesEnvelope:message configuration:draft account:account] && [message[@"type"] isEqual:@"text"], @"Invalid experimental text source");
+        BOOL allocated = NO;
+        for (NSDictionary *rule in draft[@"rules"]) for (NSDictionary *row in rule[@"targets"]) if ([row[@"id"] isEqual:target]) allocated = YES;
+        SRRequire(allocated && ![target isEqual:message[@"group"]] && ![[draft[@"excludedGroups"] valueForKey:@"id"] containsObject:target], @"Experimental target is not in the frozen allowed rules");
+        SRRequire([self query:@"SELECT id FROM runs WHERE account=? AND state IN ('running','paused','awaiting_resume') LIMIT 1" values:@[account]].count == 0, @"An active run already owns this account");
+        SRRequire([self query:@"SELECT target FROM text_experiments WHERE account=? AND source_group=? AND source_message_id=?" values:@[account, message[@"group"], message[@"messageID"]]].count == 0, @"This source already has an experimental attempt; do not resend an unknown outcome");
+        [self query:@"INSERT INTO text_experiments VALUES(?,?,?,?,?)" values:@[account, message[@"group"], message[@"messageID"], target, @(NSDate.date.timeIntervalSince1970)]];
+        return @YES;
+    } transaction:YES error:error] != nil;
+}
+- (NSDictionary *)textExperimentSummaryForAccount:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length > 0, @"Account ID required");
+        NSArray *rows = [self query:@"SELECT claimed_at FROM text_experiments WHERE account=? ORDER BY rowid DESC LIMIT 1" values:@[account]];
+        return @{@"claimed": @(rows.count > 0), @"lastClaimedAt": rows.firstObject[@"claimed_at"] ?: @0,
+            @"deliveryOutcome": rows.count ? @"uncertain" : @"not_submitted", @"automaticRetry": @NO};
     } transaction:NO error:error];
 }
 @end

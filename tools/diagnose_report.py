@@ -105,7 +105,7 @@ def analyze(report):
     if receiver.get('armed') and not counters.get('receive_callback') and not counters.get('outgoing_callback'):
         add('no_callback_observed', 'Waiting is armed, but neither candidate hook has been observed; this is not a compatibility verdict.')
     if capture.get('state') == 'preview':
-        add('preview_ready', 'One source is frozen for preview. No relay sending is enabled.')
+        add('preview_ready', 'One source is frozen for preview. Preview alone does not submit a message.')
 
     # The manual send probe is deliberately observational. Keep its findings
     # separate from receive-candidate counters so a local/server ID change can
@@ -164,6 +164,54 @@ def analyze(report):
                 add('manual_delivery_not_determined', 'Delivery remains unknown by design; keep any future active-send result in a pending-verification state.')
             elif manual.get('deliveryOutcome') is not None:
                 add('manual_delivery_outcome_unexpected', 'The manual observation contains a delivery outcome other than not_determined; do not trust it without a new schema.')
+
+    candidate = report.get('singleTextSendCandidate')
+    if candidate is not None:
+        if not isinstance(candidate, dict) or type(candidate.get('schema')) is not int or candidate['schema'] != 1:
+            add('invalid_text_candidate', 'The single-text candidate has no supported diagnostic schema.')
+        else:
+            if flag(candidate.get('batchSendingEnabled')) is not False:
+                add('text_batch_gate_invalid', 'Batch sending is not marked disabled; stop this experimental build.')
+            if flag(candidate.get('submissionAttempted')) is True:
+                add('text_host_invoked', 'One host invocation was attempted. Do not resend this source, even after restart.')
+                if candidate.get('deliveryOutcome') == 'uncertain':
+                    add('text_delivery_uncertain', 'Target delivery is unknown; local/server IDs and host status codes are not delivery receipts.')
+                else:
+                    add('text_delivery_outcome_invalid', 'An invoked experimental send is not marked uncertain; do not treat it as successful.')
+            elif candidate.get('state') == 'blocked':
+                add('text_not_submitted', 'The single-text host was blocked before invocation.')
+            if flag(candidate.get('observing')) is True:
+                add('text_observing', 'Exact-local-ID observation is still active; export again after it ends.')
+            if flag(candidate.get('serverIDPresent')) is True:
+                add('text_server_association', 'A non-zero server ID was associated, not a verified delivery receipt.')
+            problem = candidate.get('problem')
+            if isinstance(problem, str):
+                if problem.endswith('_abi_incompatible'):
+                    add('text_abi_blocked', 'A required host ABI is incompatible. Do not bypass the signature gate.')
+                if problem in ('account_or_environment_changed', 'observation_environment_changed'):
+                    add('text_environment_changed', 'The verified account or foreground environment changed; no automatic continuation is allowed.')
+                if problem == 'one_attempt_per_launch':
+                    add('text_attempt_already_used', 'The process-lifetime attempt gate has been consumed; reopening the panel must not submit again.')
+                if problem in ('construction_rejected', 'construction_exception', 'capability_check_exception'):
+                    add('text_construction_blocked', 'Message construction/capability checks failed before a safe invocation could be established.')
+                if problem in ('submission_exception', 'post_submit_identity_unavailable', 'readback_identity_conflict', 'observation_exception'):
+                    add('text_requires_manual_review', 'The invocation or identity observation could not be completed reliably. Check the target and do not retry.')
+            for key, code, message in (
+                ('identityConflicts', 'text_identity_conflict', 'A readback identity conflict occurred; another message must not be substituted.'),
+                ('lookupMisses', 'text_lookup_miss', 'An exact-local-ID lookup missed; this is not proof of non-delivery.'),
+            ):
+                value = candidate.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                    add(code, message)
+
+    history = report.get('singleTextExperimentHistory')
+    if history is not None:
+        if not isinstance(history, dict):
+            add('invalid_text_history', 'The persistent text experiment summary is not an object.')
+        elif flag(history.get('claimed')) is True:
+            add('text_attempt_claimed', 'A persistent source attempt exists. It is reserved before invocation and must not be retried after restart.')
+            if history.get('deliveryOutcome') != 'uncertain' or flag(history.get('automaticRetry')) is not False:
+                add('text_claim_policy_invalid', 'The persistent experiment does not preserve unknown delivery/no-retry policy.')
     if not result:
         add('insufficient_evidence', 'No specific cause is proven; reproduce once and export immediately before restarting.')
     return result
