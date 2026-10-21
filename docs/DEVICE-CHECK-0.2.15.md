@@ -2,6 +2,14 @@
 
 本人图片捕获和实际预览正确已获用户确认，记录见 `DEVICE-RESULT-0.2.14.md`。本轮只补充手机原生图片消息构造器与图片扩展的方法签名证据，不以离线模拟代替实际 ABI，也不把接口可用当作图片发出。
 
+## 当前构建被阻断，尚无本轮 DEB
+
+源码 `0139ee7c7e2d56ed5fb5341f0ed1d29969001070` 已推送私有库。手动打包 run `39549098574` / job `119053941936` 在分配 runner 前失败，`runner_id=0`、steps 为空。GitHub 注释为：
+
+> The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings
+
+同源码 push 测试 run `39549080751` 也失败。本轮没有执行 CI 原生测试、编译或打包，无可交付 0.2.15 包、哈希或真机结论。请账号所有者处理计费/限额后再构建；不通过公开仓库规避该阻断，不把旧包重命名。本页安装步骤仅在后续确切包完成核验后使用，当前不要据此寻找手机上尚不存在的新按钮。
+
 ## 安装与检查
 
 1. 覆盖升级本轮普通 DEB，不卸载、不清配置，重新启动微信。
