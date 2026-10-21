@@ -2,6 +2,7 @@
 #import "SRSourceMessage.h"
 #import "SRConfiguration.h"
 #import "SRStore.h"
+#import "SRImageAssetStore.h"
 @interface SRSourceCapture ()
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
@@ -67,11 +68,16 @@
             return nil;
         }
         NSString *plan = [self.store createPlanFromConfiguration:self.configuration envelope:self.captured account:account error:error];
-        if (plan) [self cancel];
+        if (plan) { self.captured = nil; [self cancel]; }
         return plan;
     }
 }
-- (void)cancel { @synchronized(self) { self.waiting = NO; self.captured = nil; self.configuration = nil; self.account = nil; } }
+- (void)cancel {
+    @synchronized(self) {
+        if ([self.captured[@"type"] isEqual:@"image"]) [self.store.imageAssets discardPayload:self.captured[@"payload"]];
+        self.waiting = NO; self.captured = nil; self.configuration = nil; self.account = nil;
+    }
+}
 - (NSDictionary *)status {
     @synchronized(self) {
         return @{@"state": self.captured ? @"preview" : (self.waiting ? @"waiting" : @"idle"),

@@ -4,6 +4,7 @@ Imports are intercepted with synthetic values. Unsupported calls stop the model.
 The text-route mode stops at AddMsg and does not invoke any real messaging API.
 The session-source mode models empty home sessions and stops at a local username getter.
 The settings-strings mode only decodes four audited local string ranges, with no imported calls.
+The image-strings mode decodes one audited message-library string range, stopping before host calls.
 """
 import argparse
 import collections
@@ -21,7 +22,7 @@ SOURCE_HASH = '0a11bacae2a0131b0ccbdf20ce49f9374bcd50c0d054fc290e9ba9e3b725eb43'
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--entry', required=True, type=lambda value: int(value, 0))
-    parser.add_argument('--mode', choices=('registration', 'text-route', 'session-source', 'settings-strings'), default='registration')
+    parser.add_argument('--mode', choices=('registration', 'text-route', 'session-source', 'settings-strings', 'image-strings'), default='registration')
     parser.add_argument('--binary', type=Path, default=ROOT / 'analysis/rootfs/Library/MobileSubstrate/DynamicLibraries/MikotoHelper.dylib')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
@@ -41,6 +42,11 @@ def main():
     }
     if args.mode == 'settings-strings' and args.entry not in settings_ranges:
         parser.error('Settings decoding is restricted to four audited string-initialization entries')
+    if args.mode == 'image-strings' and args.entry != 0x3652694:
+        parser.error('Image string decoding is restricted to the audited message-library decoder')
+    decoding_strings = args.mode in ('settings-strings', 'image-strings')
+    if args.mode == 'image-strings':
+        settings_ranges = {0x3652694: (0x3652D90, {'imageSourceClass': 0x5F62111})}
     sys.path.insert(0, str(ROOT / 'analysis/python-libs'))
     import lief
     from unicorn import Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE
@@ -143,7 +149,7 @@ def main():
 
     def imported_call(uc, pc, _size, _data):
         nonlocal stopped_at_send, stopped_at_session, stopped_at_settings_strings
-        if args.mode == 'settings-strings' and pc == settings_ranges[args.entry][0]:
+        if decoding_strings and pc == settings_ranges[args.entry][0]:
             stopped_at_settings_strings = True
             uc.emu_stop()
             return
@@ -157,7 +163,7 @@ def main():
         x0, x1, x2, x3 = (uc.reg_read(register) for register in
                           (UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3))
         caller = uc.reg_read(UC_ARM64_REG_LR)
-        if args.mode == 'settings-strings':
+        if decoding_strings:
             # Decode only; stop before the constructor's first Objective-C call.
             if args.entry == 0x5B823C8 and name == '_objc_msgSend' and caller == 0x5BA9E04:
                 stopped_at_settings_strings = True
@@ -273,14 +279,17 @@ def main():
     report = {'sourceSHA256': SOURCE_HASH, 'entry': hex(args.entry), 'mode': args.mode,
               'completedModel': completed, 'endPC': hex(end_pc), 'stoppedAtSendBoundary': stopped_at_send,
               'stoppedAtSessionReadBoundary': stopped_at_session,
-              'stoppedAtSettingsStringBoundary': stopped_at_settings_strings,
+              'stoppedAtSettingsStringBoundary': stopped_at_settings_strings and args.mode == 'settings-strings',
+              'stoppedAtImageStringBoundary': stopped_at_settings_strings and args.mode == 'image-strings',
               'settingsStrings': ({key: {'address': hex(address), 'text': cstring(address)}
                                    for key, address in settings_ranges[args.entry][1].items()}
-                                  if stopped_at_settings_strings else {}),
+                                  if stopped_at_settings_strings and args.mode == 'settings-strings' else {}),
               'decodedTableClasses': table_class_strings,
+              'decodedImageSourceClass': ({'address': '0x5f62111', 'text': cstring(0x5F62111)}
+                                          if args.mode == 'image-strings' and completed else {}),
               'calls': dict(calls), 'registrations': registrations, 'messages': messages, 'problems': problems,
               'model': ('Offline string decoding only; stops before the first imported call or at an audited decoder boundary. No gates or host methods run.'
-                        if args.mode == 'settings-strings' else
+                        if decoding_strings else
                         'Offline ARM64 emulation; imports stubbed and classes assumed present. No real iOS, networking, registration or sending.'),
               'assumptions': (['Initializer 0x32e4740 decodes local strings; registration imports are inert.',
                                'Home session collections are synthetic empty collections; service objects are tokens.',

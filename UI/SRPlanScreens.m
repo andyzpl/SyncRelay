@@ -2,6 +2,7 @@
 #import "SRNativeStyle.h"
 #import "Core/SRStore.h"
 #import "Core/SRSourceCapture.h"
+#import "Core/SRImageAssetStore.h"
 
 NSString *const SRRelayStateChangedNotification = @"andyz.syncrelay.stateChanged";
 typedef NS_ENUM(NSUInteger, SRRecordKind) { SRRecordPreview, SRRecordPlans, SRRecordPlan, SRRecordHistory, SRRecordExceptions };
@@ -54,6 +55,53 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     @try { verified = self.verifyAccount && self.verifyAccount(); } @catch (__unused NSException *exception) { }
     if (!verified) self.body = nil;
     ((UITextView *)self.view).text = self.body ?: @"当前账号无法核对或已经改变，源消息内容已隐藏。请返回设置重新读取账号。";
+}
+@end
+
+@interface SRSourceImageScreen : UIViewController
+@property(nonatomic, strong) SRImageAssetStore *assets;
+@property(nonatomic, copy) NSDictionary *source;
+@property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, strong) UIImageView *imageView;
+@property(nonatomic, strong) UILabel *message;
+@end
+@implementation SRSourceImageScreen
+- (void)loadView {
+    self.view = [[UIView alloc] init]; self.view.backgroundColor = SRSettingsCellBackground();
+    self.imageView = [[UIImageView alloc] init]; self.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    self.imageView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.message = [[UILabel alloc] init]; self.message.numberOfLines = 0; self.message.textAlignment = NSTextAlignmentCenter;
+    self.message.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody]; self.message.textColor = UIColor.secondaryLabelColor;
+    self.message.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.imageView]; [self.view addSubview:self.message];
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.imageView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
+        [self.imageView.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
+        [self.imageView.topAnchor constraintEqualToAnchor:safe.topAnchor constant:16],
+        [self.imageView.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-16],
+        [self.message.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20],
+        [self.message.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20],
+        [self.message.centerYAnchor constraintEqualToAnchor:safe.centerYAnchor]]];
+}
+- (void)viewDidLoad {
+    [super viewDidLoad]; SRStyleSettingsController(self);
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reloadImage) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(hideImage) name:UIApplicationWillResignActiveNotification object:nil];
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reloadImage]; }
+- (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; [self reloadImage]; }
+- (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; [self hideImage]; }
+- (void)hideImage { self.imageView.image = nil; self.message.text = @"图片已隐藏。返回前台后重新核对账号与图片资源。"; }
+- (void)reloadImage {
+    if (!self.viewIfLoaded.window) return;
+    BOOL verified = NO;
+    @try { verified = self.verifyAccount && self.verifyAccount(); } @catch (__unused id exception) { }
+    if (!verified) { self.source = nil; [self hideImage]; self.message.text = @"当前账号无法核对或已经改变，图片已隐藏。"; return; }
+    NSData *data = [self.assets dataForPayload:self.source[@"payload"] source:self.source error:NULL];
+    self.imageView.image = data ? [UIImage imageWithData:data] : nil;
+    self.message.text = self.imageView.image ? nil : @"图片快照缺失或校验未通过，请返回重新捕获。不会使用其他图片替代。";
 }
 @end
 
@@ -123,7 +171,11 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 - (NSString *)sourceText {
     id payload = [self source][@"payload"];
     id text = [payload isKindOfClass:NSDictionary.class] ? payload[@"text"] : nil;
-    return [text isKindOfClass:NSString.class] ? text : @"本版没有可验证的媒体预览，不把媒体引用当作已缓存图片。";
+    if ([[self source][@"type"] isEqual:@"image"]) {
+        NSDictionary *image = [self source][@"payload"];
+        return [NSString stringWithFormat:@"图片快照 · %@ × %@ · %.1f KB\n点开核对实际图片；本版不发送图片。", image[@"pixelWidth"], image[@"pixelHeight"], [image[@"byteCount"] doubleValue] / 1024.0];
+    }
+    return [text isKindOfClass:NSString.class] ? text : @"没有可用的内容预览，请重新捕获。";
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView {
     if (self.problem || !self.content) return 1;
@@ -218,6 +270,11 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     if (![self verified] || self.problem) return;
     if ((self.kind == SRRecordPreview || self.kind == SRRecordPlan) && path.section == 0) {
         if (path.row == 4) {
+            if ([[self source][@"type"] isEqual:@"image"]) {
+                SRSourceImageScreen *viewer = [[SRSourceImageScreen alloc] init]; viewer.title = @"源图片预览（不发送）";
+                viewer.source = [self source]; viewer.assets = self.store.imageAssets; viewer.verifyAccount = self.verifyAccount;
+                [self.navigationController pushViewController:viewer animated:YES]; return;
+            }
             SRSourceTextScreen *viewer = [[SRSourceTextScreen alloc] init]; viewer.title = @"源消息内容";
             viewer.body = [self sourceText]; viewer.verifyAccount = self.verifyAccount;
             [self.navigationController pushViewController:viewer animated:YES];

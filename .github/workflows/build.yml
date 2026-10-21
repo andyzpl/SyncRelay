@@ -31,17 +31,19 @@ jobs:
           python3 -m unittest discover -s tests -p '*_test.py'
           clang -std=c11 -Wall -Wextra -Werror -I. Core/SRPacing.c tests/pacing_test.c -o "$RUNNER_TEMP/pacing-test"
           "$RUNNER_TEMP/pacing-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRPacing.c tests/store_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/store-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRSourceCapture.m Core/SRRunner.m Core/SRPacing.c tests/relay_pipeline_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/pipeline-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRPacing.c tests/store_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/store-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRSourceCapture.m Core/SRRunner.m Core/SRPacing.c tests/relay_pipeline_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/pipeline-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReader.m Core/SRSelection.m Core/SRConfiguration.m Core/SRPacing.c tests/adapter_test.m -framework Foundation -o "$RUNNER_TEMP/adapter-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRGroupPlanner.m Core/SRSelection.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRStore.m Core/SRPacing.c tests/group_planner_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/group-planner-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReceiver.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRSourceCapture.m Core/SRStore.m Core/SRPacing.c tests/receive_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/receive-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRPacing.c tests/plan_queries_test.m -framework Foundation -lsqlite3 -o "$RUNNER_TEMP/plan-queries-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRGroupPlanner.m Core/SRSelection.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRStore.m Core/SRPacing.c tests/group_planner_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/group-planner-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReceiver.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRSourceCapture.m Core/SRStore.m Core/SRPacing.c tests/receive_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/receive-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRPacing.c tests/plan_queries_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/plan-queries-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatSendProbe.m tests/send_probe_test.m -framework Foundation -o "$RUNNER_TEMP/send-probe-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatTextSendAdapter.m tests/single_text_send_adapter_test.m -framework Foundation -o "$RUNNER_TEMP/single-text-send-adapter-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatTextSendHost.m tests/text_send_host_test.m -framework Foundation -o "$RUNNER_TEMP/text-send-host-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatSettingsEntry.m Core/SREntryPreferences.m tests/settings_entry_test.m -framework Foundation -o "$RUNNER_TEMP/settings-entry-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRRuntimeLog.m tests/runtime_log_test.m -framework Foundation -o "$RUNNER_TEMP/runtime-log-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatImageSource.m tests/image_source_test.m -framework Foundation -o "$RUNNER_TEMP/image-source-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRImageAssetStore.m Core/SRStore.m Core/SRSourceMessage.m Core/SRSourceCapture.m Core/SRConfiguration.m Core/SRPacing.c tests/image_asset_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/image-asset-test"
           for pass in 1 2 3; do
             "$RUNNER_TEMP/store-test"
             "$RUNNER_TEMP/adapter-test"
@@ -54,6 +56,8 @@ jobs:
             "$RUNNER_TEMP/text-send-host-test"
             "$RUNNER_TEMP/settings-entry-test"
             "$RUNNER_TEMP/runtime-log-test"
+            "$RUNNER_TEMP/image-source-test"
+            "$RUNNER_TEMP/image-asset-test"
           done
       - name: Install build tools
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
@@ -102,7 +106,7 @@ jobs:
           otool -L "$dylib"
           cp "$deb" dist/
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
-          printf 'Development build. Batch rule sending is disabled; the panel only exposes an explicitly enabled single-target text experiment. Device compatibility and delivery are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
+          printf 'Development build. Batch rule sending is disabled; the panel only exposes an explicitly enabled single-target text experiment. Image capture and raster preview require device verification; image sending remains disabled. Device compatibility and delivery are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         with:

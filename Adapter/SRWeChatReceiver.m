@@ -1,6 +1,8 @@
 #import "SRWeChatReceiver.h"
 #import "SRRuntime.h"
 #import "Core/SRSourceMessage.h"
+#import "Core/SRConfiguration.h"
+#import "Core/SRImageAssetStore.h"
 #import <objc/runtime.h>
 #include <string.h>
 
@@ -10,8 +12,17 @@
 @property(nonatomic, weak) id manager;
 @property(nonatomic, copy) NSString *text;
 @property(nonatomic, copy) NSNumber *localID;
+@property(nonatomic, copy) NSNumber *messageType;
 @end
 @implementation SRPendingOwnText
+@end
+
+@interface SRPendingImage : NSObject
+@property(nonatomic, strong) id wrap;
+@property(nonatomic, copy) NSDictionary *source;
+@property(nonatomic) NSTimeInterval deadline;
+@end
+@implementation SRPendingImage
 @end
 
 @interface SRDirectionObservation : NSObject
@@ -43,6 +54,12 @@
 @property(nonatomic, strong) NSMutableArray *directionSamples;
 @property(nonatomic) NSUInteger directionReservations;
 @property(nonatomic) NSUInteger directionDropped;
+@property(nonatomic, copy) NSSet *senderIDs;
+@property(nonatomic, copy) NSSet *selectedTypes;
+@property(nonatomic, strong) SRPendingImage *pendingImage;
+@property(nonatomic, copy) NSString *imageState;
+@property(nonatomic) NSUInteger imageReads;
+@property(nonatomic) NSUInteger queuedImages;
 - (SRDirectionObservation *)beginDirectionForSession:(id)session wrap:(id)wrap;
 - (void)finishDirection:(SRDirectionObservation *)observation path:(NSString *)path wrap:(id)wrap;
 - (void)observeSession:(id)session wrap:(id)wrap;
@@ -209,6 +226,8 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
             self.counters = [NSMutableDictionary dictionary]; self.armedAt = NSDate.date.timeIntervalSince1970; self.lastCallbackAt = 0;
             self.directionSamples = [NSMutableArray array]; self.directionReservations = 0; self.directionDropped = 0;
             self.pendingOutgoing = nil; self.queuedOutgoing = 0; self.ownTextState = @"unavailable";
+            self.senderIDs = nil; self.selectedTypes = [NSSet setWithObject:@"text"];
+            self.pendingImage = nil; self.imageState = @"disabled"; self.imageReads = 0; self.queuedImages = 0;
             self.tap = tap; self.armed = YES; tap.listener = self;
         }
         // Optional outgoing observation. Never invoke AddMsg ourselves.
@@ -239,6 +258,27 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     [self note:@"receiver_arm"];
     return YES;
 }
+- (BOOL)armForAccount:(NSString *)account configuration:(NSDictionary *)configuration error:(NSError **)error {
+    if (![SRConfiguration validateDraft:configuration error:NULL] || ![configuration[@"senders"] count])
+        return [self fail:@"Capture requires validated sender and type filters" error:error];
+    if ([configuration[@"types"] containsObject:@"image"] && (!self.prepareImage || !self.discardImage))
+        return [self fail:@"Image snapshot preparation is unavailable" error:error];
+    if (![self armForAccount:account sourceGroup:configuration[@"sourceGroup"][@"id"] error:error]) return NO;
+    @synchronized(self) {
+        self.senderIDs = [NSSet setWithArray:[configuration[@"senders"] valueForKey:@"id"]];
+        self.selectedTypes = [NSSet setWithArray:configuration[@"types"]];
+        self.imageState = [self.selectedTypes containsObject:@"image"] ? @"waiting" : @"disabled";
+    }
+    return YES;
+}
+- (BOOL)allowsSender:(NSString *)sender type:(NSNumber *)type {
+    @synchronized(self) {
+        if (self.senderIDs && ![self.senderIDs containsObject:sender]) { [self note:@"receive_sender_filtered"]; return NO; }
+        NSString *name = [type isEqual:@1] ? @"text" : ([type isEqual:@3] ? @"image" : @"unsupported");
+        if (![self.selectedTypes containsObject:name]) { [self note:@"receive_type_filtered"]; return NO; }
+        return YES;
+    }
+}
 - (void)observeSession:(id)session wrap:(id)wrap {
     NSString *account, *group; NSUInteger generation;
     @synchronized(self) {
@@ -260,9 +300,32 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         [sender rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) { [self note:@"receive_invalid_sender"]; return; }
     NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
     NSNumber *serverID = SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL);
-    // Images need verified media preparation; no XML-as-path or temporary/local ID fallback.
-    if (![type isEqual:@1]) { [self note:@"receive_not_text"]; return; }
+    if (![self allowsSender:sender type:type]) return;
     if (!serverID.unsignedLongLongValue) { [self note:@"receive_no_server_id"]; return; }
+    if ([type isEqual:@3]) {
+        NSDictionary *identity = @{@"account": account, @"group": group, @"sender": sender,
+            @"messageID": [@"svr:" stringByAppendingString:serverID.stringValue], @"type": @"image", @"generatedByRelay": @NO};
+        @synchronized(self) {
+            if (self.pendingImage || self.queuedImages) return;
+            self.queuedImages++;
+        }
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SRWeChatReceiver *receiver = weakSelf; if (!receiver) return;
+            @synchronized(receiver) {
+                if (!receiver.armed || receiver.generation != generation) return;
+                receiver.queuedImages--;
+                if (receiver.pendingImage) return;
+                SRPendingImage *pending = [[SRPendingImage alloc] init]; pending.wrap = wrap; pending.source = identity;
+                pending.deadline = NSProcessInfo.processInfo.systemUptime + 30;
+                receiver.pendingImage = pending; receiver.imageState = @"awaiting_native_image";
+            }
+            [receiver note:@"image_pending"];
+            [receiver pollImage:receiver.pendingImage generation:generation remaining:30];
+        });
+        return;
+    }
+    @synchronized(self) { if (self.pendingImage || self.queuedImages) return; }
     NSString *content = SRReadDeclaredString(wrap, @"m_nsContent", NULL);
     if (!content.length) { [self note:@"receive_empty_text"]; return; }
     NSDictionary *message = [SRSourceMessage frozenJSON:@{@"account": account, @"group": group, @"sender": sender,
@@ -296,11 +359,13 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
     if (![SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL) isEqual:account] || ![SRReadDeclaredString(wrap, @"m_nsToUsr", NULL) isEqual:group]) {
         [self note:@"outgoing_wrong_direction"]; return;
     }
-    if (![SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@1]) { [self note:@"outgoing_not_text"]; return; }
-    NSString *text = [SRReadDeclaredString(wrap, @"m_nsContent", NULL) copy];
-    if (!text.length) return;
+    NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
+    if (![self allowsSender:account type:type]) return;
+    NSString *text = [type isEqual:@1] ? [SRReadDeclaredString(wrap, @"m_nsContent", NULL) copy] : nil;
+    if ([type isEqual:@1] && !text.length) return;
     SRPendingOwnText *pending = [[SRPendingOwnText alloc] init];
     pending.wrap = wrap; pending.manager = manager; pending.text = text;
+    pending.messageType = type;
     pending.localID = SRReadUnsignedInteger(wrap, @"m_uiMesLocalID", NULL);
     @synchronized(self) {
         if (!self.armed || self.generation != generation || self.pendingOutgoing || self.queuedOutgoing >= 16) return;
@@ -323,8 +388,8 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
 - (BOOL)ownWrap:(id)wrap matchesPending:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account {
     NSString *sender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", NULL);
     return [SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL) isEqual:account] && [SRReadDeclaredString(wrap, @"m_nsToUsr", NULL) isEqual:group] &&
-        [SRReadDeclaredString(wrap, @"m_nsContent", NULL) isEqual:pending.text] && (!sender.length || [sender isEqual:account]) &&
-        [SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@1] &&
+        (![pending.messageType isEqual:@1] || [SRReadDeclaredString(wrap, @"m_nsContent", NULL) isEqual:pending.text]) && (!sender.length || [sender isEqual:account]) &&
+        [SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:pending.messageType] &&
         (!pending.localID.unsignedLongLongValue || [SRReadUnsignedInteger(wrap, @"m_uiMesLocalID", NULL) isEqual:pending.localID]);
 }
 - (void)pollOutgoing:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining {
@@ -350,14 +415,69 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         if (!remaining) {
             self.pendingOutgoing = nil; self.ownTextState = @"timed_out";
             [self note:@"own_timeout"];
-            [self fail:@"Own text has no server message ID after 30 seconds; no source was captured" error:NULL]; return;
+            [self fail:@"Own message has no server message ID after 30 seconds; no source was captured" error:NULL]; return;
         }
         __weak typeof(self) weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             [weakSelf pollOutgoing:pending group:group account:account generation:generation remaining:remaining - 1];
         });
     } @catch (__unused id exception) {
-        self.pendingOutgoing = nil; self.ownTextState = @"error"; [self fail:@"Own text observation failed" error:NULL];
+        self.pendingOutgoing = nil; self.ownTextState = @"error"; [self fail:@"Own message observation failed" error:NULL];
+    }
+}
+- (BOOL)imageWrap:(id)wrap matches:(NSDictionary *)source {
+    NSString *from = SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL), *to = SRReadDeclaredString(wrap, @"m_nsToUsr", NULL);
+    NSString *sender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", NULL);
+    BOOL outgoing = [from isEqual:source[@"account"]] && [to isEqual:source[@"group"]];
+    if (outgoing && (!sender.length || [sender isEqual:source[@"account"]])) sender = source[@"account"];
+    NSNumber *server = SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL);
+    return (outgoing || ([from isEqual:source[@"group"]] && [to isEqual:source[@"account"]])) &&
+        [sender isEqual:source[@"sender"]] && [SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@3] &&
+        server.unsignedLongLongValue && [[@"svr:" stringByAppendingString:server.stringValue] isEqual:source[@"messageID"]];
+}
+- (void)pollImage:(SRPendingImage *)pending generation:(NSUInteger)generation remaining:(NSUInteger)remaining {
+    @synchronized(self) { if (!self.armed || self.generation != generation || self.pendingImage != pending) return; }
+    NSDictionary *payload = nil;
+    @try {
+        if (![self.currentAccount() isEqual:pending.source[@"account"]]) { [self note:@"account_changed"]; [self stop]; return; }
+        if (![self imageWrap:pending.wrap matches:pending.source]) {
+            self.imageState = @"identity_conflict"; [self note:@"image_conflict"]; [self stop]; return;
+        }
+        if (!remaining || NSProcessInfo.processInfo.systemUptime >= pending.deadline) {
+            self.imageState = @"timed_out"; [self note:@"image_timeout"]; [self stop];
+            [self fail:@"Image not available after 30 seconds. Open it in the source group, then arm capture and send a new image" error:NULL]; return;
+        }
+        @synchronized(self) { if (!self.armed || self.generation != generation || self.pendingImage != pending) return; }
+        NSError *error = nil; self.imageReads++;
+        payload = self.prepareImage ? self.prepareImage(pending.wrap, pending.source, &error) : nil;
+        if (error || (payload && ![SRImageAssetStore validPayload:payload])) {
+            if (payload && self.discardImage) self.discardImage(payload);
+            self.imageState = @"preparation_failed"; [self note:@"image_failed"]; [self stop];
+            [self fail:@"Image preparation failed; export diagnostics. No message was sent" error:NULL]; return;
+        }
+        // Native preparation may reenter host code. Recheck ownership and all source fields.
+        BOOL live;
+        @synchronized(self) { live = self.armed && self.generation == generation && self.pendingImage == pending; }
+        BOOL identityMatches = live && [self.currentAccount() isEqual:pending.source[@"account"]] && [self imageWrap:pending.wrap matches:pending.source];
+        @synchronized(self) { live = self.armed && self.generation == generation && self.pendingImage == pending; }
+        if (!live || !identityMatches) {
+            if (payload && self.discardImage) self.discardImage(payload);
+            if (live) { self.imageState = @"identity_conflict"; [self note:@"image_conflict"]; [self stop]; }
+            return;
+        }
+        if (payload) {
+            NSMutableDictionary *message = [pending.source mutableCopy]; message[@"payload"] = payload;
+            self.pendingImage = nil; self.imageState = @"snapshot_ready"; [self note:@"image_ready"];
+            [self note:@"source_candidate"]; self.received([SRSourceMessage frozenJSON:message]); return;
+        }
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            [weakSelf pollImage:pending generation:generation remaining:remaining - 1];
+        });
+    } @catch (__unused id exception) {
+        if (payload && self.discardImage) self.discardImage(payload);
+        self.imageState = @"preparation_failed"; [self note:@"image_failed"]; [self stop];
+        [self fail:@"Image observation failed; export diagnostics" error:NULL];
     }
 }
 - (void)stop {
@@ -369,6 +489,7 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
             if (self.tap.listener == self) self.tap.listener = nil;
             if (self.outgoingTap.listener == self) self.outgoingTap.listener = nil;
             self.pendingOutgoing = nil;
+            self.pendingImage = nil; self.queuedImages = 0;
             self.queuedOutgoing = 0;
             self.account = nil; self.group = nil;
         }
@@ -390,7 +511,9 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
             @"directionEvidenceSchema": @2, @"stringReadStrategy": @"declared_runtime", @"directionSampleLimit": @12,
             @"directionSamples": [self.directionSamples copy] ?: @[],
             @"directionSamplesDropped": @(self.directionDropped),
-            @"textOnlyCandidate": @YES, @"sendingEnabled": @NO, @"problem": self.problem ?: @"", @"methods": methods};
+            @"textOnlyCandidate": @(![self.selectedTypes containsObject:@"image"]), @"imageCaptureSchema": @1, @"imageState": self.imageState ?: @"idle",
+            @"imagePending": @(self.pendingImage != nil), @"imageReads": @(self.imageReads), @"imageWaitLimit": @30,
+            @"senderFilterCount": @(self.senderIDs.count), @"sendingEnabled": @NO, @"problem": self.problem ?: @"", @"methods": methods};
     }
 }
 @end

@@ -129,6 +129,86 @@ static NSMutableDictionary *draft(void) {
     value[@"rules"] = @[@{@"id": @"rule", @"name": @"First", @"targets": @[@{@"id": @"target@chatroom", @"name": @"Target"}]}];
     return value;
 }
+@interface SRWeChatReceiver (ImageFixture)
+- (void)pollImage:(id)pending generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
+@end
+static NSDictionary *imagePayload(void) {
+    return @{@"snapshotSchema": @1, @"mediaReference": @"11111111-2222-4333-8444-555555555555",
+        @"sha256": [@"a" stringByPaddingToLength:64 withString:@"a" startingAtIndex:0],
+        @"scopeSHA256": [@"b" stringByPaddingToLength:64 withString:@"b" startingAtIndex:0],
+        @"byteCount": @100, @"pixelWidth": @2, @"pixelHeight": @3, @"format": @"png"};
+}
+static void checkImageCapture(void) {
+    __block NSString *account = @"wxid_account";
+    __block NSUInteger reads = 0, discards = 0, mode = 0;
+    NSMutableArray *received = [NSMutableArray array];
+    SRWeChatReceiver *receiver = [[SRWeChatReceiver alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
+        return [name isEqual:@"CMessageMgr"] ? ReceiveManager.class : ([name isEqual:@"CMessageWrap"] ? ReceiveWrap.class : Nil);
+    } currentAccount:^NSString *{ return account; } received:^(NSDictionary *message) { [received addObject:message]; }];
+    __weak SRWeChatReceiver *weak = receiver;
+    receiver.prepareImage = ^NSDictionary *(id value, __unused NSDictionary *source, NSError **error) {
+        CHECK(NSThread.isMainThread); reads++;
+        if (mode == 1) return nil;
+        if (mode == 2) { *error = [NSError errorWithDomain:@"fixture" code:1 userInfo:nil]; return nil; }
+        if (mode == 3) account = @"wxid_changed";
+        if (mode == 4) ((ReceiveWrap *)value).m_n64MesSvrID++;
+        if (mode == 5) [weak stop];
+        return imagePayload();
+    };
+    receiver.discardImage = ^(__unused NSDictionary *payload) { discards++; };
+    NSMutableDictionary *configuration = draft(); configuration[@"types"] = @[@"image"];
+    ReceiveManager *manager = [[ReceiveManager alloc] init];
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    ReceiveWrap *text = wrap(); [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:text];
+    ReceiveWrap *unselected = wrap(); unselected.m_uiMessageType = 3; unselected.m_nsRealChatUsr = @"wxid_other";
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:unselected]; pump();
+    CHECK(!reads && !received.count && ![receiver.diagnostics[@"imagePending"] boolValue]);
+    // Image capture never reads XML/body as a media path.
+    ThrowingReceiveWrap *image = [[ThrowingReceiveWrap alloc] init];
+    image.m_nsFromUsr = @"mother@chatroom"; image.m_nsToUsr = account; image.m_nsRealChatUsr = @"wxid_sender";
+    image.m_uiMessageType = 3; image.m_n64MesSvrID = 11;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
+    CHECK(reads == 1 && received.count == 1 && [received[0][@"type"] isEqual:@"image"]);
+    CHECK([receiver.diagnostics[@"imageState"] isEqual:@"snapshot_ready"]); [receiver stop];
+    // No source is offered until the actual raster becomes ready.
+    mode = 1; CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
+    CHECK(reads == 2 && received.count == 1 && [receiver.diagnostics[@"imagePending"] boolValue]);
+    mode = 0; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.15, false);
+    CHECK(reads == 3 && received.count == 2); [receiver stop];
+    // Exercise the terminal bounded-wait branch without sleeping 30 seconds per suite.
+    mode = 1; CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
+    [receiver pollImage:[receiver valueForKey:@"pendingImage"] generation:[[receiver valueForKey:@"generation"] unsignedIntegerValue] remaining:0];
+    CHECK([receiver.diagnostics[@"imageState"] isEqual:@"timed_out"] && ![receiver.diagnostics[@"armed"] boolValue]);
+    CHECK(received.count == 2);
+    for (mode = 2; mode <= 5; mode++) {
+        account = @"wxid_account"; image.m_n64MesSvrID = 11;
+        CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
+        CHECK(received.count == 2 && ![receiver.diagnostics[@"armed"] boolValue]);
+    }
+    CHECK(discards == 3);
+    account = @"wxid_account"; mode = 0;
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; [receiver stop];
+    NSUInteger before = reads; CHECK([receiver armForAccount:account configuration:configuration error:NULL]); pump();
+    CHECK(reads == before && received.count == 2); [receiver stop];
+    // Own images require a server ID; exact local-ID readback can supply the settled wrap.
+    configuration[@"senders"] = @[@{@"id": account, @"name": @"Self"}];
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    ReceiveWrap *own = wrap(); own.m_uiMessageType = 3; own.m_nsFromUsr = account; own.m_nsToUsr = @"mother@chatroom";
+    own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
+    ReceiveWrap *settled = wrap(); settled.m_uiMessageType = 3; settled.m_nsFromUsr = account; settled.m_nsToUsr = @"mother@chatroom";
+    settled.m_nsRealChatUsr = nil; settled.m_n64MesSvrID = 9007199254740995ULL; manager.stored = settled;
+    [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); pump();
+    CHECK(received.count == 3 && [received.lastObject[@"sender"] isEqual:account]);
+    CHECK([received.lastObject[@"messageID"] isEqual:@"svr:9007199254740995"]);
+    CHECK(manager.lookupLocalID == own.m_uiMesLocalID); [receiver stop];
+    NSString *diagnostics = receiver.diagnostics.description;
+    for (NSString *secret in @[@"wxid_account", @"mother@chatroom", @"9007199254740995", @"mediaReference", @"sha256"])
+        CHECK(![diagnostics containsString:secret]);
+}
 static void checkDirectionEvidence(void) {
     __block NSUInteger accepted = 0;
     SRWeChatReceiver *receiver = [[SRWeChatReceiver alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
@@ -410,6 +490,7 @@ int main(void) {
         [receiver stop]; [capture cancel]; receiver = nil; replacement = nil; inherited = nil; makeReceiver = nil; capture = nil; store = nil;
         checkDirectionEvidence();
         checkReflectedMessage();
+        checkImageCapture();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }

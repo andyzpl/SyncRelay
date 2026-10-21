@@ -1,5 +1,6 @@
 #import "SRSourceMessage.h"
 #import "SRConfiguration.h"
+#import "SRImageAssetStore.h"
 @implementation SRSourceMessage
 + (NSDictionary *)frozenJSON:(id)object {
     @try {
@@ -23,8 +24,10 @@
         if (!allowedSender) return NO;
         NSDictionary *payload = message[@"payload"];
         if (![payload isKindOfClass:NSDictionary.class]) return NO;
-        NSString *key = [message[@"type"] isEqual:@"text"] ? @"text" : @"mediaReference";
-        return [payload[key] isKindOfClass:NSString.class] && [payload[key] length] && [NSJSONSerialization isValidJSONObject:message];
+        BOOL valid = [message[@"type"] isEqual:@"text"] ?
+            ([payload[@"text"] isKindOfClass:NSString.class] && [payload[@"text"] length]) :
+            ([message[@"type"] isEqual:@"image"] && [SRImageAssetStore validPayload:payload]);
+        return valid && [NSJSONSerialization isValidJSONObject:message];
     } @catch (__unused NSException *exception) { return NO; }
 }
 @end

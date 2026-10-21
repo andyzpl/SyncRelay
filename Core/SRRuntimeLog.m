@@ -20,6 +20,7 @@ static NSSet *SRLogEvents(void) {
         @"receive_not_text", @"receive_no_server_id", @"receive_empty_text", @"outgoing_callback",
         @"outgoing_wrong_session", @"outgoing_wrong_direction", @"outgoing_not_text", @"own_pending",
         @"own_conflict", @"own_timeout", @"own_readback", @"account_changed", @"receiver_stopped", @"receiver_arm",
+        @"receive_sender_filtered", @"receive_type_filtered", @"image_pending", @"image_ready", @"image_timeout", @"image_conflict", @"image_failed",
         @"text_test_countdown", @"text_test_claimed", @"text_test_submitted", @"text_test_blocked"]]; });
     return values;
 }

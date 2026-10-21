@@ -2,6 +2,7 @@
 #import "SRPacing.h"
 #import "SRConfiguration.h"
 #import "SRSourceMessage.h"
+#import "SRImageAssetStore.h"
 #import <sqlite3.h>
 
 @interface SRStore () {
@@ -67,6 +68,7 @@ static void SRRequire(BOOL condition, NSString *message) {
 - (instancetype)initWithPath:(NSString *)path error:(NSError **)error {
     self = [super init];
     if (!self) return nil;
+    _imageAssets = [[SRImageAssetStore alloc] initWithDirectory:[path stringByAppendingString:@".media"]];
     if (sqlite3_open_v2(path.fileSystemRepresentation, &_db,
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
         if (error) *error = [NSError errorWithDomain:@"SyncRelay.Store" code:2
@@ -104,7 +106,21 @@ static void SRRequire(BOOL condition, NSString *message) {
         for (NSString *sql in schema) [self query:sql values:@[]];
         return @YES;
     } transaction:YES error:error];
-    return migrated ? self : nil;
+    if (!migrated) return nil;
+    id retained = [self perform:^id{
+        NSMutableSet *references = [NSMutableSet set];
+        for (NSDictionary *row in [self query:@"SELECT snapshot FROM plans" values:@[]]) {
+            NSData *data = [row[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding];
+            NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+            if (![snapshot isKindOfClass:NSDictionary.class]) continue;
+            NSDictionary *payload = snapshot[@"payload"];
+            if ([snapshot[@"type"] isEqual:@"image"] && [SRImageAssetStore validPayload:payload]) [references addObject:payload[@"mediaReference"]];
+        }
+        return references;
+    } transaction:NO error:error];
+    if (!retained) return nil;
+    [self.imageAssets pruneUnreferenced:retained];
+    return self;
 }
 
 - (void)dealloc { if (_db) sqlite3_close(_db); }
@@ -290,6 +306,8 @@ static void SRRequire(BOOL condition, NSString *message) {
     NSDictionary *message = [SRSourceMessage frozenJSON:envelope];
     return [self perform:^id{
         SRRequire([SRSourceMessage matchesEnvelope:message configuration:draft account:account] && [draft[@"rules"] count], @"Captured source does not match the configured rule");
+        if ([message[@"type"] isEqual:@"image"])
+            SRRequire([self.imageAssets dataForPayload:message[@"payload"] source:message error:NULL] != nil, @"Image snapshot is missing or changed; capture it again");
         NSString *plan = NSUUID.UUID.UUIDString;
         [self query:@"INSERT INTO plans VALUES(?,?,?,?,?,?)" values:@[plan, account, message[@"group"],
             [self json:[draft[@"senders"] valueForKey:@"id"]], [self json:draft[@"types"]], [self json:message]]];

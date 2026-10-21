@@ -8,6 +8,8 @@
 #import "Core/SREntryPreferences.h"
 #import "Core/SRRuntimeLog.h"
 #import "Core/SRVersion.h"
+#import "Core/SRImageAssetStore.h"
+#import "Adapter/SRWeChatImageSource.h"
 #import "Adapter/SRWeChatReader.h"
 #import "Adapter/SRWeChatReceiver.h"
 #import "Adapter/SRWeChatSendProbe.h"
@@ -145,6 +147,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRWeChatReader *reader;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
+@property(nonatomic, strong) SRWeChatImageSource *imageSource;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRWeChatTextSendHost *textSendHost;
 @property(nonatomic, strong) SRWeChatTextSendAdapter *textSendAdapter;
@@ -257,7 +260,12 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     return YES;
 }
 - (void)refresh {
-    if ([self.capture.status[@"state"] isEqual:@"waiting"] && ![self.receiver.diagnostics[@"armed"] boolValue]) [self.capture cancel];
+    if ([self.capture.status[@"state"] isEqual:@"waiting"] && ![self.receiver.diagnostics[@"armed"] boolValue]) {
+        NSString *imageState = self.receiver.diagnostics[@"imageState"];
+        if ([@[@"timed_out", @"preparation_failed", @"identity_conflict"] containsObject:imageState ?: @""])
+            self.status = [imageState isEqual:@"timed_out"] ? @"图片资源等待超时；请在母群点开加载后重新等待新图。可导出运行诊断。" : @"图片捕获已停止，资源或来源校验未通过；请导出运行诊断。";
+        [self.capture cancel];
+    }
     self.navigationItem.rightBarButtonItem.enabled = self.ready;
     self.navigationItem.prompt = nil;
     [self.tableView reloadData];
@@ -306,7 +314,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     section = SRPanelSection(section);
     if (section == 0) return [NSString stringWithFormat:@"SyncRelay %@ · 开发版\n%@", SR_PLUGIN_VERSION, self.status ?: @"真实转发未启用"];
-    if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存”。" : @"所有规则共用来源条件；图片采集尚未启用。";
+    if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存”。" : @"所有规则共用来源条件；图片先捕获并预览，不自动发送。";
     if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。";
     if (section == 4) return @"预览和确认不会启动规则；单群实验需单独开启并二次确认，切后台或锁屏会取消等待。";
     return @"母群自动排除，每条最多 200 群；不足按实际数量分组。";
@@ -352,7 +360,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         else if (path.row == 1) { cell.textLabel.text = @"来源成员"; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 人", (unsigned long)[self.draft[@"senders"] count]]; }
         else {
             NSString *type = path.row == 2 ? @"text" : @"image";
-            cell.textLabel.text = path.row == 2 ? @"转发文字" : @"转发图片";
+            cell.textLabel.text = path.row == 2 ? @"转发文字" : @"图片（仅捕获预览）";
             UISwitch *toggle = [[UISwitch alloc] init]; toggle.tag = path.row;
             toggle.onTintColor = SRSettingsAccent();
             toggle.on = [self.draft[@"types"] containsObject:type]; toggle.enabled = self.ready;
@@ -372,6 +380,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         NSString *state = self.capture.status[@"state"];
         if (path.row == 0) { cell.textLabel.text = [state isEqual:@"waiting"] ? @"取消等待" : @"等待源消息"; cell.detailTextLabel.text = [state isEqual:@"waiting"] ? @"等待中" : @"手动开始"; }
         if (path.row == 1) { cell.textLabel.text = @"源消息预览"; cell.detailTextLabel.text = [state isEqual:@"preview"] ? @"已锁定 1 条" : ([state isEqual:@"waiting"] ? @"等待中" : @"暂无内容"); }
+        if (path.row == 1 && [state isEqual:@"waiting"] && [self.receiver.diagnostics[@"imagePending"] boolValue]) cell.detailTextLabel.text = @"图片加载中，最多 30 秒";
         if (path.row == 2) { cell.textLabel.text = @"内容计划与历史"; cell.detailTextLabel.text = @"只读"; }
         if (path.row == 3) {
             cell.textLabel.text = @"单群文字发送（实验）";
@@ -623,6 +632,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"storageReady"] = @(self.store != nil);
     report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
+    report[@"imageSource"] = self.imageSource.diagnostics ?: @{};
     report[@"sourceCapture"] = self.capture.diagnostics ?: @{@"state": @"unavailable"};
     report[@"draftSummary"] = [self diagnosticDraft];
     report[@"runtimeLog"] = SRRuntimeLog.shared.snapshot;
@@ -677,7 +687,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     view.textColor = UIColor.labelColor; view.backgroundColor = SRSettingsCellBackground();
     view.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
     view.text = @"当前版本\n这是开发测试版，批量规则真实转发尚未启用。保存设置、预览或确认内容都不会向目标群发送消息；只有明确开启的单群文字实验才会提交一次。\n\n"
-        @"来源条件\n所有规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片选项仅保存配置，图片采集尚未启用。\n\n"
+        @"来源条件\n所有规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片仅开放捕获、资源校验和实际预览，不开放图片发送。等待资源最多 30 秒；如未就绪，请在母群点开图片加载后重新等待并发送一张新图。保存的是微信已加载的图片快照，不承诺原图质量或动态图片。\n\n"
         @"群聊与分组\n母群和已分配群自动排除。只需搜索并排除不想转发的群，再按每条 100 或 200 群自动分组；数量不足按实际生成，不建空规则。手动全选也会拆分为每条最多 200 群。\n\n"
         @"等待源消息\n先保存设置，再手动开始等待。关闭面板回母群，由指定成员或本人发一条文字；须取得服务器消息 ID 才进入预览。本人候选最多等待确认 30 秒，不用临时本地 ID 替代。\n\n"
         @"预览与计划\n第一条匹配内容锁定后停止等待。核对母群、发送者 wxid、类型和完整正文再确认；候选可能包含离线补同步，不能只凭回调时间判断新旧。确认只建立计划，不开始执行任何规则。\n\n"
@@ -821,9 +831,8 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }
     if ([state isEqual:@"preview"]) { [self showCapture]; return; }
     if (self.dirty) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @1}]; SRAlert(self, @"请先保存", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
-    if (![self.draft[@"types"] containsObject:@"text"]) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @2}]; SRAlert(self, @"图片捕获尚未开放", @"当前候选只能核对文字，不能猜测图片媒体路径。图片配置会保留，但本轮不能仅等待图片。"); return; }
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群文字？" message:@"仅观察指定母群和 wxid，锁定第一条具有服务器消息 ID 的匹配文字后停止，支持本人作为来源。候选尚未真机验证，可能包含离线补同步，请核对预览；切后台会取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群消息？" message:@"仅捕获所选 wxid 和类型，支持本人。图片需有服务器消息 ID 和可用图片资源，最多等待 30 秒；本轮先验证图片捕获，不发送图片。可能包含补同步，请核对实际预览；切后台取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         if (![self checkDraft:snapshot account:account]) return;
@@ -832,7 +841,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             [SRRuntimeLog.shared record:@"capture_arm_failed" facts:@{@"errorCode": @(error.code)}];
             SRAlert(self, @"还不能开始等待", error.localizedDescription); return;
         }
-        if (![self.receiver armForAccount:account sourceGroup:snapshot[@"sourceGroup"][@"id"] error:&error]) {
+        if (![self.receiver armForAccount:account configuration:snapshot error:&error]) {
             [SRRuntimeLog.shared record:@"capture_arm_failed" facts:@{@"errorCode": @(error.code)}];
             [self.capture cancel]; SRAlert(self, @"接收候选不可用", error.localizedDescription); return;
         }
@@ -879,6 +888,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) UIButton *button;
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
+@property(nonatomic, strong) SRWeChatImageSource *imageSource;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRWeChatTextSendHost *textSendHost;
 @property(nonatomic, strong) SRWeChatReader *identityReader;
@@ -907,6 +917,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (void)prepareCapture {
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     self.capture = [[SRSourceCapture alloc] initWithStore:self.store];
+    self.imageSource = [[SRWeChatImageSource alloc] initWithClassResolver:^Class(NSString *name) { return NSClassFromString(name); }];
     self.identityReader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
     __weak typeof(self) weakSelf = self;
     self.receiver = [[SRWeChatReceiver alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
@@ -924,9 +935,32 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             if ([entry.capture offerEnvelope:message]) {
                 [SRRuntimeLog.shared record:@"capture_accepted" facts:@{}];
                 [entry.receiver stop]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
-            } else [SRRuntimeLog.shared record:@"capture_rejected" facts:@{@"reasonCode": entry.capture.diagnostics[@"lastReasonCode"] ?: @0}];
+            } else {
+                if ([message[@"type"] isEqual:@"image"]) [entry.store.imageAssets discardPayload:message[@"payload"]];
+                [SRRuntimeLog.shared record:@"capture_rejected" facts:@{@"reasonCode": entry.capture.diagnostics[@"lastReasonCode"] ?: @0}];
+            }
         }];
-    self.receiver.trace = ^(NSString *event, NSDictionary *facts) { [SRRuntimeLog.shared record:event facts:facts]; };
+    self.receiver.prepareImage = ^NSDictionary *(id wrap, NSDictionary *source, NSError **error) {
+        SREntry *entry = weakSelf; if (!entry) return nil;
+        UIImage *image = [entry.imageSource imageForWrap:wrap error:error];
+        if (!image) return nil;
+        CGImageRef raster = image.CGImage;
+        size_t width = raster ? CGImageGetWidth(raster) : 0, height = raster ? CGImageGetHeight(raster) : 0;
+        if (!width || !height || image.images.count > 1 || width > 12000 || height > 12000 || (uint64_t)width * height > 32000000ULL) {
+            if (error) *error = [NSError errorWithDomain:@"SyncRelay.ImageAsset" code:8
+                userInfo:@{NSLocalizedDescriptionKey: @"Image dimensions exceed the capture limit"}];
+            return nil;
+        }
+        NSData *data = UIImagePNGRepresentation(image);
+        return [entry.store.imageAssets saveData:data source:source error:error];
+    };
+    self.receiver.discardImage = ^(NSDictionary *payload) { [weakSelf.store.imageAssets discardPayload:payload]; };
+    self.receiver.trace = ^(NSString *event, NSDictionary *facts) {
+        [SRRuntimeLog.shared record:event facts:facts];
+        if ([event hasPrefix:@"image_"]) dispatch_async(dispatch_get_main_queue(), ^{
+            [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+        });
+    };
     self.sendProbe = [[SRWeChatSendProbe alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
         currentAccount:^NSString * {
             SREntry *entry = weakSelf; if (!entry) return nil;
@@ -996,6 +1030,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (!presenter || presenter.isBeingDismissed || presenter.isBeingPresented || [presenter isKindOfClass:UIAlertController.class]) return;
     SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleGrouped]; panel.store = self.store;
     panel.capture = self.capture; panel.receiver = self.receiver;
+    panel.imageSource = self.imageSource;
     panel.sendProbe = self.sendProbe;
     panel.textSendHost = self.textSendHost;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;

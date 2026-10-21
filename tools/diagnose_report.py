@@ -39,8 +39,13 @@ def analyze(report):
         ('outgoing_wrong_direction', 'outgoing_direction_mismatch', 'Own-message callbacks were rejected before server-ID observation.'),
         ('receive_invalid_sender', 'invalid_sender', 'A callback lacked a valid sender wxid.'),
         ('receive_no_server_id', 'missing_server_id', 'A callback had no non-zero server message ID.'),
-        ('own_timeout', 'own_timeout', 'Own text did not gain a confirmed source ID in the observation window.'),
+        ('own_timeout', 'own_timeout', 'Own message did not gain a confirmed source ID in the observation window.'),
         ('own_conflict', 'own_conflict', 'Observed own-message fields changed; the candidate was rejected.'),
+        ('receive_sender_filtered', 'receiver_sender_filtered', 'Receiver rejected an unselected wxid before reading media/body.'),
+        ('receive_type_filtered', 'receiver_type_filtered', 'Receiver rejected an unselected or unsupported message type before preparing media.'),
+        ('image_timeout', 'image_timeout', 'Native image was not ready within 30 seconds; no image was captured or sent. Load it in the source group and capture a newly sent image.'),
+        ('image_conflict', 'image_source_conflict', 'Account/source identity changed during image preparation; the image was rejected.'),
+        ('image_failed', 'image_preparation_failed', 'Native image getter or owned raster validation failed; inspect imageSource. No image was sent.'),
     ):
         if isinstance(counters.get(key), (int, float)) and counters[key] > 0:
             add(code, message)
@@ -106,6 +111,17 @@ def analyze(report):
         add('no_callback_observed', 'Waiting is armed, but neither candidate hook has been observed; this is not a compatibility verdict.')
     if capture.get('state') == 'preview':
         add('preview_ready', 'One source is frozen for preview. Preview alone does not submit a message.')
+    image = report.get('imageSource')
+    if image is not None:
+        if not isinstance(image, dict) or image.get('schema') != 1:
+            add('image_schema_invalid', 'Image source diagnostics have an unsupported schema.')
+        else:
+            if image.get('getterABICompatible') is False:
+                add('image_getter_unavailable', 'CMessageWrap class image getter is missing or ABI-incompatible; do not use guessed paths as fallback.')
+            if image.get('state') == 'result_not_image':
+                add('image_result_invalid', 'Native image getter returned an object that was not a UIImage.')
+            if receiver.get('imageState') == 'snapshot_ready':
+                add('image_snapshot_ready', 'An owned image snapshot passed preparation. Verify actual preview manually; image sending is not enabled.')
 
     # The manual send probe is deliberately observational. Keep its findings
     # separate from receive-candidate counters so a local/server ID change can
