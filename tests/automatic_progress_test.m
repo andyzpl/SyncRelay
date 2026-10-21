@@ -206,6 +206,7 @@ int main(void) {
         CHECK(sqlite3_open(constraintPath.fileSystemRepresentation, &db) == SQLITE_OK);
         CHECK(sqlite3_exec(db,
             "PRAGMA foreign_keys=OFF;"
+            "UPDATE rules SET minimum=10,maximum=20;"
             "CREATE TABLE rules_legacy(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), name TEXT NOT NULL, position INTEGER NOT NULL, minimum REAL NOT NULL CHECK(minimum>=10), maximum REAL NOT NULL CHECK(maximum>=minimum), UNIQUE(plan_id,position));"
             "INSERT INTO rules_legacy SELECT id,plan_id,name,position,minimum,maximum FROM rules;"
             "DROP TABLE rules; ALTER TABLE rules_legacy RENAME TO rules; PRAGMA user_version=7;",
