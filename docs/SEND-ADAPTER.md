@@ -12,6 +12,7 @@
 - `prepareForAccount:targetGroup:sourceSnapshot:confirmed:error:` 必须在主线程调用，`confirmed` 必须为真，源快照必须来自当前账号、母群且类型为 `text`；目标群必须是一个不同于母群的稳定 `@chatroom` ID。
 - 源快照通过 JSON 冻结，提交时再次逐字比对；目标、状态或快照改变会进入 `uncertain`，不改用其他消息或群。
 - 一个适配器实例只允许一次提交；重复提交明确返回 `uncertain`，不会自动重试。
+- 每次准备/重置都会推进内部代次；旧提交的迟到回调会被丢弃，不能污染下一次测试的状态。
 - 生产初始化的 `operation` 为 `nil`，即使 ABI 通过，`canSendForAccount:` 仍返回假。测试只注入一个内存模拟 operation，不调用微信私有接口。
 - 模拟 operation 的回调只接受 `confirmed`（必须带消息 ID）或 `failed`；其他结果统一转为 `uncertain`。`confirmed` 只是 transport 提供的关联结果，仍需后续验证其真实含义。
 
