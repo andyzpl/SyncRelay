@@ -29,7 +29,8 @@ int main(void) {
         experimentDraft[@"sourceGroup"] = @{ @"id": @"source@chatroom", @"name": @"Source" };
         experimentDraft[@"senders"] = @[ @{ @"id": @"wxid_sender", @"name": @"Sender" } ];
         experimentDraft[@"types"] = @[ @"text" ];
-        experimentDraft[@"rules"] = @[ @{ @"name": @"Rule 1", @"targets": @[ @{ @"id": @"target@chatroom", @"name": @"Target" } ] } ];
+        experimentDraft[@"rules"] = @[ @{ @"id": @"experiment-rule", @"name": @"Rule 1", @"targets": @[ @{ @"id": @"target@chatroom", @"name": @"Target" } ] } ];
+        assert([SRConfiguration validateDraft:experimentDraft error:&error]);
         NSDictionary *experimentSource = @{ @"account": @"account", @"group": @"source@chatroom", @"sender": @"wxid_sender",
             @"messageID": @"experiment-source", @"type": @"text", @"generatedByRelay": @NO, @"payload": @{ @"text": @"hello" } };
         assert([store claimTextExperiment:experimentSource configuration:experimentDraft account:@"account" target:@"target@chatroom" error:&error]);
