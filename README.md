@@ -10,6 +10,10 @@
 
 本地 Python 与 arm64/arm64e 固定 SDK 语法检查、私有 CI 测试/打包结果和确切交付身份记录在开发进度及产物目录；模拟测试或构建成功都不等于手机送达成功。
 
+普通 DEB：`dist/0.2.10-test-39527121454/andyz.syncrelay_0.2.10_iphoneos-arm.deb`，185364 字节；SHA-256 `57f907c5c85d194f3143732dc43b47bfbcbaa4381c4deb2b1ad874d07952903b`；CI run `39527121454`，编译源码 `ee18b735c77ca47cd363df5b0d3dd30ac14217fc`。
+
+本轮通过本地 62 项双架构语法、21 项 Python 测试和私有 CI 的 34 条原生 PASS，构建与下载后核验通过；待真机检查，不宣称送达或两版兼容已通过。
+
 ### 历史包与修正
 
 0.2.7 交付包当时通过本地 54 项 arm64/arm64e 语法检查、14 项 Python 测试（12 项诊断解析、2 项 UI 源码契约）；[私有 Actions 39469338784](https://github.com/andyzpl/SyncRelay/actions/runs/39469338784) 的 28 条核心 PASS、14 项 Python 测试、普通 DEB 构建/双架构检查/上传均通过。0.2.8 已通过 58 项 arm64/arm64e 语法检查、17 项 Python 测试以及本轮 CI 的 31 条核心 PASS，普通 DEB 已完成双架构、载荷、签名存在性、依赖和 SHA-256 核验；包仍不等于手机捕获或视觉通过。
