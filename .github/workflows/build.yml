@@ -114,7 +114,7 @@ jobs:
           otool -L "$dylib"
           cp "$deb" dist/
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
-          printf 'Development device checkpoint: explicitly started rules limited to 1-3 authorized groups, text or static image, serial foreground execution. No 100/200-group execution, replay, automatic next rule or retry. Per-delivery native claims persist; restart requires manual pending-only continuation. Submitted is NOT delivered. Image loading may write native media before submission. Legacy single-target experiments are mutually exclusive. Multi-group device behavior and compatibility are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
+          printf 'Development device checkpoint: explicitly started rules limited to 1-20 authorized groups, text or static image, serial foreground execution. No 100/200-group execution, replay, automatic next rule or retry. Per-delivery native claims persist; restart requires manual pending-only continuation. Submitted is NOT delivered. Image loading may write native media before submission. Legacy single-target experiments are mutually exclusive. Multi-group device behavior and compatibility are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         with:

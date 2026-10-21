@@ -208,7 +208,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
     if (self.kind == SRRecordPreview && section == 2) return @"确认只建立内容计划和目标分组，不发送。所有规则使用同一条已确认内容；之后修改设置不会改变此计划。";
-    if (self.kind == SRRecordPlan && section == 1) return @"点击规则可操作或查看历史。本轮只开放每条 1–3 个授权测试群：开始后串行转发，暂停后手动继续；大规则和重新执行尚未开放。请保持微信前台，切后台或锁屏会暂停，不自动接下一条。";
+    if (self.kind == SRRecordPlan && section == 1) return @"点击规则可操作或查看历史。本轮只开放每条 1–20 个授权测试群：开始后串行转发，暂停后手动继续；大规则和重新执行尚未开放。请保持微信前台，切后台或锁屏会暂停，不自动接下一条。";
     if (self.kind == SRRecordHistory) return @"执行完成表示本条队列处理结束，不代表全部送达。已提交与确认送达分开统计；点击批次只查看失败、结果未知和未发项。";
     if (self.kind == SRRecordExceptions) return @"无需逐群人工复核。异常保留供按需查看；继续只处理尚未尝试的目标，不自动重发已提交或结果未知的群。";
     return nil;
@@ -259,7 +259,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
         cell.textLabel.text = [NSString stringWithFormat:@"%@ · %@ 个群", row[@"name"], row[@"targetCount"]];
         NSDictionary *run = [row[@"latestRun"] isKindOfClass:NSDictionary.class] ? row[@"latestRun"] : nil;
         cell.detailTextLabel.text = run ? SRRunDescription(run) : ([row[@"initialUnlocked"] boolValue] ? @"未执行 · 顺序已解锁" : @"未执行 · 等待前序规则结束");
-        if ([row[@"targetCount"] unsignedIntegerValue] > 3) cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingString:@"\n超过本轮 3 群测试范围，不提供发送入口。"];
+        if ([row[@"targetCount"] unsignedIntegerValue] > 20) cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingString:@"\n超过本轮 20 群测试范围，不提供发送入口。"];
         if (!run && [row[@"accountOccupied"] boolValue]) cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingString:@"\n账号仍有活动批次，不能开始另一条。"];
     } else if (self.kind == SRRecordHistory) {
         cell.textLabel.text = SRRunDescription(row);
@@ -288,9 +288,9 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 - (void)ruleActions:(NSDictionary *)rule {
     NSDictionary *run = [rule[@"latestRun"] isKindOfClass:NSDictionary.class] ? rule[@"latestRun"] : nil;
     UIAlertController *menu = [UIAlertController alertControllerWithTitle:rule[@"name"]
-        message:run ? SRRunDescription(run) : @"本轮支持 1–3 个群的真实串行转发测试；一次只执行这条规则。"
+        message:run ? SRRunDescription(run) : @"本轮支持 1–20 个群的真实串行转发测试；一次只执行这条规则。"
         preferredStyle:UIAlertControllerStyleAlert];
-    if (self.execution && [rule[@"targetCount"] unsignedIntegerValue] <= 3) {
+    if (self.execution && [rule[@"targetCount"] unsignedIntegerValue] <= 20) {
         if (!run && [rule[@"initialUnlocked"] boolValue] && ![rule[@"accountOccupied"] boolValue]) {
             [menu addAction:[UIAlertAction actionWithTitle:@"开始小群测试" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 if (![self verified]) return;

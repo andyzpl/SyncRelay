@@ -136,7 +136,7 @@ int main(void) {
         [hosts[0] finish]; [session tick]; CHECK(count(store, run, @"submitted") == 3);
         CHECK(![session startRule:rule account:@"account" error:NULL]);
 
-        NSArray *big = makePlan(store, @"big", 4); CHECK(![session startRule:big[0][@"id"] account:@"account" error:NULL]);
+        NSArray *big = makePlan(store, @"big", 21); CHECK(![session startRule:big[0][@"id"] account:@"account" error:NULL]);
         CHECK([store historyForRule:big[0][@"id"] account:@"account" limit:1 offset:0 error:NULL].count == 0);
 
         // Cancellation before main-queue dispatch cannot invoke a native host.
@@ -209,18 +209,47 @@ int main(void) {
         CHECK([store claimTextExperiment:source(@"legacy") configuration:draft(3) account:@"account" target:@"target0@chatroom" error:NULL]);
         rules = makePlan(store, @"legacy", 3); CHECK(![store startSmallGroupRule:rules[0][@"id"] account:@"account" error:NULL]);
 
-        // Images use the same scope/queue, but require actual image submission evidence.
+        // Twenty targets survive a paused restart without replaying submitted targets.
+        rules = makePlan(store, @"twenty", 20); rule = rules[0][@"id"]; session = newSession();
+        CHECK([session startRule:rule account:@"account" error:NULL]); run = latest(store, rule);
+        CHECK([[SRExecutionProgress modelForStatus:session.status][@"total"] isEqual:@20]);
+        NSUInteger batchStart = hosts.count;
+        NSMutableSet *seenTargets = [NSMutableSet set];
+        for (NSUInteger i = 0; i < 20; i++) {
+            if (i == 10) {
+                CHECK([session pauseForAccount:@"account" error:NULL]);
+                CHECK(!session.needsIdleTimer);
+                now += 1000; [session tick]; pump(session); CHECK(hosts.count == batchStart + i);
+                session = nil;
+                store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
+                CHECK(count(store, run, @"submitted") == 10 && count(store, run, @"pending") == 10);
+                session = newSession(); now += 1000; [session tick]; pump(session);
+                CHECK(hosts.count == batchStart + i);
+                CHECK([session resumeRun:run account:@"account" error:NULL]);
+            }
+            now += 9; [session tick]; pump(session); CHECK(hosts.count == batchStart + i);
+            now += 1; [session tick]; pump(session); CHECK(hosts.count == batchStart + i + 1);
+            NSString *target = hosts.lastObject.request[@"target"];
+            CHECK(![seenTargets containsObject:target]); [seenTargets addObject:target];
+            [hosts.lastObject finish]; [session tick];
+            CHECK(count(store, run, @"submitted") == i + 1);
+        }
+        CHECK(seenTargets.count == 20 && !session.busy && !session.needsIdleTimer);
+        CHECK(count(store, run, @"pending") == 0 && count(store, run, @"confirmed") == 0);
+        CHECK([store historyForRule:rules[1][@"id"] account:@"account" limit:1 offset:0 error:NULL].count == 0);
+
+        // Images use the same twenty-target scope and immutable asset snapshot.
         NSMutableDictionary *image = source(@"image"); image[@"type"] = @"image";
         image[@"payload"] = [store.imageAssets saveData:png() source:image error:NULL]; CHECK(image[@"payload"]);
-        NSString *plan = [store createPlanFromConfiguration:draft(3) envelope:image account:@"account" error:NULL]; CHECK(plan);
+        NSString *plan = [store createPlanFromConfiguration:draft(20) envelope:image account:@"account" error:NULL]; CHECK(plan);
         rules = [store rulesForPlan:plan error:NULL]; rule = rules[0][@"id"]; session = newSession();
         CHECK([session startRule:rule account:@"account" error:NULL]); run = latest(store, rule);
-        for (NSUInteger i = 0; i < 3; i++) {
+        for (NSUInteger i = 0; i < 20; i++) {
             now += 10; [session tick]; pump(session); CHECK([hosts.lastObject.request[@"type"] isEqual:@"image"]);
             CHECK([hosts.lastObject.request[@"payload"] isEqual:image[@"payload"]]); [hosts.lastObject finish]; [session tick];
         }
-        CHECK(!session.busy && count(store, run, @"submitted") == 3 && count(store, run, @"confirmed") == 0);
-        CHECK([session.status[@"state"] isEqual:@"completed"] && [session.status[@"counts"][@"submitted"] isEqual:@3]);
+        CHECK(!session.busy && count(store, run, @"submitted") == 20 && count(store, run, @"confirmed") == 0);
+        CHECK([session.status[@"state"] isEqual:@"completed"] && [session.status[@"counts"][@"submitted"] isEqual:@20]);
         CHECK([session startRule:rules[1][@"id"] account:@"account" error:NULL]);
         NSString *lastRun = latest(store, rules[1][@"id"]);
         [store.imageAssets discardPayload:image[@"payload"]];
@@ -234,7 +263,7 @@ int main(void) {
             CHECK(![json containsString:secret]);
         session = nil; store = nil;
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
-        puts("PASS: real-session bridge mocks, main-thread dispatch, 3-target limits, completion pacing, pause/restart, durable native claims, strict evidence and image scope");
+        puts("PASS: real-session bridge mocks, main-thread dispatch, 20-target limits, completion pacing, pause/restart, durable native claims, strict evidence and image scope");
     }
     return 0;
 }

@@ -241,7 +241,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         SRRequire([self query:[NSString stringWithFormat:@"SELECT target FROM %@ WHERE account=? AND source_group=? AND source_message_id=?", table]
             values:@[account, source[@"group"], source[@"messageID"]]].count == 0, @"This source already has a single-target attempt; capture a new message");
     NSArray *targets = [self query:@"SELECT target FROM allocations WHERE rule_id=?" values:@[rule]];
-    SRRequire(targets.count > 0 && targets.count <= 3, @"This device checkpoint allows only 1 to 3 target groups per rule");
+    SRRequire(targets.count > 0 && targets.count <= 20, @"This device checkpoint allows only 1 to 20 target groups per rule");
     for (NSDictionary *target in targets) SRRequire([target[@"target"] hasSuffix:@"@chatroom"] && ![target[@"target"] isEqual:source[@"group"]], @"Source group cannot be a target");
     if ([source[@"type"] isEqual:@"image"])
         SRRequire([self.imageAssets dataForPayload:source[@"payload"] source:source error:NULL] != nil, @"Image snapshot is missing or changed");
@@ -272,7 +272,7 @@ static void SRRequire(BOOL condition, NSString *message) {
     SRRequire([row[@"snapshot"] isEqual:[self json:source]], @"Run source differs from the authorized plan");
     NSArray *targets = [self query:@"SELECT target FROM deliveries WHERE run_id=? ORDER BY position" values:@[run]];
     NSArray *allocated = [self query:@"SELECT target FROM allocations WHERE rule_id=? ORDER BY position" values:@[row[@"rule_id"]]];
-    SRRequire(targets.count > 0 && targets.count <= 3 && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
+    SRRequire(targets.count > 0 && targets.count <= 20 && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
     row[@"source"] = source; row[@"targets"] = [targets valueForKey:@"target"];
     row[@"counts"] = [self countsForRun:run];
     return row;
