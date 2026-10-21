@@ -166,7 +166,17 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         NSNumber *type = @((unsigned long long)key.longLongValue);
         NSNumber *count = counts[key];
         if (type.unsignedLongLongValue > UINT32_MAX || ![count isKindOfClass:NSNumber.class]) continue;
-        [rows addObject:@{ @"type": type, @"count": count }];
+        NSMutableDictionary *row = [@{ @"type": type, @"count": count } mutableCopy];
+        /* These are only static Mikoto route observations.  They are not
+         * payload decoders and must never make a type relayable. */
+        switch (type.unsignedIntValue) {
+            case 34: row[@"observedRoute"] = @"receiveMessageWrapWithType34"; break;
+            case 42: row[@"observedRoute"] = @"receiveMessageWrapWithType42"; break;
+            case 47: row[@"observedRoute"] = @"receiveMessageWrapWithType47"; break;
+            case 49: row[@"observedRoute"] = @"receiveMessageWrapWithType49"; break;
+            default: break;
+        }
+        [rows addObject:row];
     }
     return @{ @"schema": @1, @"rows": rows, @"sequence": sequence ?: @[] };
 }
