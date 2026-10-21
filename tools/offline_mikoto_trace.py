@@ -5,6 +5,7 @@ The text-route mode stops at AddMsg and does not invoke any real messaging API.
 The session-source mode models empty home sessions and stops at a local username getter.
 The settings-strings mode only decodes four audited local string ranges, with no imported calls.
 The image-strings mode decodes one audited message-library string range, stopping before host calls.
+The image-route mode models one synthetic UIImage and stops before AddMsg.
 """
 import argparse
 import collections
@@ -22,15 +23,19 @@ SOURCE_HASH = '0a11bacae2a0131b0ccbdf20ce49f9374bcd50c0d054fc290e9ba9e3b725eb43'
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--entry', required=True, type=lambda value: int(value, 0))
-    parser.add_argument('--mode', choices=('registration', 'text-route', 'session-source', 'settings-strings', 'image-strings'), default='registration')
+    parser.add_argument('--mode', choices=('registration', 'text-route', 'image-route', 'session-source', 'settings-strings', 'image-strings'), default='registration')
     parser.add_argument('--binary', type=Path, default=ROOT / 'analysis/rootfs/Library/MobileSubstrate/DynamicLibraries/MikotoHelper.dylib')
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--image-long-selector', choices=('present', 'absent'), default='present',
+                        help='Synthetic image extension capability; used only by image-route')
     args = parser.parse_args()
     data = args.binary.read_bytes()
     if hashlib.sha256(data).hexdigest() != SOURCE_HASH:
         parser.error('This evidence model is pinned to the supplied 2.5.0 ARM64 dylib hash')
     if args.mode == 'text-route' and args.entry != 0x272D588:
         parser.error('Synthetic text-route inputs are defined only for entry 0x272d588')
+    if args.mode == 'image-route' and args.entry != 0x2733A40:
+        parser.error('Synthetic image-route inputs are defined only for entry 0x2733a40')
     if args.mode == 'session-source' and args.entry != 0x32CD560:
         parser.error('Synthetic session-source inputs are defined only for entry 0x32cd560')
     settings_ranges = {
@@ -146,6 +151,12 @@ def main():
     elif args.mode == 'session-source':
         machine.reg_write(UC_ARM64_REG_X0, object_token('synthetic-galaxy-controller'))
         machine.reg_write(UC_ARM64_REG_X1, string_pointer('candidateItemsFromHomeSessions'))
+    elif args.mode == 'image-route':
+        for register, value in ((UC_ARM64_REG_X0, object_token('PJHelper')),
+                                (UC_ARM64_REG_X1, string_pointer('sendMsgWithImage:WithToUserName:')),
+                                (UC_ARM64_REG_X2, object_token('synthetic-image')),
+                                (UC_ARM64_REG_X3, object_token('synthetic-target@chatroom'))):
+            machine.reg_write(register, value)
 
     def imported_call(uc, pc, _size, _data):
         nonlocal stopped_at_send, stopped_at_session, stopped_at_settings_strings
@@ -216,6 +227,49 @@ def main():
                 result = 0
             elif selector == 'respondsToSelector:':
                 result = 0
+            else:
+                problems.append({'unsupportedSelector': selector, 'receiver': receiver, 'caller': hex(caller)})
+                uc.emu_stop()
+                return
+        elif name == '_UIImageJPEGRepresentation' and args.mode == 'image-route':
+            if object_label(x0) != 'synthetic-image':
+                problems.append({'unexpectedImageInput': object_label(x0), 'caller': hex(caller)})
+                uc.emu_stop()
+                return
+            result = object_token('synthetic-jpeg-data')
+        elif name == '_objc_msgSend' and args.mode == 'image-route':
+            selector, receiver = cstring(x1), object_label(x0)
+            messages.append({'caller': hex(caller), 'receiver': receiver, 'selector': selector,
+                             'arg1': object_label(x2), 'arg2': object_label(x3),
+                             'arg3': object_label(uc.reg_read(UC_ARM64_REG_X4))})
+            if selector == 'AddMsg:MsgWrap:':
+                stopped_at_send = True
+                uc.emu_stop()
+                return
+            if selector == 'alloc' and receiver == 'CMessageWrap':
+                result = object_token('synthetic-image-wrap')
+            elif selector == 'initWithMsgType:' and receiver == 'synthetic-image-wrap' and x2 == 3:
+                result = x0
+            elif selector == 'getLocalUsrName:':
+                result = object_token('synthetic-account')
+            elif selector == 'valueForKey:' and receiver == 'synthetic-image-wrap' and object_label(x2) == 'm_extendInfoWithMsgType':
+                result = object_token('synthetic-image-extend-info')
+            elif selector == 'respondsToSelector:' and receiver == 'synthetic-image-extend-info' and cstring(x2) == 'setImage:withData:isLongOriginImage:':
+                result = int(args.image_long_selector == 'present')
+            elif selector == 'respondsToSelector:' and receiver == 'synthetic-image-extend-info' and cstring(x2) == 'setImage:withData:isOriginImage:':
+                result = 1
+            elif receiver == 'synthetic-image-wrap' and selector in (
+                    'setM_nsFromUsr:', 'setM_nsToUsr:', 'setM_uiCreateTime:', 'setM_uiStatus:'):
+                result = 0
+            elif receiver == 'synthetic-image-extend-info' and selector in (
+                    'setImage:withData:isLongOriginImage:', 'setImage:withData:isOriginImage:'):
+                result = 0
+            elif selector == 'getTimetempSystem' and x0 == 0x5D0A9F8:
+                result = 1700000000
+            elif selector == 'currentContext' and receiver == 'MMContext':
+                result = object_token('MMContext-instance')
+            elif selector == 'getService:' and receiver == 'MMContext-instance' and object_label(x2) == 'CMessageMgr':
+                result = object_token('service:CMessageMgr')
             else:
                 problems.append({'unsupportedSelector': selector, 'receiver': receiver, 'caller': hex(caller)})
                 uc.emu_stop()
@@ -294,7 +348,12 @@ def main():
               'assumptions': (['Initializer 0x32e4740 decodes local strings; registration imports are inert.',
                                'Home session collections are synthetic empty collections; service objects are tokens.',
                                'Execution stops before GetUserNamesOnSessionList returns; no group contents or completeness modeled.']
-                              if args.mode == 'session-source' else []),
+                              if args.mode == 'session-source' else
+                              ['Inputs are one synthetic UIImage and target; JPEG data and extension are tokens.',
+                               'Extension long selector is assumed ' + args.image_long_selector + '.',
+                               'Getter valueForKey:m_extendInfoWithMsgType returns a synthetic extension.',
+                               'Image setters are inert; no real image encoding, construction or iOS ABI is modeled.']
+                              if args.mode == 'image-route' else []),
               'limits': {'instructionCountPerPhase': 1000000, 'timeoutSecondsPerPhase': 15, 'imageMiB': 128}}
     output = args.output or ROOT / 'analysis/reports' / f'offline-{args.mode}-{args.entry:x}.json'
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -10,6 +10,7 @@
 #import "Core/SRVersion.h"
 #import "Core/SRImageAssetStore.h"
 #import "Adapter/SRWeChatImageSource.h"
+#import "Adapter/SRWeChatImageSendProbe.h"
 #import "Adapter/SRWeChatReader.h"
 #import "Adapter/SRWeChatReceiver.h"
 #import "Adapter/SRWeChatSendProbe.h"
@@ -148,6 +149,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRWeChatReader *reader;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
 @property(nonatomic, strong) SRWeChatImageSource *imageSource;
+@property(nonatomic, strong) SRWeChatImageSendProbe *imageSendProbe;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRWeChatTextSendHost *textSendHost;
 @property(nonatomic, strong) SRWeChatTextSendAdapter *textSendAdapter;
@@ -305,7 +307,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (section == 0) return 8;
     if (section == 1) return 4;
     if (section == 2) return 1;
-    if (section == 4) return 4;
+    if (section == 4) return 5;
     return [self.draft[@"rules"] count] + 3;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -387,6 +389,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             cell.detailTextLabel.text = self.singleTextSendEnabled ? ([state isEqual:@"preview"] ? @"选择一个目标群后发送一次" : @"先锁定一条源消息") : @"先在更多设置中开启实验开关";
             cell.textLabel.textColor = self.singleTextSendEnabled ? UIColor.labelColor : UIColor.tertiaryLabelColor;
         }
+        if (path.row == 4) { cell.textLabel.text = @"图片发送接口检查"; cell.detailTextLabel.text = @"不发送"; }
     }
     if (section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
     return cell;
@@ -633,6 +636,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
     report[@"imageSource"] = self.imageSource.diagnostics ?: @{};
+    report[@"imageSendPreparation"] = self.imageSendProbe.diagnostics ?: @{};
     report[@"sourceCapture"] = self.capture.diagnostics ?: @{@"state": @"unavailable"};
     report[@"draftSummary"] = [self diagnosticDraft];
     report[@"runtimeLog"] = SRRuntimeLog.shared.snapshot;
@@ -816,6 +820,28 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         SRPresentAlert(panel, confirm);
     }];
 }
+- (void)inspectImageSendContract {
+    if (![self checkAccount]) return;
+    if (self.dirty || self.ownsIdleTimer || self.textCountdown || [self.textSendHost.diagnostics[@"observing"] boolValue] ||
+        [self.sendProbe.diagnostics[@"armed"] boolValue] || [self.capture.status[@"state"] isEqual:@"waiting"]) {
+        SRAlert(self, @"请先保存并停止等待或观察", @"图片接口检查与捕获、文字实验分开进行；不会发送消息或消耗文字实验次数。"); return;
+    }
+    NSString *account = [self.account copy];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"检查图片发送接口（不发送）？"
+        message:@"仅创建一条未发送的图片消息，核对图片扩展对象和方法参数。不会写入图片、选择目标群、调用发送或建立占位。检查通过不代表图片能发出或送达。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"检查（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        if (![self checkAccount] || ![self.account isEqual:account] || self.dirty || self.ownsIdleTimer || self.textCountdown ||
+            !self.viewIfLoaded.window || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+        NSError *error = nil;
+        BOOL compatible = [self.imageSendProbe inspectForAccount:account error:&error];
+        SRAlert(self, compatible ? @"接口兼容，尚未发送" : @"接口检查未通过（未发送）",
+            compatible ? @"本机未发送图片消息的构造器和图片扩展方法签名可用。请导出运行诊断；图片写入、实际发送和送达仍未验证。" :
+            [NSString stringWithFormat:@"%@\n\n请导出运行诊断；不要反复点击文字实验或修改门禁。", error.localizedDescription ?: @"检查已停止"]);
+    }]];
+    SRPresentAlert(self, alert);
+}
 - (UIAlertController *)textTestResult:(NSString *)title message:(NSString *)message {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]]; return alert;
@@ -873,6 +899,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (path.row == 1) [self showCapture];
         if (path.row == 2) [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, [self planVerifier]) animated:YES];
         if (path.row == 3) [self beginSingleTextSend];
+        if (path.row == 4) [self inspectImageSendContract];
     }
     if (section == 3) {
         if (path.row == 0) [self chooseExclusions];
@@ -889,6 +916,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
 @property(nonatomic, strong) SRWeChatImageSource *imageSource;
+@property(nonatomic, strong) SRWeChatImageSendProbe *imageSendProbe;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRWeChatTextSendHost *textSendHost;
 @property(nonatomic, strong) SRWeChatReader *identityReader;
@@ -978,6 +1006,17 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue];
         }];
+    self.imageSendProbe = [[SRWeChatImageSendProbe alloc] initWithVersion:version
+        classResolver:^Class(NSString *name) { return NSClassFromString(name); }
+        currentAccount:^NSString * {
+            SREntry *entry = weakSelf;
+            return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
+        } environmentAllowed:^BOOL {
+            SREntry *entry = weakSelf;
+            return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+                ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
+                ![entry.textSendHost.diagnostics[@"observing"] boolValue];
+        }];
 }
 - (void)install {
     [self.settingsEntry install:NULL];
@@ -1031,6 +1070,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleGrouped]; panel.store = self.store;
     panel.capture = self.capture; panel.receiver = self.receiver;
     panel.imageSource = self.imageSource;
+    panel.imageSendProbe = self.imageSendProbe;
     panel.sendProbe = self.sendProbe;
     panel.textSendHost = self.textSendHost;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;

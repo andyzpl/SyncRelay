@@ -37,8 +37,31 @@
 
 ## 仍未证明的部分
 
-- 当前设备实际是否提供此方法、是否返回中图/大图、何时可用、是否需要先点开图片，必须真机确认。
+- 用户已明确确认本人发图捕获成功且实际预览为正确图片，见 `DEVICE-RESULT-0.2.14.md`。本轮没有附带图片诊断，仍未确定返回中图/大图、可用时机、是否需先点开，以及其他发送者/版本的行为。
 - 图片 getter 的等待窗口不强制中断一次正在运行的原生调用，也不能保证微信进程绝不被系统终止。
 - 图片发出路径中虽存在 `initWithMsgType:3`、`setImage:withData:isOriginImage:` 与 `AddMsg:MsgWrap:` 等线索，尚未完成各参数/分支/原图属性的运行时验证；0.2.14 不调用这些发送方法。
 - `getPathOfMsgImg:` 同时在语音等路径出现，不能据名称把它当作某条图片的绝对路径。本实现不使用它，也不派生后缀、替换扩展名或猜下载目录。
 - 不把离线证据、模拟测试、预览成功或消息 ID 当成送达证明；不开放图片实发、批量、自动重试或下一规则自动接力。
+
+## 图片发送扩展对象证据（0.2.15）
+
+注册信息确认 `+[PJHelper sendMsgWithImage:WithToUserName:]` 的 IMP 是 `0x2733a40`、编码 `v32@0:8@16@24`。新增有界 `image-route` 离线模式，仅接受该入口和原二进制哈希；输入、UIImage/JPEG 数据、账号/目标和服务都是合成对象，未知导入或消息立即停止，在 AddMsg 调用边界停止。
+
+两条合成能力分支均完成，关键结果：
+
+- `0x2735bb8` 解码类名为 `CMessageWrap`，`0x2735bd4` 执行 `initWithMsgType:3`。
+- `0x2735bf8` 使用 `SettingUtil getLocalUsrName:0`；随后给 wrap 设置 from/to。
+- `0x2735c5c` 对 wrap 执行 `valueForKey:@"m_extendInfoWithMsgType"`，图片 setter 的接收者是其返回的扩展对象，**不是 wrap**。
+- 图像与 `UIImageJPEGRepresentation` 返回的数据同时传入 setter；long 选择器存在时，在 `0x27360ac` 调用 `setImage:withData:isLongOriginImage:`；long 不存在、origin 存在时，在 `0x2736720` 调用 `setImage:withData:isOriginImage:`。两条被执行的分支 x4 均为 0；不据此猜测其完整业务语义、标量 ABI 或所有其他分支。
+- `0x2736b7c` 设置时间，`0x2736b94` 设置 `m_uiStatus=1`；之后解析到 `MMContext.currentContext` → `getService:CMessageMgr` → `0x2736d38 AddMsg:MsgWrap:`。离线模型在最后一个调用之前停止。
+
+可重复命令（Python 3.12 环境同前）：
+
+```powershell
+& 'C:/Users/Andyz/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' tools/offline_mikoto_trace.py --mode image-route --entry 0x2733a40 --output analysis/reports/offline-image-route-long.json
+& 'C:/Users/Andyz/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' tools/offline_mikoto_trace.py --mode image-route --entry 0x2733a40 --image-long-selector absent --output analysis/reports/offline-image-route-origin.json
+```
+
+分别为 14/15 条 Objective-C 消息，`completedModel=true`、`stoppedAtSendBoundary=true`、0 个问题。该结果证明受上述合成假设约束的离线接收者/参数流，不证明真实扩展类名、KVC 对应 getter 存在、原生图片编码/写入、iOS 方法 ABI 或手机发送。
+
+SyncRelay 0.2.15 因此只增加独立的未发送消息接口检查：严格匹配 `i/I/q/Q` 构造器并维持 ARC init-family 所有权、核对初始类型与零 ID、只用已声明零参数对象 getter 获取扩展、只检查两种图片 setter 的实际 ABI。getter 缺失时报告并停止，不沿用 Mikoto 的 KVC/ivar 方式，不调用图片 setter或解析服务。诊断规范化类型且不泄漏本地标识。这是图片实发前的检查点，不是图片发送实现。

@@ -128,6 +128,24 @@ def analyze(report):
             if type(preparation) is int and preparation == 8:
                 add('image_raster_unsupported', 'Native raster dimensions or animated image exceeded this static-snapshot capture contract.')
 
+    image_send = report.get('imageSendPreparation')
+    if image_send is not None:
+        if not isinstance(image_send, dict) or type(image_send.get('schema')) is not int or image_send['schema'] != 1:
+            add('image_send_contract_schema_invalid', 'Unsupported image send contract inspection schema.')
+        elif any(image_send.get(key) is not False for key in ('imageSetterInvoked', 'serviceResolved', 'submissionAttempted', 'sendingEnabled')):
+            add('image_send_contract_scope_invalid', 'This inspection is not marked as unsent/no-image-write; do not infer compatibility or delivery.')
+        elif image_send.get('state') == 'contract_compatible_not_sent':
+            if (image_send.get('constructorInvoked') is True and image_send.get('extensionGetterInvoked') is True and
+                    image_send.get('wrapFieldsCompatible') is True and
+                    (image_send.get('longSelectorCompatible') is True or image_send.get('originSelectorCompatible') is True)):
+                add('image_send_contract_compatible', 'An unsent type-3 wrap and extension setter ABIs passed inspection. No image setter or send ran; image construction/data and delivery remain unverified.')
+            else:
+                add('image_send_contract_incomplete', 'Image contract report claims compatibility without all required inspection evidence.')
+        elif image_send.get('state') == 'extension_getter_unavailable':
+            add('image_extension_getter_missing', 'The evidence-named extension has no declared object getter. KVC/ivar fallback was not attempted; inspect the actual contract before adding one.')
+        elif image_send.get('state') not in ('not_checked', None):
+            add('image_send_contract_blocked', 'Image contract inspection stopped. Inspect fixed state and normalized method ABI fields; no image write or send was performed.')
+
     # The manual send probe is deliberately observational. Keep its findings
     # separate from receive-candidate counters so a local/server ID change can
     # never be interpreted as delivery confirmation.
