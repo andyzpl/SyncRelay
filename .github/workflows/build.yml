@@ -102,7 +102,7 @@ jobs:
           otool -L "$dylib"
           cp "$deb" dist/
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
-          printf 'Read-only adapter/settings development build. WeChat sending is disabled. Device compatibility not yet verified.\n' > dist/DEVELOPMENT-NOTICE.txt
+          printf 'Development build. Batch rule sending is disabled; the panel only exposes an explicitly enabled single-target text experiment. Device compatibility and delivery are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         with:
