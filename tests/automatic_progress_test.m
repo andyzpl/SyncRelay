@@ -194,8 +194,8 @@ int main(void) {
         CHECK(sqlite3_open(migrationPath.fileSystemRepresentation, &db) == SQLITE_OK);
         sqlite3_stmt *statement = NULL;
         CHECK(sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &statement, NULL) == SQLITE_OK);
-        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 6); sqlite3_finalize(statement);
-        CHECK(sqlite3_exec(db, "PRAGMA user_version=7", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
+        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 7); sqlite3_finalize(statement);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=8", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
         CHECK(![[SRStore alloc] initWithPath:migrationPath error:NULL]);
 
         runner = nil; store = nil; transport = nil; restored = nil;

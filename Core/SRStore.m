@@ -81,7 +81,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         [self query:@"PRAGMA journal_mode=WAL" values:@[]];
         [self query:@"PRAGMA synchronous=FULL" values:@[]];
         NSInteger version = [[self query:@"PRAGMA user_version" values:@[]].firstObject[@"user_version"] integerValue];
-        SRRequire(version >= 0 && version <= 6, @"Unsupported database schema; do not downgrade");
+        SRRequire(version >= 0 && version <= 7, @"Unsupported database schema; do not downgrade");
         return @YES;
     } transaction:NO error:error];
     if (!setup) return nil;
@@ -103,7 +103,9 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"CREATE TABLE IF NOT EXISTS text_experiments(account TEXT NOT NULL, source_group TEXT NOT NULL, source_message_id TEXT NOT NULL, target TEXT NOT NULL, claimed_at REAL NOT NULL, PRIMARY KEY(account,source_group,source_message_id))",
             @"CREATE TABLE IF NOT EXISTS image_experiments(account TEXT NOT NULL, source_group TEXT NOT NULL, source_message_id TEXT NOT NULL, target TEXT NOT NULL, claimed_at REAL NOT NULL, PRIMARY KEY(account,source_group,source_message_id))",
             @"CREATE TABLE IF NOT EXISTS submission_receipts(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), submitted_at REAL NOT NULL)",
-            @"PRAGMA user_version=6"
+            @"CREATE TABLE IF NOT EXISTS small_group_runs(run_id TEXT PRIMARY KEY REFERENCES runs(id), authorized_at REAL NOT NULL)",
+            @"CREATE TABLE IF NOT EXISTS native_attempt_claims(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), claimed_at REAL NOT NULL)",
+            @"PRAGMA user_version=7"
         ];
         for (NSString *sql in schema) [self query:sql values:@[]];
         return @YES;
@@ -173,7 +175,9 @@ static void SRRequire(BOOL condition, NSString *message) {
 }
 
 - (NSString *)startRule:(NSString *)rule replay:(BOOL)replay error:(NSError **)error {
-    return [self perform:^id{
+    return [self perform:^id{ return [self startRuleUnchecked:rule replay:replay]; } transaction:YES error:error];
+}
+- (NSString *)startRuleUnchecked:(NSString *)rule replay:(BOOL)replay {
         NSDictionary *config = [self query:@"SELECT r.*,p.account,p.snapshot FROM rules r JOIN plans p ON p.id=r.plan_id WHERE r.id=?" values:@[rule]].firstObject;
         SRRequire(config != nil, @"Unknown rule");
         BOOL history = [self query:@"SELECT id FROM runs WHERE rule_id=? LIMIT 1" values:@[rule]].count > 0;
@@ -191,7 +195,86 @@ static void SRRequire(BOOL condition, NSString *message) {
         for (NSDictionary *target in targets) [self query:@"INSERT INTO deliveries(id,run_id,target,position,state) VALUES(?,?,?,?,'pending')"
             values:@[NSUUID.UUID.UUIDString, run, target[@"target"], target[@"position"]]];
         return run;
+}
+
+- (NSDictionary *)smallGroupSourceForRule:(NSString *)rule account:(NSString *)account {
+    NSDictionary *row = [self query:@"SELECT p.*,r.id AS rule_id FROM rules r JOIN plans p ON p.id=r.plan_id WHERE r.id=? AND p.account=?" values:@[rule, account]].firstObject;
+    SRRequire(row != nil, @"Rule is unavailable for this account");
+    NSDictionary *source = [NSJSONSerialization JSONObjectWithData:[row[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    NSArray *senders = [NSJSONSerialization JSONObjectWithData:[row[@"senders"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    NSArray *types = [NSJSONSerialization JSONObjectWithData:[row[@"types"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    SRRequire([source isKindOfClass:NSDictionary.class] && [senders isKindOfClass:NSArray.class] && [types isKindOfClass:NSArray.class], @"Source is unreadable");
+    for (NSString *key in @[@"account", @"group", @"sender", @"messageID", @"type"])
+        SRRequire([source[key] isKindOfClass:NSString.class] && [source[key] length], @"Source identity is incomplete");
+    SRRequire([source[@"account"] isEqual:account] && [source[@"group"] isEqual:row[@"source_group"]] &&
+        [source[@"generatedByRelay"] isEqual:@NO] && [senders containsObject:source[@"sender"]] &&
+        [types containsObject:source[@"type"]] && [@[@"text", @"image"] containsObject:source[@"type"]] &&
+        [source[@"payload"] isKindOfClass:NSDictionary.class], @"Source does not match the frozen plan");
+    SRRequire([self query:@"SELECT plan_id FROM source_claims WHERE account=? AND source_group=? AND message_id=? AND plan_id=?"
+        values:@[account, source[@"group"], source[@"messageID"], row[@"id"]]].count == 1, @"A confirmed capture plan is required");
+    for (NSString *table in @[@"text_experiments", @"image_experiments"])
+        SRRequire([self query:[NSString stringWithFormat:@"SELECT target FROM %@ WHERE account=? AND source_group=? AND source_message_id=?", table]
+            values:@[account, source[@"group"], source[@"messageID"]]].count == 0, @"This source already has a single-target attempt; capture a new message");
+    NSArray *targets = [self query:@"SELECT target FROM allocations WHERE rule_id=?" values:@[rule]];
+    SRRequire(targets.count > 0 && targets.count <= 3, @"This device checkpoint allows only 1 to 3 target groups per rule");
+    for (NSDictionary *target in targets) SRRequire([target[@"target"] hasSuffix:@"@chatroom"] && ![target[@"target"] isEqual:source[@"group"]], @"Source group cannot be a target");
+    if ([source[@"type"] isEqual:@"image"])
+        SRRequire([self.imageAssets dataForPayload:source[@"payload"] source:source error:NULL] != nil, @"Image snapshot is missing or changed");
+    else SRRequire([source[@"payload"][@"text"] isKindOfClass:NSString.class] && [source[@"payload"][@"text"] length], @"Text snapshot is empty");
+    return source;
+}
+- (NSString *)startSmallGroupRule:(NSString *)rule account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && rule.length, @"Account and rule are required");
+        [self smallGroupSourceForRule:rule account:account];
+        NSString *run = [self startRuleUnchecked:rule replay:NO];
+        [self query:@"INSERT INTO small_group_runs VALUES(?,?)" values:@[run, @(NSDate.date.timeIntervalSince1970)]];
+        return run;
     } transaction:YES error:error];
+}
+- (NSDictionary *)smallGroupRulePreview:(NSString *)rule account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        NSDictionary *source = [self smallGroupSourceForRule:rule account:account];
+        NSDictionary *row = [self query:@"SELECT minimum,maximum FROM rules WHERE id=?" values:@[rule]].firstObject;
+        NSArray *targets = [[self query:@"SELECT target FROM allocations WHERE rule_id=? ORDER BY position" values:@[rule]] valueForKey:@"target"];
+        return @{@"source": source, @"targets": targets, @"minimum": row[@"minimum"], @"maximum": row[@"maximum"]};
+    } transaction:NO error:error];
+}
+- (NSDictionary *)smallGroupRunUnchecked:(NSString *)run account:(NSString *)account {
+    NSMutableDictionary *row = [[self query:@"SELECT x.* FROM runs x JOIN small_group_runs s ON s.run_id=x.id WHERE x.id=? AND x.account=?" values:@[run, account]].firstObject mutableCopy];
+    SRRequire(row != nil, @"Run has no small-group authorization for this account");
+    NSDictionary *source = [self smallGroupSourceForRule:row[@"rule_id"] account:account];
+    SRRequire([row[@"snapshot"] isEqual:[self json:source]], @"Run source differs from the authorized plan");
+    NSArray *targets = [self query:@"SELECT target FROM deliveries WHERE run_id=? ORDER BY position" values:@[run]];
+    NSArray *allocated = [self query:@"SELECT target FROM allocations WHERE rule_id=? ORDER BY position" values:@[row[@"rule_id"]]];
+    SRRequire(targets.count > 0 && targets.count <= 3 && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
+    row[@"source"] = source; row[@"targets"] = [targets valueForKey:@"target"];
+    row[@"counts"] = [self countsForRun:run];
+    return row;
+}
+- (NSDictionary *)smallGroupRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{ return [self smallGroupRunUnchecked:run account:account]; } transaction:NO error:error];
+}
+- (BOOL)endSmallGroupRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        NSDictionary *row = [self query:@"SELECT x.state FROM runs x JOIN small_group_runs s ON s.run_id=x.id WHERE x.id=? AND x.account=?" values:@[run, account]].firstObject;
+        SRRequire(row != nil, @"Run has no small-group authorization for this account");
+        if ([@[@"completed", @"ended"] containsObject:row[@"state"]]) return @YES;
+        // Ending must remain possible even if the source image is now missing.
+        SRRequire([self endRun:run error:NULL], @"Cannot end this small-group run");
+        return @YES;
+    } transaction:NO error:error] != nil;
+}
+- (BOOL)claimSmallGroupDelivery:(NSDictionary *)delivery source:(NSDictionary *)source account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        NSDictionary *row = [self query:@"SELECT * FROM deliveries WHERE id=? AND run_id=? AND attempt_id=? AND state='submitting'"
+            values:@[delivery[@"id"], delivery[@"run_id"], delivery[@"attempt_id"]]].firstObject;
+        SRRequire(row && [row[@"target"] isEqual:delivery[@"target"]], @"Delivery is not the current claimed attempt");
+        NSDictionary *run = [self smallGroupRunUnchecked:row[@"run_id"] account:account];
+        SRRequire([run[@"state"] isEqual:@"running"] && [run[@"source"] isEqual:source], @"Run is paused, ended or has a different source");
+        [self query:@"INSERT INTO native_attempt_claims VALUES(?,?,?)" values:@[row[@"id"], row[@"attempt_id"], @(NSDate.date.timeIntervalSince1970)]];
+        return @YES;
+    } transaction:YES error:error] != nil;
 }
 
 - (BOOL)pauseRun:(NSString *)run error:(NSError **)error {
@@ -435,6 +518,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         for (NSDictionary *rule in draft[@"rules"]) for (NSDictionary *row in rule[@"targets"]) if ([row[@"id"] isEqual:target]) allocated = YES;
         SRRequire(allocated && ![target isEqual:message[@"group"]] && ![[draft[@"excludedGroups"] valueForKey:@"id"] containsObject:target], @"Experimental target is not in the frozen allowed rules");
         SRRequire([self query:@"SELECT id FROM runs WHERE account=? AND state IN ('running','paused','awaiting_resume') LIMIT 1" values:@[account]].count == 0, @"An active run already owns this account");
+        SRRequire([self query:@"SELECT plan_id FROM source_claims WHERE account=? AND source_group=? AND message_id=?" values:@[account, message[@"group"], message[@"messageID"]]].count == 0, @"Source already belongs to a confirmed plan");
         SRRequire([self query:@"SELECT target FROM text_experiments WHERE account=? AND source_group=? AND source_message_id=?" values:@[account, message[@"group"], message[@"messageID"]]].count == 0, @"This source already has an experimental attempt; do not resend an unknown outcome");
         SRRequire([self query:@"SELECT target FROM image_experiments WHERE account=? AND source_group=? AND source_message_id=?" values:@[account, message[@"group"], message[@"messageID"]]].count == 0, @"This source already has an image attempt; do not resend an unknown outcome");
         [self query:@"INSERT INTO text_experiments VALUES(?,?,?,?,?)" values:@[account, message[@"group"], message[@"messageID"], target, @(NSDate.date.timeIntervalSince1970)]];
@@ -459,6 +543,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         SRRequire(allocated && ![target isEqual:message[@"group"]] && ![[draft[@"excludedGroups"] valueForKey:@"id"] containsObject:target], @"Experimental target is not in the frozen allowed rules");
         SRRequire([self.imageAssets dataForPayload:message[@"payload"] source:message error:NULL] != nil, @"Image snapshot is missing or changed");
         SRRequire([self query:@"SELECT id FROM runs WHERE account=? AND state IN ('running','paused','awaiting_resume') LIMIT 1" values:@[account]].count == 0, @"An active run already owns this account");
+        SRRequire([self query:@"SELECT plan_id FROM source_claims WHERE account=? AND source_group=? AND message_id=?" values:@[account, message[@"group"], message[@"messageID"]]].count == 0, @"Source already belongs to a confirmed plan");
         for (NSString *table in @[@"text_experiments", @"image_experiments"])
             SRRequire([self query:[NSString stringWithFormat:@"SELECT target FROM %@ WHERE account=? AND source_group=? AND source_message_id=?", table] values:@[account, message[@"group"], message[@"messageID"]]].count == 0, @"This source already has an experimental attempt; do not resend an unknown outcome");
         [self query:@"INSERT INTO image_experiments VALUES(?,?,?,?,?)" values:@[account, message[@"group"], message[@"messageID"], target, @(NSDate.date.timeIntervalSince1970)]];

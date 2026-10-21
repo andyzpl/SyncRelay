@@ -4,7 +4,7 @@
 #import "Core/SRRuntimeLog.h"
 #import "Core/SRVersion.h"
 
-/* Startup restores storage and settings only. Single-text tests require explicit UI actions. */
+/* Startup restores storage/settings only. Every device checkpoint needs a manual start. */
 static SRStore *SRRepository;
 
 static void SRShowSettings(SRStore *store) {
@@ -34,7 +34,7 @@ __attribute__((constructor)) static void SRInitialize(void) {
                 }
                 SRShowSettings(SRRepository);
                 [SRRuntimeLog.shared record:@"boot" facts:@{@"storageReady": @YES}];
-                NSLog(@"[SyncRelay] %@ initialized. Single-text experiment defaults off; batch sending is disabled.", SR_PLUGIN_VERSION);
+                NSLog(@"[SyncRelay] %@ initialized. Explicit 1-3-group checkpoint available; no automatic start or large batches.", SR_PLUGIN_VERSION);
             }
         });
     }

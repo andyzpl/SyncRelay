@@ -129,6 +129,10 @@ static NSMapTable *SROwners(void) {
         [self halt:@"Attempt outcome is unknown; manual continuation sends only remaining unattempted targets"];
     } else if (current && ![self count:@"pending" summary:summary]) {
         [self halt:@"Batch has exceptions; review and explicitly end it"];
+    // Anchor after completion: a delayed main-thread call cannot compress the next gap.
+    } else if (current && ![state isEqual:@"uncertain"] &&
+               !SRPacingSubmitted(&_pacing, _clock(), _random())) {
+        [self halt:@"Invalid completion interval"];
     }
 }
 - (BOOL)tick {

@@ -9,10 +9,12 @@
 #import "Core/SRRuntimeLog.h"
 #import "Core/SRVersion.h"
 #import "Core/SRImageAssetStore.h"
+#import "Core/SRExecutionProgress.h"
 #import "Adapter/SRWeChatImageSource.h"
 #import "Adapter/SRWeChatImageSendProbe.h"
 #import "Adapter/SRWeChatImageSendHost.h"
 #import "Adapter/SRWeChatImageMaterial.h"
+#import "Adapter/SRSmallGroupSession.h"
 #import "Core/SRPacing.h"
 #include <math.h>
 #import "Adapter/SRWeChatReader.h"
@@ -24,6 +26,7 @@
 #import "SRPlanScreens.h"
 #import "SRSettingsFallback.h"
 #import "SRNativeStyle.h"
+#import "SRFloatingProgress.h"
 #include <errno.h>
 #include <stdlib.h>
 
@@ -158,6 +161,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRWeChatTextSendHost *textSendHost;
 @property(nonatomic, strong) SRWeChatImageSendHost *imageSendHost;
 @property(nonatomic, strong) SRWeChatTextSendAdapter *textSendAdapter;
+@property(nonatomic, strong) SRSmallGroupSession *smallGroupSession;
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
@@ -261,7 +265,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     self.dirty = NO;
     self.singleTextSendEnabled = NO;
     [self.textSendAdapter reset];
-    self.status = self.ready ? @"读取适配待真机核对 · 单群实验发送默认关闭" : error.localizedDescription ?: @"无法读取账号";
+    self.status = self.ready ? @"1–3 群规则测试可用 · 保存和捕获不会自动发送" : error.localizedDescription ?: @"无法读取账号";
     [self refresh];
 }
 - (BOOL)checkAccount {
@@ -288,11 +292,12 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.tableView reloadData];
 }
 - (void)changed {
+    if (self.smallGroupSession.busy) [self.smallGroupSession pauseForAccount:self.account error:NULL];
     [self cancelTextExperiment];
     self.dirty = YES;
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) {
         [self.receiver stop]; [self.capture cancel];
-        self.status = @"设置已修改，旧的源消息等待已取消；保存后需重新手动等待。发送仍未启用。";
+        self.status = @"设置已修改，旧的源消息等待已取消；保存后需重新手动等待。不会自动发送。";
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
     }
     [self refresh];
@@ -330,7 +335,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     section = SRPanelSection(section);
-    if (section == 0) return [NSString stringWithFormat:@"SyncRelay %@ · 开发版\n%@", SR_PLUGIN_VERSION, self.status ?: @"真实转发未启用"];
+    if (section == 0) return [NSString stringWithFormat:@"SyncRelay %@ · 开发版\n%@", SR_PLUGIN_VERSION, self.status ?: @"小群测试需手动开始"];
     if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存”。" : @"所有规则共用来源条件；图片先捕获并预览，不自动发送。";
     if (section == 2) return @"下限至少 10 秒；上下限相同则固定间隔。";
     if (section == 4) return @"预览和确认不会启动规则；单群实验需单独开启并二次确认，切后台或锁屏会取消等待。";
@@ -419,6 +424,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     self.entryPreferences.floatingEntryEnabled = toggle.on;
 }
 - (void)singleTextSendChanged:(UISwitch *)toggle {
+    if (toggle.on && ![self allowLegacyExperiment]) { toggle.on = NO; return; }
     if (!toggle.on) { [self cancelTextExperiment]; self.singleTextSendEnabled = NO; [self refresh]; return; }
     toggle.on = NO;
     if (self.ownsIdleTimer) { SRAlert(self, @"已有活动实验", @"先取消倒计时或停止观察，再切换实验类型。"); return; }
@@ -433,6 +439,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 - (void)singleImageSendChanged:(UISwitch *)toggle {
+    if (toggle.on && ![self allowLegacyExperiment]) { toggle.on = NO; return; }
     if (!toggle.on) { [self cancelImageExperiment]; [self refresh]; return; }
     toggle.on = NO;
     if (self.ownsIdleTimer) { SRAlert(self, @"已有活动实验", @"先取消倒计时或停止观察，再切换实验类型。"); return; }
@@ -683,6 +690,8 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"singleTextSendCountdown"] = @(self.textCountdown);
     report[@"singleTextExperimentIdleTimerHeld"] = @(self.ownsIdleTimer && !self.singleImageSendEnabled);
     report[@"singleImageSendCandidate"] = self.imageSendHost.diagnostics;
+    report[@"smallGroupExecutionImplemented"] = @YES;
+    report[@"smallGroupExecution"] = self.smallGroupSession.diagnostics ?: @{};
     report[@"singleImageSendExperimentEnabled"] = @(self.singleImageSendEnabled);
     report[@"singleImageSendCountdown"] = @(self.imageCountdown);
     report[@"singleImageExperimentIdleTimerHeld"] = @(self.ownsIdleTimer && self.singleImageSendEnabled);
@@ -732,11 +741,12 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     view.font = SRSettingsFont(17, UIFontTextStyleBody); view.adjustsFontForContentSizeCategory = YES;
     view.textColor = UIColor.labelColor; view.backgroundColor = SRSettingsCellBackground();
     view.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
-    view.text = @"当前版本\n这是开发测试版，批量规则真实转发尚未启用。保存设置、预览或确认内容都不会向目标群发送消息；只有明确开启的单群文字或图片实验才会提交一次，两者共用本次进程的一次机会。\n\n"
-        @"来源条件\n所有规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片支持捕获、资源校验和实际预览；实发仅限独立开关控制的单群实验，不启动批量。发送的是已加载快照重新生成的 JPEG，不承诺原图质量。等待资源最多 30 秒；如未就绪，请在母群点开图片加载后重新等待并发送一张新图。保存的是微信已加载的图片快照，不承诺原图质量或动态图片。\n\n"
+    view.text = @"当前版本\n这是开发测试版，已开放每条 1–3 个授权群的真实串行转发。保存、捕获、预览及确认计划都不自动发送；确认计划后，进入内容计划点击规则，再点“开始小群测试”。不需要打开旧单群实验开关。100/200 群大规则和重新执行尚未开放。\n\n"
+        @"来源条件\n所有规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片支持捕获、资源校验、实际预览及小群测试；发送的是已加载快照重新生成的 JPEG，不承诺原图质量或动态图片。等待资源最多 30 秒；如未就绪，请在母群点开图片加载后重新等待并发送一张新图。\n\n"
         @"群聊与分组\n母群和已分配群自动排除。只需搜索并排除不想转发的群，再按每条 100 或 200 群自动分组；数量不足按实际生成，不建空规则。手动全选也会拆分为每条最多 200 群。\n\n"
         @"等待源消息\n先保存设置，再手动开始等待。关闭面板回母群，由指定成员或本人发一条文字；须取得服务器消息 ID 才进入预览。本人候选最多等待确认 30 秒，不用临时本地 ID 替代。\n\n"
         @"预览与计划\n第一条匹配内容锁定后停止等待。核对母群、发送者 wxid、类型和完整正文再确认；候选可能包含离线补同步，不能只凭回调时间判断新旧。确认只建立计划，不开始执行任何规则。\n\n"
+        @"小群执行\n测试时手动只选 1–3 个群组成规则；大分组可以保存，但本轮不能实发。每条规则点一次开始，内部串行处理，不逐群弹窗。暂停后手动继续未尝试群；切后台、锁屏或账号改变会暂停，回前台或重启不自动继续。等待和在途观察时保持常亮，暂停收尾和完成时释放。已提交不等于确认送达，失败/未知不自动重发，当前规则结束不自动执行下一条。\n\n"
         @"暂停采集\n切后台、锁屏或账号改变会取消等待，回前台不自动重启。预览未确认前只保留在内存，退出微信后需重新捕获；已确认计划与历史独立于当前设置。\n\n"
         @"间隔与发送观察\n随机间隔下限至少 10 秒，上下限相同为固定间隔；随机节拍和小批次不保证平台允许或发送成功。手动发送观察只记录一个测试群的元数据，需你回微信手动发送，120 秒到期或切后台停止，不代发、不读取正文、不判定送达。单群文字实验必须先打开开关、选择一个目标并二次确认；回读到服务器 ID 仍只记为主机关联，不自动重试。\n\n"
         @"入口与诊断\n主入口始终是“我 → 设置 → SyncRelay 转发”。悬浮入口默认关闭，可自行开启。诊断包含版本、接口签名及脱敏观察摘要，不含账号 wxid、群 ID、消息 ID 或正文。所有采集候选及页面表现仍需真机验证。";
@@ -744,6 +754,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.navigationController pushViewController:viewer animated:YES];
 }
 - (void)beginSendProbe {
+    if (self.smallGroupSession.busy) { SRAlert(self, @"请先暂停并结束小群测试", @"只读观察与真实规则执行分开进行。"); return; }
     if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { [self.sendProbe stop]; return; }
     if (![self checkAccount]) return;
     if (self.ownsIdleTimer) { SRAlert(self, @"已有活动实验", @"请先取消倒计时或停止观察。"); return; }
@@ -779,9 +790,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 - (void)showCapture {
     if (![self.capture.status[@"state"] isEqual:@"preview"]) { SRAlert(self, @"还没有源消息预览", @"请先手动开始等待，再由指定成员在母群发送一条文字并核对预览。"); return; }
-    [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier]) animated:YES];
+    [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier], self.smallGroupSession) animated:YES];
+}
+- (BOOL)allowLegacyExperiment {
+    if (!self.smallGroupSession.busy && !self.smallGroupSession.usedNativeHost) return YES;
+    SRAlert(self, @"本次请使用小群规则测试", @"小群执行与旧单群实验互斥。请在内容计划中暂停、继续或结束；本进程用过小群发送后不再开启旧单群实验。"); return NO;
 }
 - (void)beginSingleImageSend {
+    if (![self allowLegacyExperiment]) return;
     if (!self.singleImageSendEnabled) { SRAlert(self, @"实验开关未开启", @"请先在“更多设置”开启单群图片实验发送；默认关闭。" ); return; }
     if (![self checkAccount]) return;
     if (self.ownsIdleTimer) { SRAlert(self, @"已有活动实验", @"请先取消倒计时或停止观察，不会叠加第二次提交。" ); return; }
@@ -877,6 +893,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }];
 }
 - (void)beginSingleTextSend {
+    if (![self allowLegacyExperiment]) return;
     if (!self.singleTextSendEnabled) { SRAlert(self, @"实验开关未开启", @"请先在“更多设置”开启单群文字实验发送；默认关闭。" ); return; }
     if (![self checkAccount]) return;
     if (self.ownsIdleTimer) { SRAlert(self, @"已有活动实验", @"请先取消倒计时或停止观察，不会叠加第二次提交。" ); return; }
@@ -959,6 +976,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }];
 }
 - (void)inspectImageSendContract {
+    if (self.smallGroupSession.busy) { SRAlert(self, @"当前有小群批次", @"请先结束当前测试，再做独立接口检查。"); return; }
     if (![self checkAccount]) return;
     if (self.dirty || self.ownsIdleTimer || self.textCountdown || self.imageCountdown || [self.textSendHost.diagnostics[@"observing"] boolValue] ||
         [self.sendProbe.diagnostics[@"armed"] boolValue] || [self.capture.status[@"state"] isEqual:@"waiting"]) {
@@ -985,6 +1003,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]]; return alert;
 }
 - (void)beginCapture {
+    if (self.smallGroupSession.busy) { SRAlert(self, @"当前有小群批次", @"现有规则继续使用已经确认的源消息；请先完成或结束它，再等待新内容。"); return; }
     [SRRuntimeLog.shared record:@"capture_attempt" facts:[self diagnosticDraft]];
     if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { SRAlert(self, @"请先停止手动发送观察", @"两种诊断分开进行；停止观察不会发送或修改规则。"); return; }
     NSString *state = self.capture.status[@"state"];
@@ -996,7 +1015,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if ([state isEqual:@"preview"]) { [self showCapture]; return; }
     if (self.dirty) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @1}]; SRAlert(self, @"请先保存", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群消息？" message:@"仅捕获所选 wxid 和类型，支持本人。图片需有服务器消息 ID 和可用图片资源，最多等待 30 秒；本轮先验证图片捕获，不发送图片。可能包含补同步，请核对实际预览；切后台取消等待。预览和确认都不会发送。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群消息？" message:@"仅捕获所选 wxid 和类型，支持本人。图片需有服务器消息 ID 和可用图片资源，最多等待 30 秒。可能包含补同步，请核对实际预览；切后台取消等待。预览和确认都不会发送；确认后需到内容计划手动开始小群测试。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         if (![self checkDraft:snapshot account:account]) return;
@@ -1035,7 +1054,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (section == 4) {
         if (path.row == 0) [self beginCapture];
         if (path.row == 1) [self showCapture];
-        if (path.row == 2) [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, [self planVerifier]) animated:YES];
+        if (path.row == 2) [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, [self planVerifier], self.smallGroupSession) animated:YES];
         if (path.row == 3) [self beginSingleTextSend];
         if (path.row == 4) [self inspectImageSendContract];
         if (path.row == 5) [self beginSingleImageSend];
@@ -1059,6 +1078,12 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
 @property(nonatomic, strong) SRWeChatTextSendHost *textSendHost;
 @property(nonatomic, strong) SRWeChatImageSendHost *imageSendHost;
+@property(nonatomic, strong) SRSmallGroupSession *smallGroupSession;
+@property(nonatomic, strong) dispatch_source_t smallGroupTimer;
+@property(nonatomic, copy) NSDictionary *lastSmallGroupState;
+@property(nonatomic) BOOL smallGroupOwnsIdleTimer;
+@property(nonatomic) BOOL smallGroupPreviousIdleTimer;
+@property(nonatomic, strong) SRFloatingProgress *floatingProgress;
 @property(nonatomic, strong) SRWeChatReader *identityReader;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
@@ -1144,6 +1169,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
             return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+                !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
                 ![entry.imageSendHost.diagnostics[@"attemptConsumed"] boolValue];
         }];
@@ -1156,6 +1182,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             SREntry *entry = weakSelf;
             SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
             return entry && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled &&
+                !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 panel.viewIfLoaded.window && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !panel.dirty && ![entry.capture.status[@"state"] isEqual:@"waiting"] &&
                 ![entry.sendProbe.diagnostics[@"armed"] boolValue] && ![entry.textSendHost.diagnostics[@"submissionAttempted"] boolValue];
@@ -1170,9 +1197,82 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
             return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+                !entry.smallGroupSession.busy &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
                 ![entry.textSendHost.diagnostics[@"observing"] boolValue] && ![entry.imageSendHost.diagnostics[@"observing"] boolValue];
         }];
+    self.smallGroupSession = [[SRSmallGroupSession alloc] initWithStore:self.store currentAccount:^NSString * {
+        SREntry *entry = weakSelf;
+        return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
+    } environmentAllowed:^BOOL {
+        SREntry *entry = weakSelf;
+        SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
+        BOOL panelIdle = ![panel isKindOfClass:SRPanel.class] || (!panel.dirty && !panel.ownsIdleTimer && !panel.textCountdown && !panel.imageCountdown);
+        return entry && panelIdle && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+            ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
+            ![entry.textSendHost.diagnostics[@"submissionAttempted"] boolValue] && ![entry.imageSendHost.diagnostics[@"attemptConsumed"] boolValue];
+    } targetAllowed:^BOOL(NSString *target) {
+        SREntry *entry = weakSelf;
+        for (NSDictionary *group in [entry.identityReader groups:NULL]) if ([group[@"id"] isEqual:target]) return YES;
+        return NO;
+    } hostFactory:^id<SRSmallGroupHost>(NSDictionary *source, BOOL (^allowed)(void)) {
+        NSString *(^account)(void) = ^NSString * {
+            SREntry *entry = weakSelf;
+            return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
+        };
+        if ([source[@"type"] isEqual:@"image"]) return (id<SRSmallGroupHost>)[[SRWeChatImageSendHost alloc] initWithVersion:version
+            classResolver:^Class(NSString *name) { return NSClassFromString(name); } currentAccount:account environmentAllowed:allowed
+            materialLoader:^NSDictionary *(NSDictionary *imageSource, NSError **error) { return SRCreateImageMaterial(weakSelf.store.imageAssets, imageSource, error); }];
+        return (id<SRSmallGroupHost>)[[SRWeChatTextSendHost alloc] initWithVersion:version
+            classResolver:^Class(NSString *name) { return NSClassFromString(name); } currentAccount:account environmentAllowed:allowed];
+    } clock:^double { return NSProcessInfo.processInfo.systemUptime; }
+        random:^double { return (double)arc4random_uniform(UINT32_MAX) / (double)UINT32_MAX; }];
+    self.smallGroupTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(self.smallGroupTimer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_MSEC * 100);
+    dispatch_source_set_event_handler(self.smallGroupTimer, ^{ [weakSelf updateSmallGroupState]; });
+    dispatch_resume(self.smallGroupTimer);
+}
+- (void)updateSmallGroupState {
+    [self.smallGroupSession tick];
+    BOOL hold = self.smallGroupSession.needsIdleTimer;
+    if (hold && !self.smallGroupOwnsIdleTimer) {
+        self.smallGroupPreviousIdleTimer = UIApplication.sharedApplication.idleTimerDisabled;
+        self.smallGroupOwnsIdleTimer = YES; UIApplication.sharedApplication.idleTimerDisabled = YES;
+    } else if (!hold && self.smallGroupOwnsIdleTimer) {
+        self.smallGroupOwnsIdleTimer = NO; UIApplication.sharedApplication.idleTimerDisabled = self.smallGroupPreviousIdleTimer;
+    }
+    NSDictionary *state = self.smallGroupSession.status;
+    if (![state isEqual:self.lastSmallGroupState]) {
+        self.lastSmallGroupState = state;
+        [NSNotificationCenter.defaultCenter postNotificationName:@"andyz.syncrelay.smallGroupChanged" object:nil];
+    }
+    [self refreshFloatingProgress];
+}
+- (void)refreshFloatingProgress {
+    self.button.hidden = self.presented.presentingViewController != nil || self.smallGroupSession.busy;
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive || ![self.smallGroupSession progressBelongsToCurrentAccount]) {
+        [self.floatingProgress hide]; return;
+    }
+    NSDictionary *model = [SRExecutionProgress modelForStatus:self.smallGroupSession.status];
+    if (![model[@"visible"] boolValue]) { [self.floatingProgress hide]; return; }
+    UIWindow *host = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows)
+            if (window.isKeyWindow && window.windowLevel == UIWindowLevelNormal && window.rootViewController) { host = window; break; }
+        if (host) break;
+    }
+    if (!host) { [self.floatingProgress hide]; return; }
+    if (!self.floatingProgress) {
+        self.floatingProgress = [[SRFloatingProgress alloc] initWithFrame:CGRectZero];
+        __weak typeof(self) weakSelf = self;
+        self.floatingProgress.action = ^{
+            SREntry *entry = weakSelf;
+            [entry.smallGroupSession togglePauseForCurrentAccount:NULL];
+            [entry updateSmallGroupState];
+        };
+    }
+    [self.floatingProgress showModel:model inWindow:host]; self.button.hidden = YES;
 }
 - (void)install {
     [self.settingsEntry install:NULL];
@@ -1183,7 +1283,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     NSString *title = self.capture.preview ? @"预览" : ([self.sendProbe.diagnostics[@"armed"] boolValue] ? @"观察" : @"同步");
     [self.button setTitle:title forState:UIControlStateNormal];
-    self.button.hidden = self.presented.presentingViewController != nil;
+    self.button.hidden = self.presented.presentingViewController != nil || self.smallGroupSession.busy;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
@@ -1203,7 +1303,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
                 [button.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-72],
                 [button.widthAnchor constraintGreaterThanOrEqualToConstant:64], [button.heightAnchor constraintGreaterThanOrEqualToConstant:44]
             ]];
-            self.button = button; self.button.hidden = self.presented.presentingViewController != nil; return;
+            self.button = button; self.button.hidden = self.presented.presentingViewController != nil || self.smallGroupSession.busy; return;
         }
     }
 }
@@ -1230,6 +1330,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     panel.sendProbe = self.sendProbe;
     panel.textSendHost = self.textSendHost;
     panel.imageSendHost = self.imageSendHost;
+    panel.smallGroupSession = self.smallGroupSession;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
     panel.settingsFooterActive = self.settingsFooterActive;
     __weak typeof(self) weakSelf = self;
@@ -1243,10 +1344,11 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [presenter presentViewController:navigation animated:YES completion:nil];
 }
 - (void)windowChanged:(__unused NSNotification *)notification {
-    if (NSThread.isMainThread) [self install];
-    else dispatch_async(dispatch_get_main_queue(), ^{ [self install]; });
+    if (NSThread.isMainThread) { [self install]; [self refreshFloatingProgress]; }
+    else dispatch_async(dispatch_get_main_queue(), ^{ [self install]; [self refreshFloatingProgress]; });
 }
 - (void)resigningActive:(__unused NSNotification *)notification {
+    [self.smallGroupSession becameInactive]; [self updateSmallGroupState];
     [SRRuntimeLog.shared record:@"inactive" facts:@{}];
     [self.sendProbe cancelForInactivity];
     [self.textSendHost stopObservation];

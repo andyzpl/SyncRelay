@@ -34,6 +34,7 @@ jobs:
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRPacing.c tests/store_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/store-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRSourceCapture.m Core/SRRunner.m Core/SRPacing.c tests/relay_pipeline_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/pipeline-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRRunner.m Core/SRPacing.c tests/automatic_progress_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/automatic-progress-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRRunner.m Core/SRRuntimeLog.m Core/SRExecutionProgress.m Core/SRPacing.c Adapter/SRSmallGroupSession.m tests/small_group_session_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/small-group-session-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReader.m Core/SRSelection.m Core/SRConfiguration.m Core/SRPacing.c tests/adapter_test.m -framework Foundation -o "$RUNNER_TEMP/adapter-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRGroupPlanner.m Core/SRSelection.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRStore.m Core/SRPacing.c tests/group_planner_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/group-planner-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReceiver.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRSourceCapture.m Core/SRStore.m Core/SRPacing.c tests/receive_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/receive-test"
@@ -52,6 +53,7 @@ jobs:
             "$RUNNER_TEMP/adapter-test"
             "$RUNNER_TEMP/pipeline-test"
             "$RUNNER_TEMP/automatic-progress-test"
+            "$RUNNER_TEMP/small-group-session-test"
             "$RUNNER_TEMP/group-planner-test"
             "$RUNNER_TEMP/receive-test"
             "$RUNNER_TEMP/plan-queries-test"
@@ -112,7 +114,7 @@ jobs:
           otool -L "$dylib"
           cp "$deb" dist/
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
-          printf 'Development build. Batch rule sending is disabled. Explicit single-target text or static-image experiments share one process attempt. Image loading can write native media before submission. No automatic retry; ID/status is not delivery proof. The separate image contract inspection remains unsent and does not call image setters. Device image loading/sending and compatibility are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
+          printf 'Development device checkpoint: explicitly started rules limited to 1-3 authorized groups, text or static image, serial foreground execution. No 100/200-group execution, replay, automatic next rule or retry. Per-delivery native claims persist; restart requires manual pending-only continuation. Submitted is NOT delivered. Image loading may write native media before submission. Legacy single-target experiments are mutually exclusive. Multi-group device behavior and compatibility are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         with:

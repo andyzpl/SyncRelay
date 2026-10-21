@@ -57,5 +57,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)claimImageExperiment:(NSDictionary *)source configuration:(NSDictionary *)configuration
                     account:(NSString *)account target:(NSString *)target error:(NSError **)error;
 - (nullable NSDictionary *)imageExperimentSummaryForAccount:(NSString *)account error:(NSError **)error;
+/* Explicit device checkpoint: 1..3 targets, initial execution only. These
+ * authorizations and per-delivery native claims survive process restarts. */
+- (nullable NSString *)startSmallGroupRule:(NSString *)rule account:(NSString *)account error:(NSError **)error;
+- (nullable NSDictionary *)smallGroupRulePreview:(NSString *)rule account:(NSString *)account error:(NSError **)error;
+- (nullable NSDictionary *)smallGroupRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+- (BOOL)endSmallGroupRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+- (BOOL)claimSmallGroupDelivery:(NSDictionary *)delivery source:(NSDictionary *)source
+                       account:(NSString *)account error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

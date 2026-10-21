@@ -3,6 +3,7 @@
 #import "Core/SRStore.h"
 #import "Core/SRSourceCapture.h"
 #import "Core/SRImageAssetStore.h"
+#import "Adapter/SRSmallGroupSession.h"
 
 NSString *const SRRelayStateChangedNotification = @"andyz.syncrelay.stateChanged";
 typedef NS_ENUM(NSUInteger, SRRecordKind) { SRRecordPreview, SRRecordPlans, SRRecordPlan, SRRecordHistory, SRRecordExceptions };
@@ -23,10 +24,18 @@ static NSString *SRRunDescription(NSDictionary *run) {
         counts[@"submitted"] ?: @0, counts[@"confirmed"] ?: @0, counts[@"failed"] ?: @0, counts[@"uncertain"] ?: @0,
         counts[@"pending"] ?: @0, counts[@"submitting"] ?: @0, counts[@"cancelled"] ?: @0];
 }
+static void SRScreenPresent(UIViewController *controller, UIAlertController *alert) {
+    void (^show)(void) = ^{ [controller presentViewController:alert animated:YES completion:nil]; };
+    UIViewController *presented = controller.presentedViewController;
+    if ([presented isKindOfClass:UIAlertController.class]) {
+        if (presented.isBeingDismissed && [presented.transitionCoordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) { show(); }]) return;
+        [presented dismissViewControllerAnimated:YES completion:show];
+    } else show();
+}
 static void SRScreenAlert(UIViewController *controller, NSString *title, NSString *message) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
-    [controller presentViewController:alert animated:YES completion:nil];
+    SRScreenPresent(controller, alert);
 }
 
 @interface SRSourceTextScreen : UIViewController
@@ -108,6 +117,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 @interface SRRecordScreen : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRSourceCapture *capture;
+@property(nonatomic, strong) SRSmallGroupSession *execution;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSString *identifier;
 @property(nonatomic, copy) BOOL (^verifyAccount)(void);
@@ -127,10 +137,12 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(executionChanged:) name:@"andyz.syncrelay.smallGroupChanged" object:nil];
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 - (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reload]; }
 - (void)becameActive:(__unused NSNotification *)notification { if (self.viewIfLoaded.window) [self reload]; }
+- (void)executionChanged:(__unused NSNotification *)notification { if (self.viewIfLoaded.window) [self reload]; }
 - (BOOL)verified {
     @try { if (self.verifyAccount && self.verifyAccount()) return YES; } @catch (__unused NSException *exception) { }
     self.problem = @"当前账号无法核对或已经改变，旧内容已隐藏。请返回设置重新读取账号。";
@@ -196,7 +208,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
     if (self.kind == SRRecordPreview && section == 2) return @"确认只建立内容计划和目标分组，不发送。所有规则使用同一条已确认内容；之后修改设置不会改变此计划。";
-    if (self.kind == SRRecordPlan && section == 1) return @"点击规则查看历史及异常。真实发送适配尚未启用，本版不提供可用的开始、继续或重新执行按钮；顺序解锁也不会自动发送。";
+    if (self.kind == SRRecordPlan && section == 1) return @"点击规则可操作或查看历史。本轮只开放每条 1–3 个授权测试群：开始后串行转发，暂停后手动继续；大规则和重新执行尚未开放。请保持微信前台，切后台或锁屏会暂停，不自动接下一条。";
     if (self.kind == SRRecordHistory) return @"执行完成表示本条队列处理结束，不代表全部送达。已提交与确认送达分开统计；点击批次只查看失败、结果未知和未发项。";
     if (self.kind == SRRecordExceptions) return @"无需逐群人工复核。异常保留供按需查看；继续只处理尚未尝试的目标，不自动重发已提交或结果未知的群。";
     return nil;
@@ -246,7 +258,8 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     } else if (self.kind == SRRecordPlan) {
         cell.textLabel.text = [NSString stringWithFormat:@"%@ · %@ 个群", row[@"name"], row[@"targetCount"]];
         NSDictionary *run = [row[@"latestRun"] isKindOfClass:NSDictionary.class] ? row[@"latestRun"] : nil;
-        cell.detailTextLabel.text = run ? SRRunDescription(run) : ([row[@"initialUnlocked"] boolValue] ? @"未执行 · 顺序已解锁（本版发送未启用）" : @"未执行 · 等待前序规则结束");
+        cell.detailTextLabel.text = run ? SRRunDescription(run) : ([row[@"initialUnlocked"] boolValue] ? @"未执行 · 顺序已解锁" : @"未执行 · 等待前序规则结束");
+        if ([row[@"targetCount"] unsignedIntegerValue] > 3) cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingString:@"\n超过本轮 3 群测试范围，不提供发送入口。"];
         if (!run && [row[@"accountOccupied"] boolValue]) cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingString:@"\n账号仍有活动批次，不能开始另一条。"];
     } else if (self.kind == SRRecordHistory) {
         cell.textLabel.text = SRRunDescription(row);
@@ -263,7 +276,55 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 - (SRRecordScreen *)screen:(SRRecordKind)kind identifier:(NSString *)identifier title:(NSString *)title {
     SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.kind = kind; screen.store = self.store; screen.account = self.account; screen.verifyAccount = self.verifyAccount;
+    screen.execution = self.execution;
     screen.identifier = identifier; screen.title = title; return screen;
+}
+- (void)performExecution:(BOOL (^)(NSError **))operation {
+    if (![self verified]) return;
+    NSError *error = nil;
+    if (!operation(&error)) SRScreenAlert(self, @"操作未执行", error.localizedDescription ?: @"当前状态不允许此操作，请下拉刷新。");
+    [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+}
+- (void)ruleActions:(NSDictionary *)rule {
+    NSDictionary *run = [rule[@"latestRun"] isKindOfClass:NSDictionary.class] ? rule[@"latestRun"] : nil;
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:rule[@"name"]
+        message:run ? SRRunDescription(run) : @"本轮支持 1–3 个群的真实串行转发测试；一次只执行这条规则。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    if (self.execution && [rule[@"targetCount"] unsignedIntegerValue] <= 3) {
+        if (!run && [rule[@"initialUnlocked"] boolValue] && ![rule[@"accountOccupied"] boolValue]) {
+            [menu addAction:[UIAlertAction actionWithTitle:@"开始小群测试" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                if (![self verified]) return;
+                NSError *error = nil;
+                NSDictionary *preview = [self.store smallGroupRulePreview:rule[@"id"] account:self.account error:&error];
+                if (!preview) { SRScreenAlert(self, @"还不能开始", error.localizedDescription); return; }
+                NSString *message = [NSString stringWithFormat:@"将向这 %lu 个群串行发送已确认的 %@ 消息：\n%@\n\n每次结果处理后再等待 %@–%@ 秒；不会自动接下一条。保持微信前台，测试时可以暂停。已尝试但结果未知的群不自动重发。",
+                    (unsigned long)[preview[@"targets"] count], [preview[@"source"][@"type"] isEqual:@"image"] ? @"图片" : @"文字",
+                    [preview[@"targets"] componentsJoinedByString:@"\n"], preview[@"minimum"], preview[@"maximum"]];
+                UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"开始真实转发？" message:message preferredStyle:UIAlertControllerStyleAlert];
+                [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+                [confirm addAction:[UIAlertAction actionWithTitle:@"开始这条规则" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+                    [self performExecution:^BOOL(NSError **failure) { return [self.execution startRule:rule[@"id"] account:self.account error:failure]; }];
+                }]];
+                SRScreenPresent(self, confirm);
+            }]];
+        }
+        if ([@[@"running", @"paused", @"awaiting_resume"] containsObject:run[@"state"]]) {
+            if ([run[@"state"] isEqual:@"running"]) [menu addAction:[UIAlertAction actionWithTitle:@"暂停" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+                [self performExecution:^BOOL(NSError **failure) { return [self.execution pauseForAccount:self.account error:failure]; }];
+            }]];
+            else [menu addAction:[UIAlertAction actionWithTitle:@"继续未尝试的群" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+                [self performExecution:^BOOL(NSError **failure) { return [self.execution resumeRun:run[@"id"] account:self.account error:failure]; }];
+            }]];
+            [menu addAction:[UIAlertAction actionWithTitle:@"结束这次执行（不重发）" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+                [self performExecution:^BOOL(NSError **failure) { return [self.execution endRun:run[@"id"] account:self.account error:failure]; }];
+            }]];
+        }
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"查看历史与异常" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        [self.navigationController pushViewController:[self screen:SRRecordHistory identifier:rule[@"id"] title:[rule[@"name"] stringByAppendingString:@" · 历史"]] animated:YES];
+    }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    SRScreenPresent(self, menu);
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
@@ -295,19 +356,19 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     if (path.row >= (NSInteger)self.rows.count) return;
     NSDictionary *row = self.rows[path.row]; SRRecordScreen *next = nil;
     if (self.kind == SRRecordPlans) next = [self screen:SRRecordPlan identifier:row[@"id"] title:@"内容计划与规则"];
-    if (self.kind == SRRecordPlan) next = [self screen:SRRecordHistory identifier:row[@"id"] title:[row[@"name"] stringByAppendingString:@" · 历史"]];
+    if (self.kind == SRRecordPlan) { [self ruleActions:row]; return; }
     if (self.kind == SRRecordHistory) next = [self screen:SRRecordExceptions identifier:row[@"id"] title:@"异常群与未发项"];
     if (next) [self.navigationController pushViewController:next animated:YES];
 }
 @end
 
-UIViewController *SRCreateCapturePreview(SRStore *store, SRSourceCapture *capture, NSString *account, BOOL (^verifyAccount)(void)) {
+UIViewController *SRCreateCapturePreview(SRStore *store, SRSourceCapture *capture, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *execution) {
     SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.kind = SRRecordPreview; screen.store = store; screen.capture = capture; screen.account = account;
-    screen.verifyAccount = verifyAccount; screen.title = @"单条源消息预览"; return screen;
+    screen.verifyAccount = verifyAccount; screen.execution = execution; screen.title = @"单条源消息预览"; return screen;
 }
-UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void)) {
+UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *execution) {
     SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.kind = SRRecordPlans; screen.store = store; screen.account = account;
-    screen.verifyAccount = verifyAccount; screen.title = @"已确认内容计划"; return screen;
+    screen.verifyAccount = verifyAccount; screen.execution = execution; screen.title = @"已确认内容计划"; return screen;
 }
