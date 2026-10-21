@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "Adapter/SRWeChatTextSendHost.h"
+#import <objc/runtime.h>
 
 #define CHECK(condition) do { if (!(condition)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #condition); return 1; } } while (0)
 
@@ -46,6 +47,10 @@
 
 @interface SRFakeMMContext : NSObject
 @property(nonatomic, strong) SRFakeMessageMgr *manager;
+@property(nonatomic, strong) SRFakeMessageMgr *substitute;
+@property(nonatomic) NSUInteger serviceReads;
+@property(nonatomic) NSUInteger substituteOnRead;
+@property(nonatomic) BOOL rejectServiceSignature;
 @end
 
 @implementation SRFakeMessageWrap
@@ -82,13 +87,43 @@
 }
 @end
 
+@interface SRFakeInheritedMessageMgr : SRFakeMessageMgr
+@end
+@implementation SRFakeInheritedMessageMgr
+@end
+
+@interface SRFakeReflectedMessageMgr : SRFakeMessageMgr
+@end
+@implementation SRFakeReflectedMessageMgr
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    if (selector == NSSelectorFromString(@"AddMsg:MsgWrap:")) return nil;
+    return [super methodSignatureForSelector:selector];
+}
+@end
+
+static void forbiddenMethod(__unused id object, __unused SEL selector, __unused id first, __unused id second) { abort(); }
+static Class managerWithMethod(NSString *name, NSString *selector, const char *encoding) {
+    Class type = objc_allocateClassPair(SRFakeMessageMgr.class, name.UTF8String, 0);
+    if (!type || !class_addMethod(type, NSSelectorFromString(selector), (IMP)forbiddenMethod, encoding)) abort();
+    objc_registerClassPair(type); return type;
+}
+
 @implementation SRFakeMMContext
 + (instancetype)currentContext {
     static SRFakeMMContext *context; static dispatch_once_t once;
     dispatch_once(&once, ^{ context = [SRFakeMMContext new]; context.manager = [SRFakeMessageMgr new]; });
     return context;
 }
-- (id)getService:(Class)type { return type == SRFakeMessageMgr.class ? self.manager : nil; }
+- (id)getService:(Class)type {
+    self.serviceReads++;
+    return type != SRFakeMessageMgr.class ? nil :
+        (self.substituteOnRead && self.serviceReads >= self.substituteOnRead ? self.substitute : self.manager);
+}
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    if (self.rejectServiceSignature && selector == NSSelectorFromString(@"getService:"))
+        return [NSMethodSignature signatureWithObjCTypes:"v24@0:8#16"];
+    return [super methodSignatureForSelector:selector];
+}
 @end
 
 static SRWeChatTextSendHost *makeHostWithWrap(Class wrap, NSString *version, NSString *(^account)(void), BOOL (^allowed)(void)) {
@@ -127,6 +162,9 @@ int main(void) {
         CHECK(manager.lastWrap.initializerArgument == 1);
         CHECK([host.diagnostics[@"initializerArgumentType"] isEqual:@"q"]);
         CHECK([host.diagnostics[@"initializerCallType"] isEqual:@"q"]);
+        CHECK([host.diagnostics[@"serviceEvidenceSchema"] isEqual:@1]);
+        CHECK([host.diagnostics[@"serviceChecks"] count] == 2);
+        CHECK([host.diagnostics[@"serviceChecks"][@"pre_submit"][@"add"][@"issue"] isEqual:@"compatible"]);
         CHECK(callbackShapeOK);
         CHECK([state isEqual:@"uncertain"]);
         CHECK([reason containsString:@"unknown"] || [reason containsString:@"delivery"]);
@@ -174,6 +212,86 @@ int main(void) {
             CHECK(![wrongABI.diagnostics[@"submissionAttempted"] boolValue] && manager.addCount == count);
         }
 
+        SRFakeMMContext *context = [SRFakeMMContext currentContext];
+        for (Class type in @[SRFakeInheritedMessageMgr.class, SRFakeReflectedMessageMgr.class]) {
+            SRFakeMessageMgr *subclass = [type new]; context.manager = subclass;
+            SRWeChatTextSendHost *concrete = makeHost(@"8.0.79", account, allowed);
+            CHECK([concrete readyForAccount:@"wxid_account" error:NULL] && subclass.addCount == 0);
+            CHECK([concrete.diagnostics[@"serviceChecks"][@"preflight"][@"managerClassCode"] isEqual:@2]);
+            CHECK([concrete.diagnostics[@"serviceChecks"][@"preflight"][@"add"][@"sameMethodAsNamedClass"] boolValue]);
+            [concrete submitRequest:request completion:nil];
+            CHECK(subclass.addCount == 1 && [concrete.diagnostics[@"submissionAttempted"] boolValue]);
+        }
+        NSArray *badEncodings = @[@"@32@0:8@16@24", @"v24@0:8@16", @"v32@0:8q16@24", @"v32@0:8@16@?24"];
+        NSArray *issues = @[@"return_type", @"argument_count", @"first_argument", @"second_argument"];
+        Class badAdd = Nil;
+        for (NSUInteger i = 0; i < badEncodings.count; i++) {
+            Class type = managerWithMethod([NSString stringWithFormat:@"SRFakeBadAdd%lu", (unsigned long)i],
+                @"AddMsg:MsgWrap:", [badEncodings[i] UTF8String]);
+            if (!i) badAdd = type;
+            SRFakeMessageMgr *bad = [type new]; context.manager = bad;
+            SRWeChatTextSendHost *blocked = makeHost(@"8.0.79", account, allowed);
+            CHECK(![blocked readyForAccount:@"wxid_account" error:NULL] && bad.addCount == 0);
+            CHECK([blocked.diagnostics[@"abiValidated"] boolValue]);
+            CHECK([blocked.diagnostics[@"problem"] isEqual:@"concrete_add_abi_incompatible"]);
+            CHECK([blocked.diagnostics[@"validationStage"] isEqual:@"concrete_service"]);
+            NSDictionary *check = blocked.diagnostics[@"serviceChecks"][@"preflight"];
+            CHECK([check[@"managerClassCode"] isEqual:@2]);
+            CHECK([check[@"add"][@"issue"] isEqual:issues[i]]);
+            CHECK(![check[@"add"][@"sameMethodAsNamedClass"] boolValue]);
+            CHECK([blocked.diagnostics[@"initializerCallType"] isEqual:@"not_called"]);
+            [blocked submitRequest:request completion:nil];
+            CHECK(![blocked.diagnostics[@"submissionAttempted"] boolValue] && bad.addCount == 0);
+        }
+        Class badLookup = managerWithMethod(@"SRFakeBadLookup", @"GetMsg:LocalID:", "@32@0:8@16d24");
+        context.manager = [badLookup new];
+        SRWeChatTextSendHost *lookupBlocked = makeHost(@"8.0.79", account, allowed);
+        CHECK(![lookupBlocked readyForAccount:@"wxid_account" error:NULL]);
+        CHECK([lookupBlocked.diagnostics[@"problem"] isEqual:@"concrete_lookup_abi_incompatible"]);
+        CHECK([lookupBlocked.diagnostics[@"serviceChecks"][@"preflight"][@"lookup"][@"issue"] isEqual:@"second_argument"]);
+        for (id service in @[(id)SRFakeMessageMgr.class, [NSObject new], NSNull.null]) {
+            context.manager = service == NSNull.null ? nil : service;
+            SRWeChatTextSendHost *identityBlocked = makeHost(@"8.0.79", account, allowed);
+            CHECK(![identityBlocked readyForAccount:@"wxid_account" error:NULL]);
+            CHECK([identityBlocked.diagnostics[@"problem"] isEqual:@"service_identity_rejected"]);
+            CHECK(![identityBlocked.diagnostics[@"submissionAttempted"] boolValue]);
+        }
+        context.manager = manager;
+        context.rejectServiceSignature = YES;
+        SRWeChatTextSendHost *serviceReadBlocked = makeHost(@"8.0.79", account, allowed);
+        CHECK(![serviceReadBlocked readyForAccount:@"wxid_account" error:NULL]);
+        CHECK([serviceReadBlocked.diagnostics[@"serviceChecks"][@"preflight"][@"serviceReadFailed"] boolValue]);
+        CHECK([serviceReadBlocked.diagnostics[@"serviceChecks"][@"preflight"][@"contextClassCode"] isEqual:@1]);
+        CHECK([serviceReadBlocked.diagnostics[@"serviceChecks"][@"preflight"][@"managerClassCode"] isEqual:@0]);
+        context.rejectServiceSignature = NO;
+        context.serviceReads = 0; context.substituteOnRead = 2; context.substitute = [badAdd new];
+        SRWeChatTextSendHost *resolvedChanged = makeHost(@"8.0.79", account, allowed);
+        __block NSUInteger blockedCompletions = 0;
+        [resolvedChanged submitRequest:request completion:^(__unused NSString *value, NSString *messageID, NSString *detail) {
+            if (!messageID && [detail isEqual:@"concrete_add_abi_incompatible"]) blockedCompletions++;
+        }];
+        CHECK(blockedCompletions == 1 && ![resolvedChanged.diagnostics[@"submissionAttempted"] boolValue]);
+        CHECK([resolvedChanged.diagnostics[@"initializerCallType"] isEqual:@"not_called"]);
+        CHECK([resolvedChanged.diagnostics[@"serviceChecks"][@"pre_submit"][@"add"][@"issue"] isEqual:@"return_type"]);
+        context.substituteOnRead = 0; context.substitute = nil;
+        __block NSUInteger accountReads = 0;
+        SRWeChatTextSendHost *changed = makeHost(@"8.0.79", ^NSString * {
+            if (++accountReads == 2) object_setClass(manager, badAdd);
+            return @"wxid_account";
+        }, allowed);
+        [changed submitRequest:request completion:nil];
+        CHECK([changed.diagnostics[@"initializerCallType"] isEqual:@"q"]);
+        CHECK([changed.diagnostics[@"serviceChecks"][@"preflight"][@"add"][@"issue"] isEqual:@"compatible"]);
+        CHECK([changed.diagnostics[@"serviceChecks"][@"pre_submit"][@"add"][@"issue"] isEqual:@"return_type"]);
+        CHECK(![changed.diagnostics[@"submissionAttempted"] boolValue]);
+        object_setClass(manager, SRFakeMessageMgr.class); CHECK(manager.addCount == count);
+        CHECK([changed readyForAccount:@"wxid_account" error:NULL]);
+        CHECK([changed.diagnostics[@"serviceChecks"] count] == 1);
+        CHECK([changed.diagnostics[@"initializerCallType"] isEqual:@"not_called"]);
+        CHECK(![[changed.diagnostics description] containsString:@"wxid_account"]);
+        CHECK(![[changed.diagnostics description] containsString:@"hello"]);
+        CHECK(![[changed.diagnostics description] containsString:@"SRFake"]);
+
         manager.deferServerID = YES;
         SRWeChatTextSendHost *delayed = makeHost(@"8.0.76", account, allowed);
         __block NSUInteger completions = 0;
@@ -216,7 +334,7 @@ int main(void) {
         CHECK([exception.diagnostics[@"deliveryOutcome"] isEqual:@"uncertain"]);
         CHECK(![[exception.diagnostics description] containsString:@"private body"]);
         count = manager.addCount; [exception submitRequest:request completion:nil]; CHECK(manager.addCount == count);
-        puts("PASS: exact i/I/q/Q initializer calls, single-text ABI/account gates, bounded observation, cancellation and unknown delivery");
+        puts("PASS: concrete service preflight/revalidation, sanitized signature evidence, i/I/q/Q construction, bounded observation and unknown delivery");
     }
     return 0;
 }

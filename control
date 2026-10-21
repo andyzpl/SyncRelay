@@ -1,6 +1,6 @@
 Package: andyz.syncrelay
 Name: SyncRelay (Development)
-Version: 0.2.11
+Version: 0.2.12
 Architecture: iphoneos-arm
 Description: WeChat relay configuration with an explicit single-target text experiment. Batch sending is disabled.
 Maintainer: andyz

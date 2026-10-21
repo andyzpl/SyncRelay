@@ -28,6 +28,11 @@
 @property(nonatomic) BOOL abiValidated;
 @property(nonatomic, copy) NSString *initializerArgumentType;
 @property(nonatomic, copy) NSString *initializerCallType;
+@property(nonatomic, copy) NSString *validationStage;
+@property(nonatomic) NSUInteger contextClassCode;
+@property(nonatomic) BOOL contextReadFailed;
+@property(nonatomic) BOOL serviceReadFailed;
+@property(nonatomic, strong) NSMutableDictionary *serviceChecks;
 @property(nonatomic) BOOL consumed;
 @property(nonatomic) BOOL addInvoked;
 @property(nonatomic) BOOL addReturned;
@@ -62,6 +67,43 @@ static BOOL SRHostInteger(const char *type) {
 static NSMethodSignature *SRHostSignature(Class type, NSString *name) {
     Method method = type ? class_getInstanceMethod(type, NSSelectorFromString(name)) : NULL;
     return method ? [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)] : nil;
+}
+static NSUInteger SRHostClassCode(id object, Class expected) {
+    if (!object) return 0;
+    if (object_isClass(object)) return 4;
+    Class actual = object_getClass(object);
+    if (actual == expected) return 1;
+    for (Class type = class_getSuperclass(actual); type; type = class_getSuperclass(type))
+        if (type == expected) return 2;
+    return 3;
+}
+static NSString *SRHostSignatureIssue(NSMethodSignature *s, BOOL lookup) {
+    if (!s) return @"missing_method";
+    if (s.numberOfArguments != 4) return @"argument_count";
+    if (lookup ? !SRHostObject(s.methodReturnType) : strcmp(SRHostType(s.methodReturnType), "v") != 0)
+        return @"return_type";
+    if (!SRHostObject([s getArgumentTypeAtIndex:2])) return @"first_argument";
+    if (lookup ? !SRHostInteger([s getArgumentTypeAtIndex:3]) : !SRHostObject([s getArgumentTypeAtIndex:3]))
+        return @"second_argument";
+    return @"compatible";
+}
+static NSString *SRHostDiagnosticType(const char *type) {
+    type = SRHostType(type);
+    if (SRHostObject(type)) return @"@";
+    if (!strcmp(type, "@?")) return @"@?";
+    if (type[0] && !type[1] && strchr("v#:iIqQlLsScCBfd*", type[0]))
+        return [NSString stringWithFormat:@"%c", type[0]];
+    return @"other";
+}
+static NSDictionary *SRHostMethodCheck(Class actual, Class named, NSString *name, NSMethodSignature *s, BOOL lookup) {
+    NSMutableArray *arguments = [NSMutableArray array];
+    for (NSUInteger i = 2; s && i < s.numberOfArguments && i < 10; i++)
+        [arguments addObject:SRHostDiagnosticType([s getArgumentTypeAtIndex:i])];
+    Method method = actual ? class_getInstanceMethod(actual, NSSelectorFromString(name)) : NULL;
+    Method base = named ? class_getInstanceMethod(named, NSSelectorFromString(name)) : NULL;
+    return @{@"available": @(s != nil), @"argumentCount": @(s.numberOfArguments),
+        @"returnType": s ? SRHostDiagnosticType(s.methodReturnType) : @"unavailable", @"arguments": arguments,
+        @"sameMethodAsNamedClass": @(method && method == base), @"issue": SRHostSignatureIssue(s, lookup)};
 }
 static char SRHostInitializerType(Class type) {
     NSMethodSignature *s = SRHostSignature(type, @"initWithMsgType:");
@@ -128,6 +170,7 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
     if (self) {
         _version = [version copy]; _resolver = [resolver copy]; _currentAccount = [currentAccount copy];
         _environmentAllowed = [environmentAllowed copy]; _state = @"idle"; _samples = [NSMutableArray array];
+        _validationStage = @"not_checked"; _serviceChecks = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -138,6 +181,7 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
     return NO;
 }
 - (BOOL)validateClasses:(NSError **)error {
+    self.validationStage = @"named_classes";
     self.abiValidated = NO;
     self.initializerArgumentType = @"unchecked";
     Class context = self.resolver(@"MMContext"), manager = self.resolver(@"CMessageMgr"), wrap = self.resolver(@"CMessageWrap");
@@ -179,15 +223,52 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
     }
     self.abiValidated = YES; return YES;
 }
+- (BOOL)validateManager:(id)manager phase:(NSString *)phase validatedAdd:(NSMethodSignature **)validatedAdd error:(NSError **)error {
+    if (validatedAdd) *validatedAdd = nil;
+    self.validationStage = @"concrete_service";
+    Class named = self.resolver(@"CMessageMgr"), actual = object_getClass(manager);
+    NSMethodSignature *add = SRHostSignature(actual, @"AddMsg:MsgWrap:"), *get = SRHostSignature(actual, @"GetMsg:LocalID:");
+    NSUInteger code = SRHostClassCode(manager, named);
+    // Fixed phases and scalar type tokens only: no object descriptions, IDs, class names or addresses.
+    self.serviceChecks[phase] = @{@"managerClassCode": @(code), @"contextClassCode": @(self.contextClassCode),
+        @"contextReadFailed": @(self.contextReadFailed), @"serviceReadFailed": @(self.serviceReadFailed),
+        @"add": SRHostMethodCheck(actual, named, @"AddMsg:MsgWrap:", add, NO),
+        @"lookup": SRHostMethodCheck(actual, named, @"GetMsg:LocalID:", get, YES)};
+    if (code != 1 && code != 2) return [self fail:@"service_identity_rejected" error:error];
+    if (![SRHostSignatureIssue(add, NO) isEqual:@"compatible"])
+        return [self fail:@"concrete_add_abi_incompatible" error:error];
+    if (![SRHostSignatureIssue(get, YES) isEqual:@"compatible"])
+        return [self fail:@"concrete_lookup_abi_incompatible" error:error];
+    if (validatedAdd) *validatedAdd = add;
+    return YES;
+}
+- (id)resolveManagerForPhase:(NSString *)phase error:(NSError **)error {
+    self.validationStage = @"service_resolution";
+    Class contextClass = self.resolver(@"MMContext"), managerClass = self.resolver(@"CMessageMgr");
+    NSError *readError = nil;
+    id context = SRReadObject(contextClass, @"currentContext", @[], &readError);
+    self.contextReadFailed = readError != nil; self.serviceReadFailed = NO;
+    self.contextClassCode = SRHostClassCode(context, contextClass);
+    id manager = nil;
+    if (self.contextClassCode == 1 || self.contextClassCode == 2) {
+        readError = nil;
+        manager = SRReadObject(context, @"getService:", @[managerClass], &readError);
+        self.serviceReadFailed = readError != nil;
+    }
+    if (![self validateManager:manager phase:phase validatedAdd:NULL error:error]) return nil;
+    return manager;
+}
 - (BOOL)readyForAccount:(NSString *)account error:(NSError **)error {
     if (!NSThread.isMainThread) return [self fail:@"main_thread_required" error:error];
     if (self.consumed) return [self fail:@"one_attempt_per_launch" error:error];
+    [self.serviceChecks removeAllObjects]; self.validationStage = @"prerequisites"; self.initializerCallType = nil;
     if (![@[@"8.0.76", @"8.0.79"] containsObject:self.version]) return [self fail:@"unsupported_version" error:error];
     @try {
         if (!SRHostIdentifier(account, NO) || !self.resolver || !self.currentAccount || !self.environmentAllowed ||
             ![self.currentAccount() isEqual:account] || !self.environmentAllowed())
             return [self fail:@"account_or_environment_changed" error:error];
         if (![self validateClasses:error]) return NO;
+        if (![self resolveManagerForPhase:@"preflight" error:error]) return NO;
     } @catch (__unused id exception) { return [self fail:@"capability_check_exception" error:error]; }
     self.state = @"ready"; self.problem = nil; return YES;
 }
@@ -223,14 +304,19 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
             if (![self readyForAccount:request[@"account"] error:&error]) reason = error.localizedDescription;
             else {
                 self.account = request[@"account"]; self.target = request[@"target"]; self.text = request[@"payload"][@"text"];
-                Class contextClass = self.resolver(@"MMContext"), managerClass = self.resolver(@"CMessageMgr"), wrapClass = self.resolver(@"CMessageWrap");
-                id context = SRReadObject(contextClass, @"currentContext", @[], NULL);
-                id manager = SRReadObject(context, @"getService:", @[managerClass], NULL);
+                Class wrapClass = self.resolver(@"CMessageWrap");
+                id manager = [self resolveManagerForPhase:@"pre_submit" error:&error];
+                if (!manager) {
+                    self.account = nil; self.target = nil; self.text = nil;
+                    if (completion) completion(@"uncertain", nil, error.localizedDescription);
+                    return;
+                }
+                self.validationStage = @"construction";
                 char argument = SRHostInitializerType(wrapClass);
                 self.initializerCallType = argument ? [NSString stringWithFormat:@"%c", argument] : @"unsupported";
                 id message = SRHostCreateTextWrap(wrapClass, argument);
                 double now = NSDate.date.timeIntervalSince1970;
-                if (![context isKindOfClass:contextClass] || ![manager isKindOfClass:managerClass] || ![message isKindOfClass:wrapClass] ||
+                if (![message isKindOfClass:wrapClass] ||
                     !isfinite(now) || now < 1 || now > UINT_MAX ||
                     !SRHostSetObject(message, @"setM_nsFromUsr:", self.account) || !SRHostSetObject(message, @"setM_nsToUsr:", self.target) ||
                     !SRHostSetObject(message, @"setM_nsContent:", self.text) || !SRHostSetInteger(message, @"setM_uiMesLocalID:", 0) ||
@@ -239,22 +325,22 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
                     ![SRReadUnsignedInteger(message, @"m_uiCreateTime", NULL) isEqual:@((unsigned long long)now)]) reason = @"construction_rejected";
                 else if (![self.currentAccount() isEqual:self.account] || !self.environmentAllowed()) reason = @"account_or_environment_changed";
                 else {
-                    NSMethodSignature *s = SRHostSignature(object_getClass(manager), @"AddMsg:MsgWrap:");
-                    if (!s || s.numberOfArguments != 4 || strcmp(SRHostType(s.methodReturnType), "v") ||
-                        !SRHostObject([s getArgumentTypeAtIndex:2]) || !SRHostObject([s getArgumentTypeAtIndex:3])) reason = @"message_manager_abi_incompatible";
+                    NSMethodSignature *s = nil;
+                    if (![self validateManager:manager phase:@"pre_submit" validatedAdd:&s error:&error]) reason = error.localizedDescription;
                     else {
                         NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:s];
                         invocation.target = manager; invocation.selector = NSSelectorFromString(@"AddMsg:MsgWrap:");
                         __unsafe_unretained id target = self.target, wrap = message;
                         [invocation setArgument:&target atIndex:2]; [invocation setArgument:&wrap atIndex:3];
-                        self.consumed = YES; self.addInvoked = YES; self.state = @"submitting";
+                        self.consumed = YES; self.addInvoked = YES; self.state = @"submitting"; self.validationStage = @"invocation";
                         [invocation invoke]; self.addReturned = YES;
                         self.localID = SRReadUnsignedInteger(message, @"m_uiMesLocalID", NULL);
                         if (!self.localID.unsignedLongLongValue || ![self matches:message localID:self.localID]) reason = @"post_submit_identity_unavailable";
                         else {
                             self.manager = manager; [self sample:message source:@"after_add"];
                             self.completion = completion;
-                            self.observing = YES; self.state = @"observing"; self.deadline = NSProcessInfo.processInfo.systemUptime + 30;
+                            self.observing = YES; self.state = @"observing"; self.validationStage = @"observation";
+                            self.deadline = NSProcessInfo.processInfo.systemUptime + 30;
                             __weak typeof(self) weakSelf = self;
                             self.timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
                             dispatch_source_set_timer(self.timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_MSEC * 100);
@@ -305,6 +391,7 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
     } @catch (__unused id exception) { }
     return @{@"schema": @1, @"wechatVersion": self.version, @"abiValidated": @(self.abiValidated),
         @"initializerArgumentType": self.initializerArgumentType ?: @"unchecked", @"initializerCallType": self.initializerCallType ?: @"not_called",
+        @"serviceEvidenceSchema": @1, @"validationStage": self.validationStage, @"serviceChecks": [self.serviceChecks copy],
         @"activeSendImplemented": @YES, @"batchSendingEnabled": @NO, @"deviceVerified": @NO,
         @"submissionAttempted": @(self.addInvoked), @"hostReturned": @(self.addReturned), @"observing": @(self.observing),
         @"localIDPresent": @(self.localID.unsignedLongLongValue > 0), @"serverIDPresent": @(self.serverID.unsignedLongLongValue > 0),

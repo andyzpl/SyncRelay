@@ -46,6 +46,18 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertIn('[self restoreTextIdleTimer]', cancel)
         self.assertIn('![panel.draft isEqual:configuration]', experiment)
 
+    def test_service_preflight_precedes_countdown_and_persistent_claim(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        experiment = panel.split('- (void)beginSingleTextSend {', 1)[1].split('- (UIAlertController *)textTestResult:', 1)[0]
+        self.assertLess(experiment.index('readyForAccount:account'), experiment.index('panel.textCountdown = YES'))
+        countdown = experiment.split('panel.textCountdown = NO;', 1)[1]
+        self.assertLess(countdown.index('readyForAccount:account'), countdown.index('claimTextExperiment:'))
+        host = (ROOT / 'Adapter/SRWeChatTextSendHost.m').read_text(encoding='utf-8')
+        preflight = host.split('- (BOOL)readyForAccount:', 1)[1].split('- (BOOL)matches:', 1)[0]
+        self.assertIn('resolveManagerForPhase:@"preflight"', preflight)
+        self.assertNotIn('SRHostCreateTextWrap(', preflight)
+        self.assertNotIn('claimTextExperiment:', preflight)
+
 
 if __name__ == '__main__':
     unittest.main()

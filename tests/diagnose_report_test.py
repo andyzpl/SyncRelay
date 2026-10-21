@@ -195,6 +195,52 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('text_initializer_width_mismatch', self.codes(report))
         self.assertNotIn('private content', str(analyze(report)))
 
+    def test_old_manager_block_needs_concrete_evidence_not_initializer_change(self):
+        report = self.base()
+        candidate = report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'abiValidated': True, 'submissionAttempted': False, 'state': 'blocked',
+            'problem': 'message_manager_abi_incompatible', 'initializerCallType': 'q'}
+        report['singleTextExperimentHistory'] = {'claimed': True, 'deliveryOutcome': 'uncertain', 'automaticRetry': False}
+        self.assertTrue({'text_not_submitted', 'text_attempt_claimed',
+            'text_concrete_manager_details_required'} <= self.codes(report))
+        self.assertNotIn('text_initializer_width_mismatch', self.codes(report))
+        candidate['abiValidated'] = False
+        self.assertNotIn('text_concrete_manager_details_required', self.codes(report))
+
+    def test_concrete_signature_and_service_identity_are_distinct(self):
+        report = self.base()
+        candidate = report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'abiValidated': True, 'submissionAttempted': False, 'state': 'blocked', 'serviceEvidenceSchema': 1,
+            'problem': 'concrete_add_abi_incompatible', 'serviceChecks': {'preflight': {
+                'contextClassCode': 1, 'managerClassCode': 2, 'contextReadFailed': False, 'serviceReadFailed': False,
+                'add': {'issue': 'return_type'}, 'lookup': {'issue': 'compatible'}}}}
+        self.assertTrue({'text_concrete_add_abi_blocked', 'text_named_concrete_abi_differ'} <= self.codes(report))
+        self.assertNotIn('text_service_identity_blocked', self.codes(report))
+        candidate['serviceChecks']['pre_submit'] = {'contextClassCode': 1, 'managerClassCode': 4,
+            'lookup': {'issue': 'second_argument'}}
+        self.assertTrue({'text_service_identity_blocked', 'text_concrete_lookup_abi_blocked'} <= self.codes(report))
+
+    def test_service_resolution_failure_is_not_a_host_invocation(self):
+        report = self.base()
+        report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'submissionAttempted': False, 'state': 'blocked', 'serviceEvidenceSchema': 1, 'serviceChecks': {
+                'preflight': {'contextClassCode': 1, 'managerClassCode': 0, 'serviceReadFailed': True}}}
+        self.assertTrue({'text_service_identity_blocked', 'text_service_resolution_failed'} <= self.codes(report))
+        self.assertNotIn('text_host_invoked', self.codes(report))
+
+    def test_service_evidence_malformed_and_private_values_are_not_echoed(self):
+        report = self.base()
+        candidate = report['singleTextSendCandidate'] = {'schema': 1, 'batchSendingEnabled': False,
+            'serviceEvidenceSchema': 1, 'serviceChecks': 'private content'}
+        self.assertIn('text_service_evidence_invalid', self.codes(report))
+        candidate['serviceChecks'] = {'preflight': {'managerClassCode': 'wxid_secret',
+            'add': {'issue': 'private content', 'arguments': ['private content']}},
+            'private content': {'managerClassCode': 4}}
+        self.assertNotIn('text_service_identity_blocked', self.codes(report))
+        self.assertNotIn('text_concrete_add_abi_blocked', self.codes(report))
+        self.assertNotIn('wxid_secret', str(analyze(report)))
+        self.assertNotIn('private content', str(analyze(report)))
+
 
 if __name__ == '__main__':
     unittest.main()

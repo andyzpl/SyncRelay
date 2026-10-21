@@ -16,7 +16,7 @@ typedef void (^SRWeChatTextSendHostCompletion)(NSString *state, NSString * _Null
                  currentAccount:(NSString * _Nullable (^)(void))currentAccount
             environmentAllowed:(BOOL (^)(void))environmentAllowed;
 
-/* Main-thread only. This performs ABI checks but does not submit a message. */
+/* Main-thread only. Resolves the service and checks named/concrete ABIs without constructing or sending. */
 - (BOOL)readyForAccount:(NSString *)account error:(NSError **)error;
 
 /* Main-thread only. Completes after bounded observation or an earlier block/stop. No retry. */

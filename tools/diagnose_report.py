@@ -185,6 +185,41 @@ def analyze(report):
             if flag(candidate.get('serverIDPresent')) is True:
                 add('text_server_association', 'A non-zero server ID was associated, not a verified delivery receipt.')
             problem = candidate.get('problem')
+            service_schema = candidate.get('serviceEvidenceSchema')
+            if type(service_schema) is int and service_schema == 1:
+                checks = candidate.get('serviceChecks')
+                if not isinstance(checks, dict):
+                    add('text_service_evidence_invalid', 'Concrete service evidence is not an object; use a matching diagnostic build.')
+                else:
+                    evidence = set()
+                    for phase in ('preflight', 'pre_submit'):
+                        check = checks.get(phase)
+                        if not isinstance(check, dict):
+                            continue
+                        if any(type(check.get(key)) is int and check[key] in (0, 3, 4)
+                               for key in ('contextClassCode', 'managerClassCode')):
+                            evidence.add('text_service_identity_blocked')
+                        if any(flag(check.get(key)) is True for key in ('contextReadFailed', 'serviceReadFailed')):
+                            evidence.add('text_service_resolution_failed')
+                        for key in ('add', 'lookup'):
+                            method = check.get(key)
+                            if (isinstance(method, dict) and method.get('issue') in
+                                    ('missing_method', 'argument_count', 'return_type', 'first_argument', 'second_argument')):
+                                evidence.add('text_concrete_' + key + '_abi_blocked')
+                                if flag(candidate.get('abiValidated')) is True and key == 'add':
+                                    evidence.add('text_named_concrete_abi_differ')
+                    for code, message in (
+                        ('text_service_identity_blocked', 'The actual context/service is absent, unrelated or a class object, not an allowed service instance.'),
+                        ('text_service_resolution_failed', 'A read-only context/service lookup failed; do not infer a send failure.'),
+                        ('text_concrete_add_abi_blocked', 'The actual service AddMsg signature failed a specific runtime check; no signature bypass is allowed.'),
+                        ('text_concrete_lookup_abi_blocked', 'The actual service exact-ID lookup signature is incompatible; sending remains blocked.'),
+                        ('text_named_concrete_abi_differ', 'The named class passed but the concrete service AddMsg check did not. Inspect the bounded concrete evidence, not only named-class methods.'),
+                    ):
+                        if code in evidence:
+                            add(code, message)
+            elif (problem == 'message_manager_abi_incompatible' and flag(candidate.get('abiValidated')) is True
+                    and flag(candidate.get('submissionAttempted')) is False):
+                add('text_concrete_manager_details_required', 'The named-class ABI passed, but the later concrete-service check blocked. This old report lacks the actual service signature; install the concrete-preflight diagnostic build rather than bypassing validation.')
             if isinstance(problem, str):
                 if problem.endswith('_abi_incompatible'):
                     add('text_abi_blocked', 'A required host ABI is incompatible. Do not bypass the signature gate.')
