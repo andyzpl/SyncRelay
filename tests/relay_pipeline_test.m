@@ -136,8 +136,8 @@ int main(void) {
         now = [runner.status[@"nextMonotonic"] doubleValue]; CHECK([runner tick]);
         callback(transport, 2002, @"failed", nil); (void)runner.status;
         CHECK([runner.status[@"halted"] boolValue]);
-        CHECK([[store summaryForRun:again error:NULL][@"state"] isEqual:@"paused"]);
-        CHECK([runner end:NULL]);
+        CHECK([[store summaryForRun:again error:NULL][@"state"] isEqual:@"completed"]);
+        CHECK([runner.status[@"run"] isEqual:NSNull.null]);
 
         NSString *interrupted = [store startRule:rules[1][@"id"] replay:YES error:NULL]; CHECK(interrupted);
         CHECK([runner activateRun:interrupted account:@"account" error:NULL]);
@@ -147,8 +147,7 @@ int main(void) {
         runner = newRunner(); CHECK(![runner tick]);
         CHECK(![runner activateRun:interrupted account:@"account" error:NULL]);
         CHECK(deliveryCount(store, interrupted, @"uncertain") == 1);
-        CHECK([[store summaryForRun:interrupted error:NULL][@"state"] isEqual:@"awaiting_resume"]);
-        CHECK([store endRun:interrupted error:NULL]);
+        CHECK([[store summaryForRun:interrupted error:NULL][@"state"] isEqual:@"completed"]);
 
         runner = nil; capture = nil; transport = nil; newRunner = nil; store = nil;
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);

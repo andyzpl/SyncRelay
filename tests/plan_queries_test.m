@@ -74,7 +74,7 @@ int main(void) {
         CHECK(exceptions.count == 1 && [exceptions[0][@"state"] isEqual:@"failed"] && [exceptions[0][@"reason"] isEqual:@"Network failure"]);
         CHECK([[store exceptionsForRun:secondRun account:@"account" limit:1 offset:1 error:NULL][0][@"state"] isEqual:@"uncertain"]);
         CHECK([store exceptionsForRun:secondRun account:@"account" limit:1 offset:2 error:NULL].count == 0);
-        CHECK([store endRun:secondRun error:NULL]);
+        CHECK([[store summaryForRun:secondRun error:NULL][@"state"] isEqual:@"completed"]);
         CHECK([[store ruleCardsForPlan:plan account:@"account" error:NULL][2][@"initialUnlocked"] boolValue]);
         NSString *thirdRun = [store startRule:third replay:NO error:NULL]; CHECK(thirdRun); CHECK([store endRun:thirdRun error:NULL]);
         CHECK([[store exceptionsForRun:thirdRun account:@"account" limit:50 offset:0 error:NULL][0][@"state"] isEqual:@"cancelled"]);

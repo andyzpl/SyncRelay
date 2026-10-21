@@ -5,7 +5,10 @@ typedef void (^SRSendCompletion)(NSString *state, NSString * _Nullable messageID
 @protocol SRSendTransport <NSObject>
 /* Must verify both adapter readiness and the current logged-in account. */
 - (BOOL)canSendForAccount:(NSString *)account;
-/* Nonblocking. Callback can arrive on any queue; no callback means unknown, not failure. */
+/* Nonblocking. "submitted" records a checked host invocation, NOT delivery.
+ * "confirmed" needs a reliable receipt and correlated ID. A target-local
+ * "failed" is skipped; account/service/platform problems must be "uncertain"
+ * so the runner pauses. No callback means unknown, never safe to retry. */
 - (void)submitDelivery:(NSDictionary *)delivery snapshot:(NSDictionary *)snapshot completion:(SRSendCompletion)completion;
 @end
 

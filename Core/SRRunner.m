@@ -71,8 +71,7 @@ static NSMapTable *SROwners(void) {
         if (![summary[@"account"] isEqual:account]) reason = @"Account does not own this run";
         else if (self->_run && ![self->_run isEqual:run]) reason = @"End the current run before attaching another";
         else if (![@[@"running", @"paused", @"awaiting_resume"] containsObject:summary[@"state"]]) reason = @"Run is already terminal";
-        else if ([self count:@"uncertain" summary:summary] ||
-                 ([self count:@"submitting" summary:summary] && !self->_inflight)) reason = @"Reconcile interrupted deliveries before continuing";
+        else if (self->_inflight || [self count:@"submitting" summary:summary]) reason = @"Wait for the current in-flight attempt before continuing";
         SRPacing pacing = {0};
         if (!reason && (!SRPacingConfigure(&pacing, [summary[@"minimum"] doubleValue], [summary[@"maximum"] doubleValue]) ||
                         !SRPacingResume(&pacing, self->_clock(), self->_random()))) reason = @"Invalid pacing input";
@@ -111,7 +110,7 @@ static NSMapTable *SROwners(void) {
 }
 - (void)recordDelivery:(NSDictionary *)delivery run:(NSString *)run state:(NSString *)state messageID:(NSString *)messageID reason:(NSString *)reason {
     BOOL current = [_run isEqual:run] && [_inflight[@"attempt_id"] isEqual:delivery[@"attempt_id"]];
-    if (![@[@"confirmed", @"failed", @"uncertain"] containsObject:state] ||
+    if (![@[@"submitted", @"confirmed", @"failed", @"uncertain"] containsObject:state] ||
         ([state isEqual:@"confirmed"] && (![messageID isKindOfClass:NSString.class] || !messageID.length))) {
         state = @"uncertain"; messageID = nil; reason = @"Unusable transport result";
     }
@@ -122,11 +121,12 @@ static NSMapTable *SROwners(void) {
     }
     if (![_run isEqual:run]) return; // History updates never drive a different run.
     if (current) _inflight = nil;
-    if (current && [state isEqual:@"uncertain"]) { [self halt:@"Delivery result is uncertain; reconcile before continuing"]; return; }
     NSDictionary *summary = [_store summaryForRun:run error:&error];
     if (!summary) { [self halt:error.localizedDescription]; return; }
     if ([summary[@"state"] isEqual:@"completed"]) {
         [self releaseOwner]; _run = nil; _halted = YES; _problem = nil;
+    } else if (current && [state isEqual:@"uncertain"]) {
+        [self halt:@"Attempt outcome is unknown; manual continuation sends only remaining unattempted targets"];
     } else if (current && ![self count:@"pending" summary:summary]) {
         [self halt:@"Batch has exceptions; review and explicitly end it"];
     }

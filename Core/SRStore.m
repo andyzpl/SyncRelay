@@ -81,7 +81,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         [self query:@"PRAGMA journal_mode=WAL" values:@[]];
         [self query:@"PRAGMA synchronous=FULL" values:@[]];
         NSInteger version = [[self query:@"PRAGMA user_version" values:@[]].firstObject[@"user_version"] integerValue];
-        SRRequire(version >= 0 && version <= 5, @"Unsupported database schema; do not downgrade");
+        SRRequire(version >= 0 && version <= 6, @"Unsupported database schema; do not downgrade");
         return @YES;
     } transaction:NO error:error];
     if (!setup) return nil;
@@ -102,7 +102,8 @@ static void SRRequire(BOOL condition, NSString *message) {
             @"CREATE INDEX IF NOT EXISTS allocations_by_rule ON allocations(rule_id)",
             @"CREATE TABLE IF NOT EXISTS text_experiments(account TEXT NOT NULL, source_group TEXT NOT NULL, source_message_id TEXT NOT NULL, target TEXT NOT NULL, claimed_at REAL NOT NULL, PRIMARY KEY(account,source_group,source_message_id))",
             @"CREATE TABLE IF NOT EXISTS image_experiments(account TEXT NOT NULL, source_group TEXT NOT NULL, source_message_id TEXT NOT NULL, target TEXT NOT NULL, claimed_at REAL NOT NULL, PRIMARY KEY(account,source_group,source_message_id))",
-            @"PRAGMA user_version=5"
+            @"CREATE TABLE IF NOT EXISTS submission_receipts(delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id), submitted_at REAL NOT NULL)",
+            @"PRAGMA user_version=6"
         ];
         for (NSString *sql in schema) [self query:sql values:@[]];
         return @YES;
@@ -203,6 +204,8 @@ static void SRRequire(BOOL condition, NSString *message) {
 
 - (BOOL)resumeRun:(NSString *)run error:(NSError **)error {
     return [self perform:^id{
+        SRRequire([self query:@"SELECT id FROM deliveries WHERE run_id=? AND state='submitting' LIMIT 1" values:@[run]].count == 0,
+                  @"Wait for the current in-flight attempt before continuing");
         [self query:@"UPDATE runs SET state='running' WHERE id=? AND state IN ('paused','awaiting_resume')" values:@[run]];
         SRRequire(sqlite3_changes(self->_db) == 1, @"Run is not paused");
         return @YES;
@@ -211,9 +214,12 @@ static void SRRequire(BOOL condition, NSString *message) {
 
 - (BOOL)recoverInterruptedRuns:(NSError **)error {
     return [self perform:^id{
-        [self query:@"UPDATE attempts SET state='uncertain',reason='Process interrupted' WHERE state='submitting'" values:@[]];
+        [self query:@"UPDATE attempts SET state='uncertain',ended_at=?,reason='Process interrupted' WHERE state='submitting'"
+            values:@[@(NSDate.date.timeIntervalSince1970)]];
         [self query:@"UPDATE deliveries SET state='uncertain',reason='Process interrupted' WHERE state='submitting'" values:@[]];
         [self query:@"UPDATE runs SET state='awaiting_resume' WHERE state IN ('running','paused')" values:@[]];
+        [self query:@"UPDATE runs SET state='completed',ended_at=? WHERE state='awaiting_resume' AND EXISTS(SELECT 1 FROM deliveries d WHERE d.run_id=runs.id) AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.run_id=runs.id AND d.state IN ('pending','submitting'))"
+            values:@[@(NSDate.date.timeIntervalSince1970)]];
         return @YES;
     } transaction:YES error:error] != nil;
 }
@@ -222,8 +228,8 @@ static void SRRequire(BOOL condition, NSString *message) {
     return [self perform:^id{
         NSDictionary *batch = [self query:@"SELECT state FROM runs WHERE id=?" values:@[run]].firstObject;
         SRRequire([batch[@"state"] isEqual:@"running"], @"Run is not running");
-        SRRequire([self query:@"SELECT id FROM deliveries WHERE run_id=? AND state IN ('submitting','uncertain') LIMIT 1" values:@[run]].count == 0,
-                  @"An in-flight or uncertain delivery needs resolution");
+        SRRequire([self query:@"SELECT id FROM deliveries WHERE run_id=? AND state='submitting' LIMIT 1" values:@[run]].count == 0,
+                  @"An in-flight delivery must finish before another target");
         NSMutableDictionary *delivery = [[self query:@"SELECT * FROM deliveries WHERE run_id=? AND state='pending' ORDER BY position LIMIT 1" values:@[run]].firstObject mutableCopy];
         if (!delivery) return nil;
         NSString *attempt = NSUUID.UUID.UUIDString;
@@ -239,20 +245,30 @@ static void SRRequire(BOOL condition, NSString *message) {
 - (BOOL)recordResultForDelivery:(NSString *)delivery attempt:(NSString *)attempt state:(NSString *)state
                      messageID:(NSString *)messageID reason:(NSString *)reason error:(NSError **)error {
     return [self perform:^id{
-        SRRequire([@[@"confirmed", @"failed", @"uncertain"] containsObject:state], @"Invalid outcome");
+        SRRequire([@[@"submitted", @"confirmed", @"failed", @"uncertain"] containsObject:state], @"Invalid outcome");
         SRRequire(![state isEqual:@"confirmed"] || messageID.length, @"Confirmed result requires a correlated message ID");
         NSDictionary *row = [self query:@"SELECT * FROM deliveries WHERE id=? AND attempt_id=?" values:@[delivery, attempt]].firstObject;
         SRRequire(row != nil, @"Unmatched attempt");
+        BOOL submitted = [state isEqual:@"submitted"];
+        BOOL receipt = [self query:@"SELECT delivery_id FROM submission_receipts WHERE delivery_id=? AND attempt_id=?" values:@[delivery, attempt]].count > 0;
+        // Dispatch evidence is a separate axis; it never claims actual delivery.
+        NSString *storedState = submitted ? @"uncertain" : state;
+        if ([row[@"state"] isEqual:@"uncertain"] && [state isEqual:@"uncertain"]) return @YES;
+        if (submitted && receipt) return @YES;
         if (![row[@"state"] isEqual:@"submitting"] && ![row[@"state"] isEqual:@"uncertain"]) {
-            SRRequire([row[@"state"] isEqual:state], @"Conflicting terminal callback");
+            SRRequire([row[@"state"] isEqual:storedState], @"Conflicting terminal callback");
             SRRequire(![state isEqual:@"confirmed"] || [row[@"message_id"] isEqual:messageID], @"Conflicting confirmation message ID");
             return @YES;
         }
         [self query:@"UPDATE deliveries SET state=?,message_id=?,reason=? WHERE id=?"
-            values:@[state, messageID ?: (id)NSNull.null, reason ?: (id)NSNull.null, delivery]];
+            values:@[storedState, messageID ?: (id)NSNull.null, reason ?: (id)NSNull.null, delivery]];
         [self query:@"UPDATE attempts SET state=?,ended_at=?,message_id=?,reason=? WHERE id=?"
             values:@[state, @(NSDate.date.timeIntervalSince1970), messageID ?: (id)NSNull.null, reason ?: (id)NSNull.null, attempt]];
-        NSArray *remaining = [self query:@"SELECT id FROM deliveries WHERE run_id=? AND state!='confirmed' LIMIT 1" values:@[row[@"run_id"]]];
+        if (submitted) [self query:@"INSERT INTO submission_receipts VALUES(?,?,?)"
+            values:@[delivery, attempt, @(NSDate.date.timeIntervalSince1970)]];
+        if ([state isEqual:@"uncertain"] && !receipt)
+            [self query:@"UPDATE runs SET state='paused' WHERE id=? AND state='running'" values:@[row[@"run_id"]]];
+        NSArray *remaining = [self query:@"SELECT id FROM deliveries WHERE run_id=? AND state IN ('pending','submitting') LIMIT 1" values:@[row[@"run_id"]]];
         if (!remaining.count) [self query:@"UPDATE runs SET state='completed',ended_at=? WHERE id=? AND state IN ('running','paused','awaiting_resume')"
             values:@[@(NSDate.date.timeIntervalSince1970), row[@"run_id"]]];
         return @YES;
@@ -265,7 +281,8 @@ static void SRRequire(BOOL condition, NSString *message) {
             values:@[@(NSDate.date.timeIntervalSince1970), run]];
         SRRequire(sqlite3_changes(self->_db) == 1, @"Run is already ended or unknown");
         [self query:@"UPDATE deliveries SET state='cancelled' WHERE run_id=? AND state='pending'" values:@[run]];
-        [self query:@"UPDATE attempts SET state='uncertain',reason='Ended while submitting' WHERE delivery_id IN (SELECT id FROM deliveries WHERE run_id=? AND state='submitting')" values:@[run]];
+        [self query:@"UPDATE attempts SET state='uncertain',ended_at=?,reason='Ended while submitting' WHERE delivery_id IN (SELECT id FROM deliveries WHERE run_id=? AND state='submitting')"
+            values:@[@(NSDate.date.timeIntervalSince1970), run]];
         [self query:@"UPDATE deliveries SET state='uncertain',reason='Ended while submitting' WHERE run_id=? AND state='submitting'" values:@[run]];
         return @YES;
     } transaction:YES error:error] != nil;
@@ -275,9 +292,13 @@ static void SRRequire(BOOL condition, NSString *message) {
     return [self perform:^id{
         NSMutableDictionary *summary = [[self query:@"SELECT * FROM runs WHERE id=?" values:@[run]].firstObject mutableCopy];
         SRRequire(summary != nil, @"Unknown run");
-        summary[@"counts"] = [self query:@"SELECT state,COUNT(*) AS count FROM deliveries WHERE run_id=? GROUP BY state" values:@[run]];
+        summary[@"counts"] = [self countsForRun:run];
         return summary;
     } transaction:NO error:error];
+}
+
+- (NSArray *)countsForRun:(NSString *)run {
+    return [self query:@"SELECT CASE WHEN d.state='uncertain' AND v.attempt_id IS NOT NULL THEN 'submitted' ELSE d.state END AS state,COUNT(*) AS count FROM deliveries d LEFT JOIN submission_receipts v ON v.delivery_id=d.id AND v.attempt_id=d.attempt_id WHERE d.run_id=? GROUP BY CASE WHEN d.state='uncertain' AND v.attempt_id IS NOT NULL THEN 'submitted' ELSE d.state END" values:@[run]];
 }
 
 - (NSArray<NSString *> *)allocatedTargetsForPlan:(NSString *)plan error:(NSError **)error {
@@ -358,8 +379,8 @@ static void SRRequire(BOOL condition, NSString *message) {
 - (NSDictionary *)runCard:(NSDictionary *)row {
     NSMutableDictionary *card = [row mutableCopy];
     [card removeObjectForKey:@"snapshot"]; [card removeObjectForKey:@"account"];
-    NSMutableDictionary *counts = [@{@"pending": @0, @"submitting": @0, @"confirmed": @0, @"failed": @0, @"uncertain": @0, @"cancelled": @0} mutableCopy];
-    for (NSDictionary *count in [self query:@"SELECT state,COUNT(*) AS count FROM deliveries WHERE run_id=? GROUP BY state" values:@[row[@"id"]]])
+    NSMutableDictionary *counts = [@{@"pending": @0, @"submitting": @0, @"submitted": @0, @"confirmed": @0, @"failed": @0, @"uncertain": @0, @"cancelled": @0} mutableCopy];
+    for (NSDictionary *count in [self countsForRun:row[@"id"]])
         counts[count[@"state"]] = count[@"count"];
     card[@"counts"] = counts;
     return card;
@@ -401,7 +422,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         SRRequire(account.length && run.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid account or page range");
         SRRequire([self query:@"SELECT id FROM runs WHERE id=? AND account=?" values:@[run, account]].count,
             @"Run is unavailable for this account");
-        return [self query:@"SELECT id,target,position,state,reason,attempt_id,message_id FROM deliveries WHERE run_id=? AND state IN ('failed','uncertain','cancelled') ORDER BY position LIMIT ? OFFSET ?"
+        return [self query:@"SELECT d.id,d.target,d.position,d.state,d.reason,d.attempt_id,d.message_id FROM deliveries d LEFT JOIN submission_receipts v ON v.delivery_id=d.id AND v.attempt_id=d.attempt_id WHERE d.run_id=? AND (d.state IN ('failed','cancelled') OR (d.state='uncertain' AND v.attempt_id IS NULL)) ORDER BY d.position LIMIT ? OFFSET ?"
             values:@[run, @(limit), @(offset)]];
     } transaction:NO error:error];
 }

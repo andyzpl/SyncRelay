@@ -20,6 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
 /* replay=YES requires history and explicit caller confirmation before invocation. */
 - (nullable NSString *)startRule:(NSString *)rule replay:(BOOL)replay error:(NSError **)error;
 - (BOOL)pauseRun:(NSString *)run error:(NSError **)error;
+/* Manual continuation sends only pending targets. Uncertain/failed attempts
+ * are retained and never requeued; no per-target user review is required. */
 - (BOOL)resumeRun:(NSString *)run error:(NSError **)error;
 - (BOOL)recoverInterruptedRuns:(NSError **)error;
 /* Claim is transactional, but pacing and adapter availability are caller gates. */

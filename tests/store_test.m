@@ -71,10 +71,9 @@ int main(void) {
         assert([summary[@"state"] isEqual:@"awaiting_resume"]);
         assert(count(summary, @"uncertain") == 1 && count(summary, @"pending") == 1999);
         assert(![store claimNextForRun:run error:NULL]);
-        assert([store resumeRun:run error:&error]);
-        assert(![store claimNextForRun:run error:NULL]);
         assert(![store recordResultForDelivery:delivery[@"id"] attempt:@"wrong" state:@"confirmed" messageID:@"server-1" reason:nil error:NULL]);
         assert([store recordResultForDelivery:delivery[@"id"] attempt:delivery[@"attempt_id"] state:@"confirmed" messageID:@"server-1" reason:nil error:&error]);
+        assert([store resumeRun:run error:&error]);
         assert([store recordResultForDelivery:delivery[@"id"] attempt:delivery[@"attempt_id"] state:@"confirmed" messageID:@"server-1" reason:nil error:&error]);
         for (int i = 1; i < 2000; i++) {
             @autoreleasepool {
@@ -103,8 +102,8 @@ int main(void) {
         NSDictionary *failed = [store claimNextForRun:secondRun error:&error];
         assert(failed);
         assert([store recordResultForDelivery:failed[@"id"] attempt:failed[@"attempt_id"] state:@"failed" messageID:nil reason:@"test failure" error:&error]);
-        assert(![[store summaryForRun:secondRun error:&error][@"state"] isEqual:@"completed"]);
-        assert([store endRun:secondRun error:&error]);
+        assert([[store summaryForRun:secondRun error:&error][@"state"] isEqual:@"completed"]);
+        assert(count([store summaryForRun:secondRun error:&error], @"failed") == 1);
         assert(![store claimTextExperiment:experimentSource configuration:experimentDraft account:@"account" target:@"target@chatroom" error:NULL]);
         assert(![store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"source@chatroom" error:NULL]);
         assert(![store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"unallocated@chatroom" error:NULL]);

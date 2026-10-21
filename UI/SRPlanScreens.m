@@ -19,8 +19,8 @@ static NSString *SRRunDescription(NSDictionary *run) {
         @"completed": @"执行完成", @"ended": @"执行已结束"}[run[@"state"]] ?: @"状态待核对";
     if ([@[@"completed", @"ended"] containsObject:run[@"state"]]) state = [NSString stringWithFormat:@"%@ %@", SRDate(run[@"ended_at"]), state];
     NSDictionary *counts = run[@"counts"];
-    return [NSString stringWithFormat:@"%@\n已确认 %@ · 失败 %@ · 待核对 %@\n未发 %@ · 在途 %@ · 已取消 %@", state,
-        counts[@"confirmed"] ?: @0, counts[@"failed"] ?: @0, counts[@"uncertain"] ?: @0,
+    return [NSString stringWithFormat:@"%@\n已提交 %@ · 已确认送达 %@\n失败 %@ · 结果未知 %@\n未发 %@ · 在途 %@ · 已取消 %@", state,
+        counts[@"submitted"] ?: @0, counts[@"confirmed"] ?: @0, counts[@"failed"] ?: @0, counts[@"uncertain"] ?: @0,
         counts[@"pending"] ?: @0, counts[@"submitting"] ?: @0, counts[@"cancelled"] ?: @0];
 }
 static void SRScreenAlert(UIViewController *controller, NSString *title, NSString *message) {
@@ -173,7 +173,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     id text = [payload isKindOfClass:NSDictionary.class] ? payload[@"text"] : nil;
     if ([[self source][@"type"] isEqual:@"image"]) {
         NSDictionary *image = [self source][@"payload"];
-        return [NSString stringWithFormat:@"图片快照 · %@ × %@ · %.1f KB\n点开核对实际图片；本版不发送图片。", image[@"pixelWidth"], image[@"pixelHeight"], [image[@"byteCount"] doubleValue] / 1024.0];
+        return [NSString stringWithFormat:@"图片快照 · %@ × %@ · %.1f KB\n本页预览或确认计划均不发送。", image[@"pixelWidth"], image[@"pixelHeight"], [image[@"byteCount"] doubleValue] / 1024.0];
     }
     return [text isKindOfClass:NSString.class] ? text : @"没有可用的内容预览，请重新捕获。";
 }
@@ -197,8 +197,8 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
     if (self.kind == SRRecordPreview && section == 2) return @"确认只建立内容计划和目标分组，不发送。所有规则使用同一条已确认内容；之后修改设置不会改变此计划。";
     if (self.kind == SRRecordPlan && section == 1) return @"点击规则查看历史及异常。真实发送适配尚未启用，本版不提供可用的开始、继续或重新执行按钮；顺序解锁也不会自动发送。";
-    if (self.kind == SRRecordHistory) return @"按执行批次保留历史。完成时间取真实结束记录，不使用当前打开时间；点击批次查看失败、待核对和取消项。";
-    if (self.kind == SRRecordExceptions) return @"不逐条列出成功群。待核对不等于失败，不能盲目重试；取消项代表未继续派发，不伪报为成功。";
+    if (self.kind == SRRecordHistory) return @"执行完成表示本条队列处理结束，不代表全部送达。已提交与确认送达分开统计；点击批次只查看失败、结果未知和未发项。";
+    if (self.kind == SRRecordExceptions) return @"无需逐群人工复核。异常保留供按需查看；继续只处理尚未尝试的目标，不自动重发已提交或结果未知的群。";
     return nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
