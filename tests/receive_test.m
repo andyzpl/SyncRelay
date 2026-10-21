@@ -153,6 +153,10 @@ static void checkImageCapture(void) {
         if (mode == 3) account = @"wxid_changed";
         if (mode == 4) ((ReceiveWrap *)value).m_n64MesSvrID++;
         if (mode == 5) [weak stop];
+        if (mode == 6) {
+            [weak stop]; CHECK([weak armForAccount:account sourceGroup:@"mother@chatroom" error:NULL]);
+            *error = [NSError errorWithDomain:@"fixture" code:2 userInfo:nil]; return nil;
+        }
         return imagePayload();
     };
     receiver.discardImage = ^(__unused NSDictionary *payload) { discards++; };
@@ -187,8 +191,14 @@ static void checkImageCapture(void) {
         CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
         CHECK(received.count == 2 && ![receiver.diagnostics[@"armed"] boolValue]);
+        if (mode == 2) CHECK([receiver.diagnostics[@"imagePreparationCode"] isEqual:@9]);
     }
     CHECK(discards == 3);
+    account = @"wxid_account"; mode = 6;
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
+    CHECK([receiver.diagnostics[@"armed"] boolValue] && [receiver.diagnostics[@"textOnlyCandidate"] boolValue]);
+    CHECK(received.count == 2); [receiver stop];
     account = @"wxid_account"; mode = 0;
     CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; [receiver stop];

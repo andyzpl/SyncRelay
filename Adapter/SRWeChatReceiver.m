@@ -60,6 +60,7 @@
 @property(nonatomic, copy) NSString *imageState;
 @property(nonatomic) NSUInteger imageReads;
 @property(nonatomic) NSUInteger queuedImages;
+@property(nonatomic) NSUInteger imagePreparationCode;
 - (SRDirectionObservation *)beginDirectionForSession:(id)session wrap:(id)wrap;
 - (void)finishDirection:(SRDirectionObservation *)observation path:(NSString *)path wrap:(id)wrap;
 - (void)observeSession:(id)session wrap:(id)wrap;
@@ -228,6 +229,7 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
             self.pendingOutgoing = nil; self.queuedOutgoing = 0; self.ownTextState = @"unavailable";
             self.senderIDs = nil; self.selectedTypes = [NSSet setWithObject:@"text"];
             self.pendingImage = nil; self.imageState = @"disabled"; self.imageReads = 0; self.queuedImages = 0;
+            self.imagePreparationCode = 0;
             self.tap = tap; self.armed = YES; tap.listener = self;
         }
         // Optional outgoing observation. Never invoke AddMsg ourselves.
@@ -450,7 +452,15 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         @synchronized(self) { if (!self.armed || self.generation != generation || self.pendingImage != pending) return; }
         NSError *error = nil; self.imageReads++;
         payload = self.prepareImage ? self.prepareImage(pending.wrap, pending.source, &error) : nil;
+        @synchronized(self) {
+            if (!self.armed || self.generation != generation || self.pendingImage != pending) {
+                if (payload && self.discardImage) self.discardImage(payload);
+                return;
+            }
+        }
         if (error || (payload && ![SRImageAssetStore validPayload:payload])) {
+            self.imagePreparationCode = [error.domain isEqual:@"SyncRelay.ImageSource"] ? 101 :
+                ([error.domain isEqual:@"SyncRelay.ImageAsset"] && error.code >= 1 && error.code <= 8 ? (NSUInteger)error.code : 9);
             if (payload && self.discardImage) self.discardImage(payload);
             self.imageState = @"preparation_failed"; [self note:@"image_failed"]; [self stop];
             [self fail:@"Image preparation failed; export diagnostics. No message was sent" error:NULL]; return;
@@ -476,7 +486,7 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
         });
     } @catch (__unused id exception) {
         if (payload && self.discardImage) self.discardImage(payload);
-        self.imageState = @"preparation_failed"; [self note:@"image_failed"]; [self stop];
+        self.imagePreparationCode = 10; self.imageState = @"preparation_failed"; [self note:@"image_failed"]; [self stop];
         [self fail:@"Image observation failed; export diagnostics" error:NULL];
     }
 }
@@ -513,6 +523,7 @@ static NSDictionary *SRDirectionSnapshot(id wrap, Class expected, NSString *acco
             @"directionSamplesDropped": @(self.directionDropped),
             @"textOnlyCandidate": @(![self.selectedTypes containsObject:@"image"]), @"imageCaptureSchema": @1, @"imageState": self.imageState ?: @"idle",
             @"imagePending": @(self.pendingImage != nil), @"imageReads": @(self.imageReads), @"imageWaitLimit": @30,
+            @"imagePreparationCode": @(self.imagePreparationCode),
             @"senderFilterCount": @(self.senderIDs.count), @"sendingEnabled": @NO, @"problem": self.problem ?: @"", @"methods": methods};
     }
 }

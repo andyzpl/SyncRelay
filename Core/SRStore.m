@@ -112,14 +112,19 @@ static void SRRequire(BOOL condition, NSString *message) {
         for (NSDictionary *row in [self query:@"SELECT snapshot FROM plans" values:@[]]) {
             NSData *data = [row[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding];
             NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-            if (![snapshot isKindOfClass:NSDictionary.class]) continue;
+            // A damaged plan is not proof that its files are unreferenced.
+            if (![snapshot isKindOfClass:NSDictionary.class]) return NSNull.null;
             NSDictionary *payload = snapshot[@"payload"];
-            if ([snapshot[@"type"] isEqual:@"image"] && [SRImageAssetStore validPayload:payload]) [references addObject:payload[@"mediaReference"]];
+            if (![snapshot[@"type"] isEqual:@"image"]) continue;
+            NSString *token = [payload isKindOfClass:NSDictionary.class] ? payload[@"mediaReference"] : nil;
+            NSUUID *uuid = [token isKindOfClass:NSString.class] ? [[NSUUID alloc] initWithUUIDString:token] : nil;
+            if (![uuid.UUIDString isEqual:token]) return NSNull.null;
+            [references addObject:token];
         }
         return references;
     } transaction:NO error:error];
     if (!retained) return nil;
-    [self.imageAssets pruneUnreferenced:retained];
+    if (retained != NSNull.null) [self.imageAssets pruneUnreferenced:retained];
     return self;
 }
 

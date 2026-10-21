@@ -122,6 +122,11 @@ def analyze(report):
                 add('image_result_invalid', 'Native image getter returned an object that was not a UIImage.')
             if receiver.get('imageState') == 'snapshot_ready':
                 add('image_snapshot_ready', 'An owned image snapshot passed preparation. Verify actual preview manually; image sending is not enabled.')
+            preparation = receiver.get('imagePreparationCode')
+            if type(preparation) is int and preparation == 3:
+                add('image_storage_quota', 'Owned image storage reached its quota; existing plan images were not evicted.')
+            if type(preparation) is int and preparation == 8:
+                add('image_raster_unsupported', 'Native raster dimensions or animated image exceeded this static-snapshot capture contract.')
 
     # The manual send probe is deliberately observational. Keep its findings
     # separate from receive-candidate counters so a local/server ID change can

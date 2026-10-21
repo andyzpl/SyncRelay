@@ -25,6 +25,6 @@
 
 失败当次立即导出 JSON，告诉开发者“本人/其他人、图片是否已在母群点开、是否等到超时、是否出现实际预览”。请勿手动编辑 JSON，也不必发送图片本身。
 
-关键字段：`imageSource.getterABICompatible/state/reads`、`receiveCandidate.imageState/imageReads/imagePending/counters`、`sourceCapture`。错误报告不包含图片、原始 wxid/群 ID、路径、图片哈希或下载凭据。
+关键字段：`imageSource.getterABICompatible/state/reads`、`receiveCandidate.imageState/imageReads/imagePending/imagePreparationCode/counters`、`sourceCapture`。准备错误分类：1 无效或超限数据、2 自有目录不可用、3 配额、4 写入、5 来源范围、6 文件不可读、7 完整性、8 尺寸/动画、9 描述符或其他准备错误、10 异常、101 原生图片接口。错误报告不包含图片、原始 wxid/群 ID、路径、图片哈希或下载凭据。
 
 如果提示缺少图片 getter 或 ABI 不兼容，停止图片测试并导出诊断，不安装 Mikoto 来补接口，不更改安全门禁。打包成功不代表这台手机上的图片链路已通过。

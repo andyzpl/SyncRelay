@@ -26,6 +26,10 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn('image_timeout', {row['code'] for row in analyze(report)})
         report['imageSource']['getterABICompatible'] = False
         self.assertIn('image_getter_unavailable', {row['code'] for row in analyze(report)})
+        report['receiveCandidate']['imagePreparationCode'] = 3
+        self.assertIn('image_storage_quota', {row['code'] for row in analyze(report)})
+        report['receiveCandidate']['imagePreparationCode'] = 8
+        self.assertIn('image_raster_unsupported', {row['code'] for row in analyze(report)})
 
     def test_image_ready_only_means_snapshot(self):
         report = self.report(imageState='snapshot_ready')

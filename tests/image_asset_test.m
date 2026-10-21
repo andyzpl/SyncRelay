@@ -91,6 +91,13 @@ int main(void) {
         store = nil; store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store);
         CHECK(![store.imageAssets dataForPayload:orphan source:orphanSource error:NULL]);
         CHECK([store.imageAssets dataForPayload:restored[@"payload"] source:restored error:NULL]);
+        NSDictionary *recoverable = [store.imageAssets saveData:data source:orphanSource error:NULL]; CHECK(recoverable);
+        NSMutableDictionary *damaged = [orphanSource mutableCopy], *damagedPayload = [recoverable mutableCopy];
+        damagedPayload[@"pixelWidth"] = NSNull.null; damaged[@"payload"] = damagedPayload;
+        CHECK([store createPlanForAccount:@"account" sourceGroup:@"mother@chatroom" senders:@[@"sender"]
+            types:@[@"image"] sourceSnapshot:damaged error:NULL]);
+        store = nil; store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store);
+        CHECK([store.imageAssets dataForPayload:recoverable source:orphanSource error:NULL]);
         message[@"messageID"] = @"svr:12";
         CHECK(![store createPlanFromConfiguration:configuration() envelope:message account:@"account" error:NULL]);
         store = nil; CHECK([NSFileManager.defaultManager removeItemAtPath:root error:NULL]);
