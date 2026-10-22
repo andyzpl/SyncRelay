@@ -114,6 +114,61 @@ def analyze(report):
         add('no_callback_observed', 'Waiting is armed, but neither candidate hook has been observed; this is not a compatibility verdict.')
     if capture.get('state') == 'preview':
         add('preview_ready', 'One source is frozen for preview. Preview alone does not submit a message.')
+    appmsg = receiver.get('appMessageProbe')
+    if appmsg is not None:
+        failure_states = {'empty_content', 'content_unavailable', 'too_large', 'too_complex',
+                          'unsupported_structure', 'sender_prefix_mismatch', 'unsafe_xml',
+                          'invalid_xml', 'ambiguous_fields', 'invalid_subtype'}
+        presence_keys = ('hasTitle', 'hasURL', 'hasAttachment', 'hasAttachmentID',
+                         'hasFileExtension', 'hasTotalLength')
+        if not isinstance(appmsg, dict) or type(appmsg.get('schema')) is not int or appmsg['schema'] != 1:
+            add('app_message_probe_invalid', 'Unsupported app-message structural probe schema.')
+        elif flag(appmsg.get('observerOnly')) is not True or flag(appmsg.get('relayable')) is not False:
+            add('app_message_probe_scope_invalid', 'App-message evidence is not marked as observer-only/non-relayable. Do not use it to submit messages.')
+        else:
+            samples = appmsg.get('samples')
+            attempts, dropped = appmsg.get('attempts'), appmsg.get('dropped')
+            valid = (isinstance(samples, list) and len(samples) <= 16 and
+                     type(attempts) is int and 0 <= attempts <= 16 and len(samples) <= attempts and
+                     type(dropped) is int and 0 <= dropped <= 2**64 - 1)
+            kinds, states = set(), set()
+            for sample in samples[:16] if isinstance(samples, list) else []:
+                if not isinstance(sample, dict) or not isinstance(sample.get('state'), str):
+                    valid = False
+                    continue
+                state = sample['state']
+                if state == 'parsed':
+                    subtype = sample.get('subtype')
+                    if type(subtype) is not int or not 0 <= subtype <= 2**32 - 1:
+                        valid = False
+                        continue
+                    kind = {5: 'link', 6: 'file'}.get(subtype, 'other')
+                    if sample.get('kindHint') != kind or any(flag(sample.get(key)) is None for key in presence_keys):
+                        valid = False
+                        continue
+                    kinds.add(kind)
+                elif state not in failure_states or 'subtype' in sample or 'kindHint' in sample:
+                    valid = False
+                states.add(state)
+            if not valid:
+                add('app_message_probe_invalid', 'App-message samples or counters violate the bounded structural schema; no subtype classification is inferred.')
+            else:
+                if 'parsed' in states:
+                    add('app_message_subtypes_observed', 'Selected type-49 callbacks yielded structural appmsg subtypes. Counts are callbacks, not unique messages; payload, media readiness and sending remain unverified.')
+                if 'link' in kinds:
+                    add('app_message_link_hint', 'An appmsg subtype-5 link candidate was observed. URL presence is not URL validation, preview, capture or relay support.')
+                if 'file' in kinds:
+                    add('app_message_file_hint', 'An appmsg subtype-6 file candidate was observed. Attachment fields do not prove that a local file exists or can be sent.')
+                if 'other' in kinds:
+                    add('app_message_other_subtype', 'An unimplemented appmsg subtype was observed; it must remain non-relayable.')
+                if 'content_unavailable' in states:
+                    add('app_message_content_unavailable', 'The declared content getter failed or returned nil/non-string. No KVC, ivar or alternate media getter fallback ran.')
+                if states & (failure_states - {'content_unavailable'}):
+                    add('app_message_parse_rejected', 'App-message XML was empty, unsupported, ambiguous, unsafe, malformed or over limits. No raw XML or parser error text is echoed.')
+                if dropped:
+                    add('app_message_probe_dropped', 'The per-arm app-message probe limit was reached; excess callbacks did not read XML.')
+                if attempts and not samples:
+                    add('app_message_no_stable_sample', 'App-message callbacks were reserved but no stable sample is present; queued or invalidated context is not proof of getter failure.')
     image = report.get('imageSource')
     if image is not None:
         if not isinstance(image, dict) or image.get('schema') != 1:

@@ -33,15 +33,16 @@ jobs:
           "$RUNNER_TEMP/pacing-test"
           clang -std=c11 -Wall -Wextra -Werror -I. Core/SROperationsState.c tests/operations_state_test.c -o "$RUNNER_TEMP/operations-state-test"
           "$RUNNER_TEMP/operations-state-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRPacing.c tests/store_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/store-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRSourceCapture.m Core/SRRunner.m Core/SRPacing.c tests/relay_pipeline_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/pipeline-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRRelayCoordinator.m Core/SROperationsState.c Core/SRPacing.c tests/relay_coordinator_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/relay-coordinator-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRRunner.m Core/SRPacing.c tests/automatic_progress_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/automatic-progress-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRRunner.m Core/SRRuntimeLog.m Core/SRExecutionProgress.m Core/SRPacing.c Adapter/SRSmallGroupSession.m tests/small_group_session_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/small-group-session-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c tests/store_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/store-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRSourceCapture.m Core/SRRunner.m Core/SRPacing.c tests/relay_pipeline_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/pipeline-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRRelayCoordinator.m Core/SRRuntimeLog.m Core/SROperationsState.c Core/SRPacing.c tests/relay_coordinator_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/relay-coordinator-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRRunner.m Core/SRPacing.c tests/automatic_progress_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/automatic-progress-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRRunner.m Core/SRRuntimeLog.m Core/SRExecutionProgress.m Core/SRPacing.c Adapter/SRSmallGroupSession.m tests/small_group_session_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/small-group-session-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReader.m Core/SRSelection.m Core/SRConfiguration.m Core/SRPacing.c tests/adapter_test.m -framework Foundation -o "$RUNNER_TEMP/adapter-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRGroupPlanner.m Core/SRSelection.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRStore.m Core/SRPacing.c tests/group_planner_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/group-planner-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReceiver.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRSourceCapture.m Core/SRStore.m Core/SROperationsState.c Core/SRPacing.c tests/receive_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/receive-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRPacing.c tests/plan_queries_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/plan-queries-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRGroupPlanner.m Core/SRSelection.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRStore.m Core/SRMediaAlertState.m Core/SRPacing.c tests/group_planner_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/group-planner-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReceiver.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRSourceCapture.m Core/SRStore.m Core/SRMediaAlertState.m Core/SROperationsState.c Core/SRPacing.c tests/receive_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/receive-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatReceiver.m Adapter/SRSourceTimeProbe.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SROperationsState.c Core/SRPacing.c tests/source_time_probe_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -o "$RUNNER_TEMP/source-time-probe-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c tests/plan_queries_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/plan-queries-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatSendProbe.m tests/send_probe_test.m -framework Foundation -o "$RUNNER_TEMP/send-probe-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatTextSendAdapter.m tests/single_text_send_adapter_test.m -framework Foundation -o "$RUNNER_TEMP/single-text-send-adapter-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatTextSendHost.m tests/text_send_host_test.m -framework Foundation -o "$RUNNER_TEMP/text-send-host-test"
@@ -49,8 +50,12 @@ jobs:
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRRuntimeLog.m tests/runtime_log_test.m -framework Foundation -o "$RUNNER_TEMP/runtime-log-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatImageSource.m tests/image_source_test.m -framework Foundation -o "$RUNNER_TEMP/image-source-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRWeChatImageSendProbe.m tests/image_send_probe_test.m -framework Foundation -o "$RUNNER_TEMP/image-send-probe-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatImageSendHost.m Core/SRImageAssetStore.m tests/image_send_host_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -o "$RUNNER_TEMP/image-send-host-test"
-          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRImageAssetStore.m Core/SRStore.m Core/SRSourceMessage.m Core/SRSourceCapture.m Core/SRConfiguration.m Core/SRPacing.c tests/image_asset_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/image-asset-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRRuntime.m Adapter/SRWeChatImageSendHost.m Core/SRImageAssetStore.m Core/SRMediaQuota.c tests/image_send_host_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -o "$RUNNER_TEMP/image-send-host-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRStore.m Core/SRMediaAlertState.m Core/SRSourceMessage.m Core/SRSourceCapture.m Core/SRConfiguration.m Core/SRPacing.c tests/image_asset_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/image-asset-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c tests/library_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/library-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c tests/library_task_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/library-task-test"
+          clang -std=c11 -Wall -Wextra -Werror -I. Core/SRMediaQuota.c tests/media_quota_test.c -o "$RUNNER_TEMP/media-quota-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c tests/media_budget_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/media-budget-test"
           for pass in 1 2 3; do
             "$RUNNER_TEMP/store-test"
             "$RUNNER_TEMP/adapter-test"
@@ -60,6 +65,7 @@ jobs:
             "$RUNNER_TEMP/small-group-session-test"
             "$RUNNER_TEMP/group-planner-test"
             "$RUNNER_TEMP/receive-test"
+            "$RUNNER_TEMP/source-time-probe-test"
             "$RUNNER_TEMP/plan-queries-test"
             "$RUNNER_TEMP/send-probe-test"
             "$RUNNER_TEMP/single-text-send-adapter-test"
@@ -70,6 +76,10 @@ jobs:
             "$RUNNER_TEMP/image-send-probe-test"
             "$RUNNER_TEMP/image-send-host-test"
             "$RUNNER_TEMP/image-asset-test"
+            "$RUNNER_TEMP/library-test"
+            "$RUNNER_TEMP/library-task-test"
+            "$RUNNER_TEMP/media-quota-test"
+            "$RUNNER_TEMP/media-budget-test"
           done
       - name: Install build tools
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
@@ -118,7 +128,7 @@ jobs:
           otool -L "$dylib"
           cp "$deb" dist/
           shasum -a 256 dist/*.deb > dist/SHA256SUMS
-          printf 'Development device checkpoint: explicitly started rules limited to 1-20 authorized groups, text or static image, serial foreground execution. No 100/200-group execution, replay, automatic next rule or retry. Per-delivery native claims persist; restart requires manual pending-only continuation. Submitted is NOT delivered. Image loading may write native media before submission. Legacy single-target experiments are mutually exclusive. Multi-group device behavior and compatibility are not verified.\n' > dist/DEVELOPMENT-NOTICE.txt
+          printf '%s\n' 'Stage A source-time observation checkpoint. Explicit start/stop, at most 16 delivered text samples or 120 monotonic seconds, plus at most 16 supplemental selected-source text/image hook reservations per arm. Background stops without restart; identity/configuration invalidation clears evidence. Probe creates no content, plan, run or claim and calls no sending/media preparation API. Existing manual 1-20 group sending remains outside the probe and is NOT part of this test. Actual wrap ABI and early callbacks can be observed but are not device-certified; sourceTimeSemanticsVerified and imageReadinessObserved stay false. No automatic capture, operations UI, library dispatch or video support. Schema 14: opening an older device database performs migration and requires separate authorization. No downgrade to schema-11 packages; preserve all history/claims. Ordinary DEB, NOT RootHide converted. This artifact authorizes no installation or device migration. Export sanitized evidence manually; no automatic upload.' > dist/DEVELOPMENT-NOTICE.txt
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         with:
