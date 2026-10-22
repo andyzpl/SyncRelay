@@ -74,6 +74,14 @@ class SourceTimeProbeContracts(unittest.TestCase):
         self.assertIn('for pass in 1 2 3; do', workflow)
         self.assertIn('            "$RUNNER_TEMP/source-time-probe-test"', workflow)
 
+    def test_consumer_round_cannot_change_during_context_revalidation(self):
+        source = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
+        receive = source.split('- (void)receiveMessage:', 1)[1].split('- (NSDictionary *)diagnostics', 1)[0]
+        self.assertIn('NSUInteger round = self.round;', receive)
+        self.assertGreaterEqual(receive.count('self.round != round'), 2)
+        tick = source.split('- (void)tick {', 1)[1].split('- (void)receiveMessage:', 1)[0]
+        self.assertGreaterEqual(tick.count('self.round != round'), 3)
+
 
 if __name__ == '__main__':
     unittest.main()

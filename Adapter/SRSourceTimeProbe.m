@@ -162,27 +162,36 @@ static NSString *SRProbeGetterEncoding(Class type) {
 }
 - (void)tick {
     if (!NSThread.isMainThread || self.starting || !self.account) return;
-    NSString *problem = [self contextProblemForAccount:self.account configuration:self.frozenConfiguration];
+    NSUInteger round = self.round; NSString *account = self.account;
+    NSString *problem = [self contextProblemForAccount:account configuration:self.frozenConfiguration];
+    if (self.round != round || self.account != account) return;
     if (problem && (![problem isEqual:@"environment_blocked"] || self.listening)) {
         [self stopWithState:problem clearSamples:![problem isEqual:@"environment_blocked"]]; return;
     }
     if (!self.listening) return;
-    if (![self ownsReceiver]) { [self stopWithState:@"receiver_stopped" clearSamples:NO]; return; }
+    BOOL owns = [self ownsReceiver];
+    if (self.round != round || !self.listening) return;
+    if (!owns) { [self stopWithState:@"receiver_stopped" clearSamples:NO]; return; }
     double now;
     @try { now = self.monotonicClock(); } @catch (__unused id exception) { now = NAN; }
+    if (self.round != round || !self.listening) return;
     if (!isfinite(now) || now < self.startedMonotonic) { [self stopWithState:@"clock_invalid" clearSamples:NO]; return; }
     if (now - self.startedMonotonic >= SRDurationLimit) [self stopWithState:@"time_limit" clearSamples:NO];
 }
 - (void)receiveMessage:(NSDictionary *)message evidence:(NSDictionary *)evidence {
-    if (!NSThread.isMainThread || self.starting) return;
+    if (!NSThread.isMainThread || self.starting || ![message isKindOfClass:NSDictionary.class] || ![evidence isKindOfClass:NSDictionary.class]) return;
     if (!self.listening) {
         // The receiver rejects old generations before delivery. Do not compare
         // wall-clock boundaries here: a later manual capture can share a time.
-        if (self.lastProbeGeneration && [evidence[@"generation"] unsignedIntegerValue] <= self.lastProbeGeneration) return;
+        if (self.lastProbeGeneration && SRProbeInteger(evidence[@"generation"]) &&
+            [evidence[@"generation"] unsignedIntegerValue] <= self.lastProbeGeneration) return;
         self.legacyReceived(message); return;
     }
+    // Stopping can notify a consumer that explicitly starts another round.
+    // A repeated wall-clock boundary must not admit this old callback there.
+    NSUInteger round = self.round;
     [self tick];
-    if (!self.listening) return;
+    if (!self.listening || self.round != round) return;
     if (![evidence[@"schema"] isEqual:@1] || !SRProbeInteger(evidence[@"generation"]) ||
         !SRProbeTime(evidence[@"listeningSince"]) || [evidence[@"listeningSince"] doubleValue] != self.listeningSince ||
         !SRProbeTime(evidence[@"receivedAt"])) return;
@@ -195,6 +204,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     if (![messageID isKindOfClass:NSString.class] || !messageID.length || messageID.length > 128) return;
     NSTimeInterval delivered;
     @try { delivered = self.wallClock(); } @catch (__unused id exception) { delivered = NAN; }
+    if (!self.listening || self.round != round) return;
     if (!isfinite(delivered) || delivered <= 0) { [self stopWithState:@"clock_invalid" clearSamples:NO]; return; }
     self.receiverGeneration = generation; self.lastProbeGeneration = MAX(self.lastProbeGeneration, generation);
     NSNumber *ordinal = self.messageOrdinals[messageID];

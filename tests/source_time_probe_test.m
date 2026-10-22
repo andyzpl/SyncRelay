@@ -57,6 +57,7 @@
 @property(nonatomic) double monotonic;
 @property(nonatomic) NSUInteger legacyCalls;
 @property(nonatomic) NSUInteger changes;
+@property(nonatomic, copy) void (^onChange)(void);
 - (instancetype)initWithWrapClass:(Class)type;
 - (BOOL)start;
 - (void)stop;
@@ -88,7 +89,7 @@
             environmentAllowed:^BOOL { return weakSelf.allowed; }
             monotonicClock:^double { return weakSelf.monotonic; } wallClock:^double { return weakSelf.wall; }
             legacyReceived:^(__unused NSDictionary *message) { weakSelf.legacyCalls++; }
-            changed:^{ CHECK(NSThread.isMainThread); weakSelf.changes++; }];
+            changed:^{ CHECK(NSThread.isMainThread); weakSelf.changes++; if (weakSelf.onChange) weakSelf.onChange(); }];
     }
     return self;
 }
@@ -229,6 +230,29 @@ static void checkMetadataAndClocks(void) {
     privateReport(fixture); [fixture stop];
 }
 
+static void checkReentrantRestart(void) {
+    TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+    CHECK([fixture start]); fixture.wall = 2001.5; receive(fixture, message(2001));
+    NSDictionary *evidence = @{@"schema": @1, @"generation": last(fixture)[@"receiverGeneration"],
+        @"createdAt": @2001, @"receivedAt": @2001.5, @"listeningSince": @2000.5};
+    NSDictionary *envelope = @{@"account": fixture.current, @"group": @"private_source@chatroom", @"sender": @"wxid_other_private",
+        @"messageID": @"svr:9007199254740993", @"type": @"text", @"generatedByRelay": @NO};
+    NSMutableDictionary *changed = [fixture.configuration mutableCopy]; changed[@"maximum"] = @12; fixture.configuration = changed;
+    fixture.wall = 2000.5; // Mock rollback: a new arm can have the identical boundary.
+    __weak TimeProbeFixture *weakFixture = fixture;
+    fixture.onChange = ^{
+        if (!weakFixture.probe.active) {
+            weakFixture.onChange = nil;
+            CHECK([weakFixture start]);
+        }
+    };
+    fixture.receiver.receivedWithTimeEvidence(envelope, evidence);
+    CHECK(fixture.probe.active && [fixture.probe.diagnostics[@"round"] isEqual:@2] && count(fixture) == 0);
+    fixture.wall = 2002.5; receive(fixture, message(2002));
+    CHECK(count(fixture) == 1 && ![last(fixture)[@"receiverGeneration"] isEqual:evidence[@"generation"]]);
+    privateReport(fixture); [fixture stop];
+}
+
 static void checkBoundsAndInvalidation(void) {
     TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
     CHECK([fixture start]); fixture.wall = 2001.5;
@@ -294,7 +318,7 @@ static void checkCapabilityAndFaults(void) {
 
 int main(void) {
     @autoreleasepool {
-        checkObservation(); checkOwnAndGeneration(); checkBoundsAndInvalidation(); checkCapabilityAndFaults(); checkMetadataAndClocks();
+        checkObservation(); checkOwnAndGeneration(); checkBoundsAndInvalidation(); checkCapabilityAndFaults(); checkMetadataAndClocks(); checkReentrantRestart();
         puts("PASS: read-only source-time text probe, original chain, frozen evidence, bounded rounds, identity invalidation, no image preparation and legacy capture routing");
     }
     return 0;
