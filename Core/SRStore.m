@@ -230,9 +230,10 @@ static void SRRequire(BOOL condition, NSString *message) {
         SRRequire(account.length > 0, @"Verified account is required");
         NSMutableDictionary *result = [NSMutableDictionary dictionary];
         for (NSString *kind in @[@"current", @"recent"]) {
+            // Unique occupancy makes capture order archive order; clocks can roll back.
             NSString *sql = [kind isEqual:@"current"] ?
                 @"SELECT * FROM operations_contents WHERE account=? AND archived_at IS NULL" :
-                @"SELECT * FROM operations_contents WHERE account=? AND archived_at IS NOT NULL ORDER BY archived_at DESC,rowid DESC LIMIT 1";
+                @"SELECT * FROM operations_contents WHERE account=? AND archived_at IS NOT NULL ORDER BY rowid DESC LIMIT 1";
             NSMutableDictionary *row = [[self query:sql values:@[account]].firstObject mutableCopy];
             if (!row) { result[kind] = NSNull.null; continue; }
             for (NSString *key in @[@"configuration", @"envelope"]) {
@@ -725,7 +726,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         NSMutableArray *cards = [NSMutableArray array]; BOOL precedingEnded = YES;
         for (NSDictionary *rule in rules) {
             NSMutableDictionary *card = [rule mutableCopy];
-            NSDictionary *latest = [self query:@"SELECT id,rule_id,state,started_at,ended_at,minimum,maximum FROM runs WHERE rule_id=? ORDER BY rowid DESC LIMIT 1" values:@[rule[@"id"]]].firstObject;
+            NSDictionary *latest = [self query:@"SELECT rowid AS creationOrder,id,rule_id,state,started_at,ended_at,minimum,maximum FROM runs WHERE rule_id=? ORDER BY rowid DESC LIMIT 1" values:@[rule[@"id"]]].firstObject;
             card[@"latestRun"] = latest ? [self runCard:latest] : (id)NSNull.null;
             card[@"accountOccupied"] = @(occupied);
             // An unlock is only a display hint. startRule still rechecks in its transaction.
@@ -743,7 +744,7 @@ static void SRRequire(BOOL condition, NSString *message) {
         SRRequire([self query:@"SELECT r.id FROM rules r JOIN plans p ON p.id=r.plan_id WHERE r.id=? AND p.account=?" values:@[rule, account]].count,
             @"Rule is unavailable for this account");
         NSMutableArray *cards = [NSMutableArray array];
-        for (NSDictionary *row in [self query:@"SELECT id,rule_id,state,started_at,ended_at,minimum,maximum FROM runs WHERE rule_id=? ORDER BY rowid DESC LIMIT ? OFFSET ?" values:@[rule, @(limit), @(offset)]])
+        for (NSDictionary *row in [self query:@"SELECT rowid AS creationOrder,id,rule_id,state,started_at,ended_at,minimum,maximum FROM runs WHERE rule_id=? ORDER BY rowid DESC LIMIT ? OFFSET ?" values:@[rule, @(limit), @(offset)]])
             [cards addObject:[self runCard:row]];
         return cards;
     } transaction:NO error:error];

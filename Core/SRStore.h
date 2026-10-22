@@ -43,6 +43,8 @@ NS_ASSUME_NONNULL_BEGIN
  * is created. Duplicate active source returns its ID without changing content. */
 - (nullable NSString *)saveOperationsContent:(NSDictionary *)envelope configuration:(NSDictionary *)configuration
                                     account:(NSString *)account capturedAt:(NSTimeInterval)capturedAt error:(NSError **)error;
+/* Recent means the last archived content in durable occupancy order, not the
+ * largest wall-clock timestamp. Original capture/archive dates are unchanged. */
 - (nullable NSDictionary *)operationsContentForAccount:(NSString *)account error:(NSError **)error;
 /* Explicit upgrade of a drained, authorized legacy run. Reuses its original
  * plan/source/allocations; never creates a run, changes claims or resumes it.
@@ -62,6 +64,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<NSDictionary *> *)plansForAccount:(NSString *)account limit:(NSUInteger)limit
                                              offset:(NSUInteger)offset error:(NSError **)error;
 - (nullable NSDictionary *)plan:(NSString *)plan account:(NSString *)account error:(NSError **)error;
+/* Run cards include creationOrder for ordering, never for displayed dates. */
 - (nullable NSArray<NSDictionary *> *)ruleCardsForPlan:(NSString *)plan account:(NSString *)account error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)historyForRule:(NSString *)rule account:(NSString *)account
                                             limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
