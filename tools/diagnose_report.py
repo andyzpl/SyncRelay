@@ -195,7 +195,7 @@ def analyze(report):
         elif app_preview['state'] == 'file_length_mismatch':
             add('app_file_length_mismatch', 'The existing local file length did not match the app-message-declared length. No actual size or path is retained.')
         elif app_preview['state'] == 'file_link_count_rejected':
-            add('app_file_link_count_rejected', 'The local file has more than one hard link and remains rejected by the path-safety check.')
+            add('app_file_link_count_rejected', 'This report was produced by a build that rejected a file link-count condition. Newer builds accept stable hard links while retaining path and read-stability checks.')
         elif app_preview['state'] == 'file_non_regular':
             add('app_file_non_regular', 'The native path did not resolve to a regular file; no contents were read.')
         elif app_preview['state'] == 'file_stat_unavailable':

@@ -1,4 +1,15 @@
-# 0.2.24 Independent App-Message Preview Experiment
+# 0.2.25 Independent App-Message Preview Experiment
+
+## 0.2.25 Hard-Link Compatibility
+
+The 0.2.24 device report reached the link-count guard. The native path remained
+inside the app container and identified a regular file of the declared length,
+but that file had multiple hard links. Version 0.2.25 accepts hard-linked
+regular files while still requiring the native path to remain within approved
+directories, rejecting symlinks/traversal/non-regular objects, matching the
+declared length, and verifying inode/device/size/link-count/mtime/ctime remain
+stable throughout the bounded read. This keeps the path and content checks
+without assuming each app-managed file has exactly one filesystem link.
 
 ## 0.2.24 Diagnostic Refinement
 
@@ -49,8 +60,9 @@ downloads. No third-party binary is loaded or packaged.
   an existing native path inside this app's Documents, tmp or Library/Caches is
   eligible. No user title, attachment ID or sender is used to construct a path.
 - Open directory components through pinned directory descriptors with no-follow;
-  reject traversal, outside/sibling containers, symlink components, hardlinked
-  or nonregular files. Read without mmap, bounded to declared length, compare
+  reject traversal, outside/sibling containers, symlink components and
+  nonregular files. Hard-linked files are accepted only if link count remains
+  stable across the read. Read without mmap, bounded to declared length, compare
   exact length/EOF and inode/device/link count/mtime/ctime before and after.
   Copy immutable bytes into memory and compute SHA-256 of that owned copy.
   This detects normal changes but is not an authenticated remote-file checksum.
@@ -79,7 +91,7 @@ The report parser uses fixed messages and does not echo untrusted values.
 
 ## Device Check
 
-1. Install the independently built 0.2.24 package, restart WeChat, verify version,
+1. Install the independently built 0.2.25 package, restart WeChat, verify version,
    commit and CI run. Use authorized test groups and small nonsensitive fixtures.
 2. Save the source group/member configuration. Stop normal waiting, clear any
    ordinary preview, end active rules and turn off old single-send experiments.
@@ -90,8 +102,8 @@ The report parser uses fixed messages and does not echo untrusted values.
    an already-loaded file no larger than 8 MiB. Send it from the selected member,
    reopen the entry and check title, byte count and hash. A file-path/getter
    error stays waiting: export diagnostics rather than guessing paths or retrying
-   sends. The refined metadata states distinguish length mismatch, non-regular
-   files and hard links without including their sizes or paths.
+   sends. The prior report reached the hard-link check; this build accepts the
+   same kind of file if all path, declared-size and read-stability checks pass.
 5. Export diagnostics while foreground/ready. Opening a share sheet may trigger
    inactivity after report generation and clear the in-memory preview as designed.
 6. Test incoming-from-another-selected-member separately. Background/lockscreen
@@ -99,7 +111,7 @@ The report parser uses fixed messages and does not echo untrusted values.
 
 Native synthetic tests cover parsing/URL gates, account/generation cancellation,
 own callbacks without server IDs, redacted diagnostics, immutable byte copies,
-ABI traps, size limits, path boundaries, symlinks, hardlinks and FIFOs. iOS syntax
+ABI traps, size limits, path boundaries, symlinks, stable hardlinks and FIFOs. iOS syntax
 and macOS native execution cannot replace UIKit or device validation. File getter
 semantics, resource readiness and actual preview screens remain unverified until
 the next device reports. Sending/forwarding is separate future work.

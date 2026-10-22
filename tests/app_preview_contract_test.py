@@ -32,7 +32,7 @@ class AppPreviewContractTests(unittest.TestCase):
         source = self.text('Adapter/SRWeChatFileSource.m')
         self.assertIn('SRReadDeclaredString(wrap, @"GetAppAttachmentPath"', source)
         self.assertIn('8ULL * 1024 * 1024', source)
-        for marker in ('openat(', 'O_NOFOLLOW', 'O_NONBLOCK', 'S_ISREG(', 'st_nlink != 1',
+        for marker in ('openat(', 'O_NOFOLLOW', 'O_NONBLOCK', 'S_ISREG(', 'before.st_nlink != after.st_nlink',
                        'st_mtimespec', 'st_ctimespec', 'CC_SHA256(', 'close(file)'):
             self.assertIn(marker, source)
         for forbidden in ('NSLog(', 'valueForKey:', 'NSFileHandle', 'dataWithContentsOfFile', 'NSURLSession',
@@ -91,7 +91,6 @@ class AppPreviewContractTests(unittest.TestCase):
     def test_file_rejections_are_distinguished_without_exposing_sizes_or_paths(self):
         cases = {
             'file_length_mismatch': ('app_file_length_mismatch', 'sensitive length'),
-            'file_link_count_rejected': ('app_file_link_count_rejected', 'private path'),
             'file_non_regular': ('app_file_non_regular', 'private path'),
             'file_stat_unavailable': ('app_file_stat_unavailable', 'private path'),
             'file_size_unavailable': ('app_file_size_unavailable', 'private path'),

@@ -114,8 +114,8 @@ static void checkAppMessagePreview(void) {
     NSString *hard = [documents stringByAppendingPathComponent:@"hard.bin"];
     CHECK(link(path.fileSystemRepresentation, hard.fileSystemRepresentation) == 0);
     file.nativePath = hard;
-    CHECK(![SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length home:home allowed:^BOOL { return YES; } state:&state]);
-    CHECK([state isEqual:@"file_link_count_rejected"]);
+    snapshot = [SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length home:home allowed:^BOOL { return YES; } state:&state];
+    CHECK([state isEqual:@"file_snapshot_ready"] && [snapshot[@"data"] isEqual:bytes]);
     CHECK(unlink(hard.fileSystemRepresentation) == 0);
     NSString *fifo = [documents stringByAppendingPathComponent:@"fifo"];
     CHECK(mkfifo(fifo.fileSystemRepresentation, 0600) == 0); file.nativePath = fifo;
