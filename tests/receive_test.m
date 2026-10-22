@@ -505,6 +505,8 @@ static void checkReflectedMessage(void) {
         CHECK(![json containsString:secret]);
     [receiver stop]; received = nil;
 }
+#import "app_message_probe_cases.h"
+
 int main(void) {
     @autoreleasepool {
         ScalarTraps *traps = [[ScalarTraps alloc] init];
@@ -676,6 +678,7 @@ int main(void) {
         checkReflectedMessage();
         checkImageCapture();
         checkSourceTimeEvidence();
+        checkAppMessageProbe();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }

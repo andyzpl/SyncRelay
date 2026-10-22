@@ -3,7 +3,8 @@ NS_ASSUME_NONNULL_BEGIN
 /* Read-only, manually armed candidate. No send API and no guessed image path.
  * Diagnostics also expose a bounded numeric message-type probe and callback
  * sequence. Unknown codes are observed only; they are never normalized into a
- * relayable payload. */
+ * relayable payload. Selected type-49 callbacks may additionally produce a
+ * bounded, redacted appmsg structural summary; never an XML/media payload. */
 @interface SRWeChatReceiver : NSObject
 @property(nonatomic, copy, nullable) void (^trace)(NSString *event, NSDictionary *facts);
 /* Main-thread preparation: nil/no error means not ready; error stops this candidate.
