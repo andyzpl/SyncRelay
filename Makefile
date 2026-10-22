@@ -13,6 +13,7 @@ SyncRelay_FILES += Adapter/SRSmallGroupSession.m
 SyncRelay_FILES += Core/SRExecutionProgress.m UI/SRFloatingProgress.m
 SyncRelay_FILES += Core/SROperationsState.c
 SyncRelay_FILES += Core/SRRelayCoordinator.m
+SyncRelay_FILES += Adapter/SRWeChatFileSource.m UI/SRAppMessagePreviewScreen.m
 SyncRelay_CFLAGS = -fobjc-arc -Wall -Wextra -Werror -I$(THEOS_PROJECT_DIR)
 SyncRelay_FRAMEWORKS = Foundation UIKit ImageIO CoreGraphics
 SyncRelay_LIBRARIES = sqlite3

@@ -24,6 +24,7 @@
 #import "Adapter/SRWeChatTextSendHost.h"
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "SRPlanScreens.h"
+#import "SRAppMessagePreviewScreen.h"
 #import "SRSettingsFallback.h"
 #import "SRNativeStyle.h"
 #import "SRFloatingProgress.h"
@@ -233,6 +234,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 - (void)textExperimentInactive:(__unused NSNotification *)notification {
     [self cancelTextExperiment]; self.singleTextSendEnabled = NO;
+    [self.receiver stop];
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
@@ -255,6 +257,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }
     self.ready = [self.reader connect:&error];
     self.account = self.reader.accountID;
+    if (self.receiver.appMessagePreview && ![self.receiver.appMessagePreview[@"account"] isEqual:self.account]) [self.receiver stop];
     id captureAccount = self.capture.status[@"account"];
     if (captureAccount != NSNull.null && ![captureAccount isEqual:self.account]) { [self.receiver stop]; [self.capture cancel]; }
     self.draft = [SRConfiguration emptyDraft];
@@ -292,6 +295,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.tableView reloadData];
 }
 - (void)changed {
+    if (self.receiver.appMessagePreviewActive) [self.receiver stop];
     if (self.smallGroupSession.busy) [self.smallGroupSession pauseForAccount:self.account error:NULL];
     [self cancelTextExperiment];
     self.dirty = YES;
@@ -327,7 +331,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (section == 0) return 9;
     if (section == 1) return 4;
     if (section == 2) return 1;
-    if (section == 4) return 6;
+    if (section == 4) return 8;
     return [self.draft[@"rules"] count] + 3;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -415,6 +419,13 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             cell.textLabel.text = @"单群图片发送（实验）";
             cell.detailTextLabel.text = self.singleImageSendEnabled ? @"选择一个目标群后发送一次" : @"先在更多设置中开启图片实验开关";
             cell.textLabel.textColor = self.singleImageSendEnabled ? UIColor.labelColor : UIColor.tertiaryLabelColor;
+        }
+        if (path.row == 6 || path.row == 7) {
+            NSString *kind = path.row == 6 ? @"link" : @"file";
+            cell.textLabel.text = path.row == 6 ? @"链接捕获预览（不发送）" : @"文件读取预览（不发送）";
+            NSDictionary *preview = self.receiver.appMessagePreview;
+            cell.detailTextLabel.text = [preview[@"kind"] isEqual:kind] ? @"已冻结，点开查看" :
+                (self.receiver.appMessagePreviewActive ? @"实验中，点此查看或清除" : @"独立实验，不建立内容计划");
         }
     }
     if (section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
@@ -755,6 +766,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.navigationController pushViewController:viewer animated:YES];
 }
 - (void)beginSendProbe {
+    if (self.receiver.appMessagePreviewActive) { SRAlert(self, @"请先清除链接／文件实验", @"实验预览与发送观察分开进行。"); return; }
     if (self.smallGroupSession.busy) { SRAlert(self, @"请先暂停并结束小群测试", @"只读观察与真实规则执行分开进行。"); return; }
     if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { [self.sendProbe stop]; return; }
     if (![self checkAccount]) return;
@@ -773,7 +785,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"开启观察（不代发）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             if (![panel checkAccount] || ![panel.account isEqual:account]) return;
-            if (panel.ownsIdleTimer || [panel.capture.status[@"state"] isEqual:@"waiting"]) { SRAlert(panel, @"先取消活动实验或源消息等待", @"本次观察未开启。"); return; }
+            if (panel.ownsIdleTimer || panel.receiver.appMessagePreviewActive || [panel.capture.status[@"state"] isEqual:@"waiting"]) { SRAlert(panel, @"先取消活动实验或源消息等待", @"本次观察未开启。"); return; }
             NSError *failure = nil;
             if (![panel.sendProbe armForAccount:account targetGroup:group error:&failure]) SRAlert(panel, @"观察候选不可用", failure.localizedDescription);
         }]];
@@ -794,6 +806,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier], self.smallGroupSession) animated:YES];
 }
 - (BOOL)allowLegacyExperiment {
+    if (self.receiver.appMessagePreviewActive) { SRAlert(self, @"请先清除链接／文件实验", @"实验预览不能用于发送。"); return NO; }
     if (!self.smallGroupSession.busy && !self.smallGroupSession.usedNativeHost) return YES;
     SRAlert(self, @"本次请使用小群规则测试", @"小群执行与旧单群实验互斥。请在内容计划中暂停、继续或结束；本进程用过小群发送后不再开启旧单群实验。"); return NO;
 }
@@ -1010,7 +1023,48 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]]; return alert;
 }
+- (void)beginAppMessagePreview:(NSString *)kind {
+    if (![self checkAccount]) return;
+    if (self.receiver.appMessagePreviewActive) {
+        if (self.receiver.appMessagePreview) {
+            [self.navigationController pushViewController:SRCreateAppMessagePreviewScreen(self.receiver, self.account, [self planVerifier]) animated:YES];
+        } else {
+            NSString *stage = self.receiver.diagnostics[@"appMessagePreview"][@"state"];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"链接／文件实验正在等待"
+                message:[NSString stringWithFormat:@"当前阶段：%@。回母群发送刚才选择的类型；未就绪或 getter 不可用时请导出诊断。取消后可重新选择类型。", stage]
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"继续等待" style:UIAlertActionStyleCancel handler:nil]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"取消并清除" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) { [self.receiver stop]; [self refresh]; }]];
+            SRPresentAlert(self, alert);
+        }
+        return;
+    }
+    if (self.dirty || self.smallGroupSession.busy || self.ownsIdleTimer || self.singleTextSendEnabled || self.singleImageSendEnabled ||
+        [self.sendProbe.diagnostics[@"armed"] boolValue] || [self.textSendHost.diagnostics[@"observing"] boolValue] ||
+        [self.imageSendHost.diagnostics[@"observing"] boolValue] || ![self.capture.status[@"state"] isEqual:@"idle"]) {
+        SRAlert(self, @"请先保存并结束其他捕获／实验", @"新实验独立于文字／图片预览与规则执行，不覆盖已有内容。"); return;
+    }
+    NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
+    NSString *message = [kind isEqual:@"link"] ?
+        @"关闭面板，在已选母群由指定成员发送一条新链接。只冻结标题和 HTTP(S) 网址，不打开网页、不发送，也不建立计划。" :
+        @"请使用不超过 8 MiB 的普通测试文件，并先在母群手动加载。关闭面板，由指定成员发送一条新文件。只通过原生附件 getter 读取现成文件，校验长度与读取稳定性并复制到内存；不自动下载、不打开或发送文件。";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"开启独立捕获预览？"
+        message:[message stringByAppendingString:@"\n\n只等待所选类型，文字不会结束本实验。保持微信前台；切后台或锁屏会清除快照。历史补同步也可能触发，请核对标题和内容。"] preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        if (![self checkDraft:snapshot account:account] || self.receiver.appMessagePreviewActive || self.smallGroupSession.busy ||
+            self.ownsIdleTimer || self.singleTextSendEnabled || self.singleImageSendEnabled ||
+            ![self.capture.status[@"state"] isEqual:@"idle"] || [self.sendProbe.diagnostics[@"armed"] boolValue]) return;
+        NSError *error = nil;
+        if (![self.receiver armAppMessagePreviewForAccount:account configuration:snapshot kind:kind error:&error]) {
+            SRAlert(self, @"实验尚不能开始", error.localizedDescription); return;
+        }
+        self.status = @"链接／文件实验等待中；回母群发送后返回对应实验入口查看。"; [self refresh];
+    }]];
+    SRPresentAlert(self, alert);
+}
 - (void)beginCapture {
+    if (self.receiver.appMessagePreviewActive) { SRAlert(self, @"请先清除链接／文件实验", @"返回对应实验入口查看或取消，不会覆盖实验预览。"); return; }
     if (self.smallGroupSession.busy) { SRAlert(self, @"当前有小群批次", @"现有规则继续使用已经确认的源消息；请先完成或结束它，再等待新内容。"); return; }
     [SRRuntimeLog.shared record:@"capture_attempt" facts:[self diagnosticDraft]];
     if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { SRAlert(self, @"请先停止手动发送观察", @"两种诊断分开进行；停止观察不会发送或修改规则。"); return; }
@@ -1066,6 +1120,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (path.row == 3) [self beginSingleTextSend];
         if (path.row == 4) [self inspectImageSendContract];
         if (path.row == 5) [self beginSingleImageSend];
+        if (path.row == 6 || path.row == 7) [self beginAppMessagePreview:path.row == 6 ? @"link" : @"file"];
     }
     if (section == 3) {
         if (path.row == 0) [self chooseExclusions];
@@ -1177,6 +1232,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
             return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+                !entry.receiver.appMessagePreviewActive &&
                 !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
                 ![entry.imageSendHost.diagnostics[@"attemptConsumed"] boolValue];
@@ -1190,6 +1246,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             SREntry *entry = weakSelf;
             SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
             return entry && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled &&
+                !entry.receiver.appMessagePreviewActive &&
                 !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 panel.viewIfLoaded.window && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !panel.dirty && ![entry.capture.status[@"state"] isEqual:@"waiting"] &&
@@ -1205,6 +1262,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
             return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+                !entry.receiver.appMessagePreviewActive &&
                 !entry.smallGroupSession.busy &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
                 ![entry.textSendHost.diagnostics[@"observing"] boolValue] && ![entry.imageSendHost.diagnostics[@"observing"] boolValue];
@@ -1217,6 +1275,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
         BOOL panelIdle = ![panel isKindOfClass:SRPanel.class] || (!panel.dirty && !panel.ownsIdleTimer && !panel.textCountdown && !panel.imageCountdown);
         return entry && panelIdle && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+            !entry.receiver.appMessagePreviewActive &&
             ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
             ![entry.textSendHost.diagnostics[@"submissionAttempted"] boolValue] && ![entry.imageSendHost.diagnostics[@"attemptConsumed"] boolValue];
     } targetAllowed:^BOOL(NSString *target) {

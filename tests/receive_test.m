@@ -506,6 +506,7 @@ static void checkReflectedMessage(void) {
     [receiver stop]; received = nil;
 }
 #import "app_message_probe_cases.h"
+#import "app_message_preview_cases.h"
 
 int main(void) {
     @autoreleasepool {
@@ -679,6 +680,7 @@ int main(void) {
         checkImageCapture();
         checkSourceTimeEvidence();
         checkAppMessageProbe();
+        checkAppMessagePreview();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }

@@ -1,4 +1,5 @@
 #import "SRWeChatReceiver.h"
+#import "SRWeChatFileSource.h"
 #import "SRRuntime.h"
 #import "Core/SRSourceMessage.h"
 #import "Core/SRConfiguration.h"
@@ -23,7 +24,10 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
 @property(nonatomic, copy) NSString *failure;
 @property(nonatomic) NSUInteger appDepth;
 @property(nonatomic) NSUInteger elements;
+@property(nonatomic) BOOL captureFields;
+@property(nonatomic, strong) NSMutableDictionary *values;
 + (NSDictionary *)summaryForContent:(NSString *)content sender:(NSString *)sender;
++ (NSDictionary *)resultForContent:(NSString *)content sender:(NSString *)sender captureFields:(BOOL)capture;
 @end
 
 @implementation SRAppMessageXMLProbe
@@ -63,6 +67,13 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
     else self.field = field;
 }
 - (void)parser:(NSXMLParser *)parser foundCharacters:(NSString *)text {
+    if (self.captureFields && self.field && ![self.field isEqual:@"hasAttachmentID"] && ![self.field isEqual:@"type"]) {
+        NSMutableString *value = self.values[self.field];
+        if (!value) { value = [NSMutableString string]; self.values[self.field] = value; }
+        NSUInteger limit = [self.field isEqual:@"hasURL"] ? 8192 : 1024;
+        if (text.length > limit - value.length) { [self reject:@"too_complex" parser:parser]; return; }
+        [value appendString:text];
+    }
     if ([self.field isEqual:@"type"]) {
         if (text.length > 32 - self.typeText.length) { [self reject:@"invalid_subtype" parser:parser]; return; }
         [self.typeText appendString:text];
@@ -87,6 +98,9 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
     if (!self.failure) self.failure = @"invalid_xml";
 }
 + (NSDictionary *)summaryForContent:(NSString *)content sender:(NSString *)sender {
+    return [self resultForContent:content sender:sender captureFields:NO];
+}
++ (NSDictionary *)resultForContent:(NSString *)content sender:(NSString *)sender captureFields:(BOOL)capture {
     if (!content.length) return @{@"state": @"empty_content"};
     if (content.length > SRAppMessageByteLimit) return @{@"state": @"too_large"};
     // NULs could make a UTF-8 buffer look like UTF-16 to an auto-detecting parser.
@@ -126,6 +140,7 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
     SRAppMessageXMLProbe *probe = [SRAppMessageXMLProbe new];
     probe.path = [NSMutableArray array]; probe.seen = [NSMutableSet set];
     probe.typeText = [NSMutableString string]; probe.presence = [NSMutableDictionary dictionary];
+    probe.captureFields = capture; probe.values = [NSMutableDictionary dictionary];
     NSXMLParser *parser = [[NSXMLParser alloc] initWithData:data]; parser.delegate = probe;
     parser.shouldResolveExternalEntities = NO;
     parser.externalEntityResolvingPolicy = NSXMLParserResolveExternalEntitiesNever;
@@ -145,6 +160,7 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
         @"kindHint": value == 5 ? @"link" : (value == 6 ? @"file" : @"other")} mutableCopy];
     for (NSString *key in @[@"hasTitle", @"hasURL", @"hasAttachment", @"hasAttachmentID", @"hasFileExtension", @"hasTotalLength"])
         result[key] = @([probe.presence[key] boolValue]);
+    if (capture) result[@"privateFields"] = [probe.values copy];
     return [result copy];
 }
 @end
@@ -209,6 +225,9 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
 @property(nonatomic, strong) NSMutableArray *appMessageSamples;
 @property(nonatomic) NSUInteger appMessageReservations;
 @property(nonatomic) NSUInteger appMessageDropped;
+@property(nonatomic, copy) NSString *appPreviewKind;
+@property(nonatomic, copy) NSString *appPreviewState;
+@property(nonatomic, copy, readwrite) NSDictionary *appMessagePreview;
 @property(nonatomic, strong) SRPendingImage *pendingImage;
 @property(nonatomic, copy) NSString *imageState;
 @property(nonatomic) NSUInteger imageReads;
@@ -473,6 +492,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
             self.observedMessageTypes = [NSMutableDictionary dictionary];
             self.observedMessageTypeSequence = [NSMutableArray array];
             self.appMessageSamples = [NSMutableArray array]; self.appMessageReservations = 0; self.appMessageDropped = 0;
+            self.appPreviewKind = nil; self.appMessagePreview = nil; self.appPreviewState = @"disabled";
             self.pendingImage = nil; self.imageState = @"disabled"; self.imageReads = 0; self.queuedImages = 0;
             self.imagePreparationCode = 0;
             self.newMessagesOnly = NO;
@@ -539,6 +559,19 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         return YES;
     }
 }
+- (BOOL)appMessagePreviewActive {
+    @synchronized(self) { return self.appPreviewKind != nil || self.appMessagePreview != nil; }
+}
+- (BOOL)armAppMessagePreviewForAccount:(NSString *)account configuration:(NSDictionary *)configuration kind:(NSString *)kind error:(NSError **)error {
+    if (![@[@"link", @"file"] containsObject:kind] || !NSThread.isMainThread)
+        return [self fail:@"Unsupported preview experiment" error:error];
+    // Preview experiments never prepare ordinary images or feed normal source capture.
+    NSMutableDictionary *copy = [configuration mutableCopy]; copy[@"types"] = @[@"text"];
+    if (![SRConfiguration validateDraft:configuration error:error] ||
+        ![self armForAccount:account configuration:copy error:error]) return NO;
+    @synchronized(self) { self.appPreviewKind = kind; self.appPreviewState = @"waiting"; }
+    return YES;
+}
 - (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {
     NSString *account, *group; NSUInteger generation;
     @synchronized(self) {
@@ -562,6 +595,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
     NSNumber *serverID = SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL);
     [self observeMessageType:type];
     if ([type isEqual:@49]) [self observeAppMessageWrap:wrap sender:sender from:from to:to timeEvidence:evidence generation:generation];
+    @synchronized(self) { if (self.appPreviewKind) return; }
     if (![self allowsSender:sender type:type]) return;
     if (!serverID.unsignedLongLongValue) { [self note:@"receive_no_server_id"]; return; }
     if (![self acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
@@ -654,17 +688,80 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
                 if (!currentSender.length && [from isEqual:account] && [to isEqual:group]) currentSender = account;
                 return [currentSender isEqual:sender];
             };
+            BOOL (^stillAllowed)(void) = ^BOOL {
+                @synchronized(receiver) { if (!receiver.armed || receiver.generation != generation) return NO; }
+                BOOL valid = [receiver.currentAccount() isEqual:account] && identityMatches() &&
+                    [receiver acceptsTimeEvidence:evidence wrap:wrap generation:generation];
+                @synchronized(receiver) { return valid && receiver.armed && receiver.generation == generation; }
+            };
             if (!identityMatches() || ![receiver acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
             @synchronized(receiver) { if (!receiver.armed || receiver.generation != generation) return; }
             SRStringReadState state;
             NSString *content = SRReadDeclaredString(wrap, @"m_nsContent", &state);
-            NSDictionary *sample = content ? [SRAppMessageXMLProbe summaryForContent:content sender:sender] :
+            NSString *previewKind;
+            @synchronized(receiver) { previewKind = receiver.appPreviewKind; }
+            NSDictionary *parsed = content ? [SRAppMessageXMLProbe resultForContent:content sender:sender captureFields:previewKind != nil] :
                 @{@"state": @"content_unavailable", @"getterState": @(state)};
+            NSMutableDictionary *sample = [parsed mutableCopy]; [sample removeObjectForKey:@"privateFields"];
             if (![receiver.currentAccount() isEqual:account] || !identityMatches() ||
                 ![receiver acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
             @synchronized(receiver) {
                 if (!receiver.armed || receiver.generation != generation) return;
                 [receiver.appMessageSamples addObject:sample];
+            }
+            if (!previewKind || ![sample[@"state"] isEqual:@"parsed"] || ![sample[@"kindHint"] isEqual:previewKind]) return;
+            NSDictionary *fields = parsed[@"privateFields"];
+            NSString *title = [fields[@"hasTitle"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (!title.length || [title rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) {
+                receiver.appPreviewState = @"invalid_title"; return;
+            }
+            NSMutableDictionary *preview = [@{@"schema": @1, @"kind": previewKind, @"title": [title copy], @"account": account,
+                @"relayable": @NO, @"metadataOnly": @YES} mutableCopy];
+            if ([previewKind isEqual:@"link"]) {
+                NSString *url = [fields[@"hasURL"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                NSURLComponents *components = url.length ? [NSURLComponents componentsWithString:url] : nil;
+                if (![@[@"http", @"https"] containsObject:components.scheme.lowercaseString ?: @""] || !components.host.length ||
+                    components.user != nil || components.password != nil ||
+                    [url rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound ||
+                    [url rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound ||
+                    !components.URL || (components.port && (components.port.integerValue < 1 || components.port.integerValue > 65535))) {
+                    receiver.appPreviewState = @"invalid_url"; return;
+                }
+                preview[@"url"] = [url copy];
+            } else {
+                NSString *length = [fields[@"hasTotalLength"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                unsigned long long size = 0;
+                BOOL valid = length.length && length.length <= 10 && [sample[@"hasAttachment"] boolValue];
+                for (NSUInteger i = 0; valid && i < length.length; i++) {
+                    unichar digit = [length characterAtIndex:i];
+                    if (digit < '0' || digit > '9') valid = NO;
+                    else size = size * 10 + digit - '0';
+                }
+                if (!valid || !size || size > 8ULL * 1024 * 1024) { receiver.appPreviewState = @"file_size_rejected"; return; }
+                NSString *extension = [fields[@"hasFileExtension"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+                if (extension.length > 32 || [extension rangeOfCharacterFromSet:NSCharacterSet.alphanumericCharacterSet.invertedSet].location != NSNotFound) {
+                    receiver.appPreviewState = @"file_extension_rejected"; return;
+                }
+                NSString *fileState;
+                NSDictionary *snapshot = [SRWeChatFileSource snapshotForWrap:wrap expectedSize:size home:NSHomeDirectory() allowed:^BOOL {
+                    return stillAllowed() && [SRReadDeclaredString(wrap, @"m_nsContent", NULL) isEqual:content];
+                } state:&fileState];
+                if (!stillAllowed()) return;
+                receiver.appPreviewState = fileState;
+                if (!snapshot) return;
+                preview[@"fileExtension"] = [extension copy]; preview[@"fileSnapshot"] = snapshot; preview[@"metadataOnly"] = @NO;
+            }
+            // Native getters and file reads may reenter the host. Recheck context and XML.
+            if (![receiver.currentAccount() isEqual:account] || !identityMatches() ||
+                ![SRReadDeclaredString(wrap, @"m_nsContent", NULL) isEqual:content] ||
+                ![receiver acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
+            @synchronized(receiver) {
+                if (!receiver.armed || receiver.generation != generation) return;
+            }
+            [receiver stop];
+            @synchronized(receiver) {
+                if (receiver.generation != generation + 1 || receiver.armed) return;
+                receiver.appMessagePreview = [preview copy]; receiver.appPreviewState = @"ready";
             }
         } @catch (__unused id exception) { /* Optional diagnostics cannot stop capture or alter the host chain. */ }
     });
@@ -685,6 +782,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         [self observeMessageType:type];
         [self observeAppMessageWrap:wrap sender:account from:account to:group timeEvidence:evidence generation:generation];
     }
+    @synchronized(self) { if (self.appPreviewKind) return; }
     if (![self allowsSender:account type:type]) return;
     if (![self acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
     NSString *text = [type isEqual:@1] ? [SRReadDeclaredString(wrap, @"m_nsContent", NULL) copy] : nil;
@@ -834,6 +932,8 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         @synchronized(self) {
             wasArmed = self.armed;
             self.armed = NO; self.generation++;
+            if (self.appPreviewKind || self.appMessagePreview) self.appPreviewState = @"cleared";
+            self.appPreviewKind = nil; self.appMessagePreview = nil;
             if (self.tap.listener == self) self.tap.listener = nil;
             if (self.outgoingTap.listener == self) self.outgoingTap.listener = nil;
             self.pendingOutgoing = nil;
@@ -864,6 +964,11 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
                 @"limit": @(SRAppMessageSampleLimit), @"byteLimit": @(SRAppMessageByteLimit),
                 @"attempts": @(self.appMessageReservations), @"dropped": @(self.appMessageDropped),
                 @"samples": [self.appMessageSamples copy] ?: @[]},
+            @"appMessagePreview": @{@"schema": @1, @"state": self.appPreviewState ?: @"disabled", @"relayable": @NO,
+                @"kind": self.appPreviewKind ?: self.appMessagePreview[@"kind"] ?: @"none",
+                @"memoryOnly": @YES, @"fileByteLimit": @(8 * 1024 * 1024), @"fileGetter": @"GetAppAttachmentPath",
+                @"fileGetterAvailable": @([wrap instancesRespondToSelector:NSSelectorFromString(@"GetAppAttachmentPath")]),
+                @"active": @(self.appMessagePreviewActive), @"planCreationEnabled": @NO, @"sendingEnabled": @NO},
             @"textOnlyCandidate": @(![self.selectedTypes containsObject:@"image"]), @"imageCaptureSchema": @1, @"imageState": self.imageState ?: @"idle",
             @"imagePending": @(self.pendingImage != nil), @"imageReads": @(self.imageReads), @"imageWaitLimit": @30,
             @"imagePreparationCode": @(self.imagePreparationCode),

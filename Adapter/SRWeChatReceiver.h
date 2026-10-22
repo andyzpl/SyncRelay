@@ -28,6 +28,13 @@ NS_ASSUME_NONNULL_BEGIN
  * capture remains unchanged. Requires declared epoch-second getter and callback. */
 - (BOOL)armForAccount:(NSString *)account configuration:(NSDictionary *)configuration
      newMessagesOnly:(BOOL)newMessagesOnly error:(NSError **)error;
+/* Separate, memory-only preview experiment. Never feeds source capture/plans.
+ * Explicit arm is required to retain title/URL or read an attachment getter.
+ * Stop/inactivity clears private preview data. kind is exactly link or file. */
+- (BOOL)armAppMessagePreviewForAccount:(NSString *)account configuration:(NSDictionary *)configuration
+                                kind:(NSString *)kind error:(NSError **)error;
+@property(nonatomic, readonly, copy, nullable) NSDictionary *appMessagePreview;
+@property(nonatomic, readonly) BOOL appMessagePreviewActive;
 - (void)stop;
 - (NSDictionary *)diagnostics;
 @end

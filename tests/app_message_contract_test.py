@@ -80,7 +80,7 @@ class AppMessageContractTests(unittest.TestCase):
 
     def test_receiver_keeps_xml_probe_separate_from_relay_types(self):
         source = (ROOT / 'Adapter/SRWeChatReceiver.m').read_text(encoding='utf-8')
-        allowed = source.split('- (BOOL)allowsSender:', 1)[1].split('- (void)observeSession:', 1)[0]
+        allowed = source.split('- (BOOL)allowsSender:', 1)[1].split('\n}', 1)[0]
         self.assertIn('@"unsupported"', allowed)
         self.assertNotIn('@"file"', allowed)
         self.assertNotIn('@"link"', allowed)

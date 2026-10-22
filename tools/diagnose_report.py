@@ -169,6 +169,29 @@ def analyze(report):
                     add('app_message_probe_dropped', 'The per-arm app-message probe limit was reached; excess callbacks did not read XML.')
                 if attempts and not samples:
                     add('app_message_no_stable_sample', 'App-message callbacks were reserved but no stable sample is present; queued or invalidated context is not proof of getter failure.')
+    app_preview = receiver.get('appMessagePreview')
+    if app_preview is not None:
+        states = {'disabled', 'waiting', 'ready', 'cleared', 'invalid_title', 'invalid_url',
+                  'file_size_rejected', 'file_extension_rejected', 'file_context_changed',
+                  'file_identity_rejected', 'file_getter_unavailable', 'file_path_unavailable',
+                  'file_path_rejected', 'file_not_ready', 'file_size_or_type_rejected', 'file_changed',
+                  'file_snapshot_ready'}
+        valid = (isinstance(app_preview, dict) and type(app_preview.get('schema')) is int and
+                 app_preview['schema'] == 1 and isinstance(app_preview.get('state'), str) and app_preview['state'] in states and
+                 isinstance(app_preview.get('kind'), str) and app_preview['kind'] in {'link', 'file', 'none'} and
+                 flag(app_preview.get('relayable')) is False and flag(app_preview.get('memoryOnly')) is True and
+                 flag(app_preview.get('planCreationEnabled')) is False and flag(app_preview.get('sendingEnabled')) is False)
+        if not valid:
+            add('app_preview_invalid', 'Unsupported or non-read-only app-message preview evidence. No capture/send capability is inferred.')
+        elif app_preview['state'] == 'ready':
+            if app_preview['kind'] == 'link':
+                add('app_link_preview_ready', 'A memory-only title/HTTP(S)-URL preview was frozen. No web content, complete card, plan or send is verified.')
+            elif app_preview['kind'] == 'file':
+                add('app_file_snapshot_ready', 'A bounded local file copy passed length and read-stability checks. No file rendering, persistent plan, sending or delivery is verified.')
+        elif app_preview['state'] == 'file_getter_unavailable':
+            add('app_file_getter_unavailable', 'The declared native attachment-path getter is missing or ABI-incompatible; no fallback, guessed path or download ran.')
+        elif app_preview['state'] not in {'disabled', 'waiting', 'cleared'}:
+            add('app_preview_rejected', 'The preview or file resource was rejected or unavailable. Export this report; no automatic download, alternate path or sending ran.')
     image = report.get('imageSource')
     if image is not None:
         if not isinstance(image, dict) or image.get('schema') != 1:
