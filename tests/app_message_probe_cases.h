@@ -105,7 +105,8 @@ static void checkAppMessageProbe(void) {
         @[@"<!DOCTYPE msg [<!ENTITY a 'private-entity'>]><msg><appmsg><type>5</type><title>&a;</title></appmsg></msg>", @"unsafe_xml"],
         @[@"<!DOCTYPE msg SYSTEM 'file:///private-secret'><msg><appmsg><type>5</type></appmsg></msg>", @"unsafe_xml"],
         @[@"<!DOCTYPE msg [<!ENTITY % a SYSTEM 'https://example.invalid/private-entity'>%a;]><msg/>", @"unsafe_xml"],
-        @[@"<msg><appmsg><type>5</type><title>&private_unknown_entity;</title></appmsg></msg>", @"invalid_xml"]
+        // Foundation may route undeclared entities through its resolution delegate.
+        @[@"<msg><appmsg><type>5</type><title>&private_unknown_entity;</title></appmsg></msg>", @[@"invalid_xml", @"unsafe_xml"]]
     ];
     NSUInteger caseIndex = 0;
     for (NSArray *test in cases) {
@@ -113,10 +114,11 @@ static void checkAppMessageProbe(void) {
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:appMessage(test[0])]; pump();
         CHECK(appSamples(receiver).count == 1);
         NSDictionary *sample = appSamples(receiver)[0];
-        if (![sample[@"state"] isEqual:test[1]])
+        NSArray *expectedStates = [test[1] isKindOfClass:NSArray.class] ? test[1] : @[test[1]];
+        if (![expectedStates containsObject:sample[@"state"]])
             fprintf(stderr, "appmsg case %lu expected=%s actual=%s\n", (unsigned long)caseIndex,
-                [test[1] UTF8String], [sample[@"state"] UTF8String]);
-        CHECK([sample[@"state"] isEqual:test[1]]);
+                [expectedStates.description UTF8String], [sample[@"state"] UTF8String]);
+        CHECK([expectedStates containsObject:sample[@"state"]]);
         CHECK(test.count > 2 ? [sample[@"subtype"] isEqual:test[2]] : sample[@"subtype"] == nil);
         if ([sample[@"subtype"] isEqual:@2000] || [sample[@"subtype"] isEqual:@(UINT32_MAX)]) CHECK([sample[@"kindHint"] isEqual:@"other"]);
         CHECK(!accepted && [receiver.diagnostics[@"armed"] boolValue]); [receiver stop];

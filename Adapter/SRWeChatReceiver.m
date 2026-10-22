@@ -83,7 +83,7 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
     [self reject:@"unsafe_xml" parser:parser]; return nil;
 }
 - (void)parser:(__unused NSXMLParser *)parser parseErrorOccurred:(__unused NSError *)error {
-    // Some Foundation parsers report a recoverable error while parse returns YES.
+    // Treat every error callback as failure independently of the parse return.
     if (!self.failure) self.failure = @"invalid_xml";
 }
 + (NSDictionary *)summaryForContent:(NSString *)content sender:(NSString *)sender {
