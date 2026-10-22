@@ -42,7 +42,7 @@ class MediaBudgetContract(unittest.TestCase):
 
     def test_thresholds_are_integer_ratios_not_rounded_percentages(self):
         body = body_of(QUOTA_C, 'static SRMediaLevel SRMediaLevelFor', 'level helper')
-        self.assertContains('used * policy.warn_numerator >= limit * policy.warn_denominator', body, 'level')
+        self.assertContains('used * policy.warn_denominator >= limit * policy.warn_numerator', body, 'level')
         self.assertIsNone(re.search(r'\b(double|float)\b', QUOTA_C), 'no floating point math')
         self.assertContains('policy.warn_numerator = 4;', QUOTA_C, 'Policy')
         self.assertContains('policy.warn_denominator = 5;', QUOTA_C, 'Policy')

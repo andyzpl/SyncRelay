@@ -75,7 +75,7 @@ static uint64_t SRMediaLimit(SRMediaSnapshot snapshot, SRMediaPolicy policy) {
 static SRMediaLevel SRMediaLevelFor(uint64_t used, uint64_t limit, SRMediaPolicy policy) {
     if (limit == 0) return SRMediaLevelFull;
     if (used >= limit) return SRMediaLevelFull;
-    if (used * policy.warn_numerator >= limit * policy.warn_denominator) return SRMediaLevelWarning;
+    if (used * policy.warn_denominator >= limit * policy.warn_numerator) return SRMediaLevelWarning;
     return SRMediaLevelNormal;
 }
 
