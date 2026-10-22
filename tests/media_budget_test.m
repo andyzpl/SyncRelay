@@ -233,7 +233,7 @@ int main(void) {
         NSData *otherBytes = pngWithPixel(4);
         NSDictionary *otherLibrary = [store saveLibraryImageData:otherBytes account:@"other" error:NULL];
         CHECK(otherLibrary && ![otherLibrary[@"mediaReference"] isEqual:library[@"mediaReference"]]);
-        committed = [store mediaUsageForAccount:@"account" error:NULL][@"committedBytes"] unsignedLongLongValue;
+        committed = [[store mediaUsageForAccount:@"account" error:NULL][@"committedBytes"] unsignedLongLongValue];
         CHECK(committed == data.length + otherBytes.length);
 
         sparseFile(directory, @"pressure.srimage", 214748365ULL - committed);
