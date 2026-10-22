@@ -1,8 +1,8 @@
 Package: andyz.syncrelay
 Name: SyncRelay (Development)
-Version: 0.2.21
+Version: 0.2.21+timeprobe.1
 Architecture: iphoneos-arm
-Description: Development checkpoint for explicitly started 1-20 group serial text or static-image forwarding. Foreground only, persistent attempts, manual pending-only continuation. No large batches, automatic next rule or retry.
+Description: Text source-time observation checkpoint, explicit opt-in, 16 samples or 120 seconds. No automatic capture or operations UI. Sampling does not send or create plans; legacy manual sending remains outside sampling. Actual host semantics, per-wrap ABI and images are not verified.
 Maintainer: andyz
 Author: andyz
 Section: Tweaks
