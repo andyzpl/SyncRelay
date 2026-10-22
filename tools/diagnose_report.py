@@ -176,7 +176,7 @@ def analyze(report):
                   'file_identity_rejected', 'file_getter_unavailable', 'file_path_unavailable',
                   'file_path_rejected', 'file_not_ready', 'file_size_or_type_rejected',
                   'file_stat_unavailable', 'file_non_regular',
-                  'file_link_count_rejected', 'file_size_unavailable', 'file_length_mismatch', 'file_changed',
+                  'file_link_count_rejected', 'file_unlinked', 'file_size_unavailable', 'file_length_mismatch', 'file_changed',
                   'file_snapshot_ready'}
         valid = (isinstance(app_preview, dict) and type(app_preview.get('schema')) is int and
                  app_preview['schema'] == 1 and isinstance(app_preview.get('state'), str) and app_preview['state'] in states and
@@ -196,6 +196,8 @@ def analyze(report):
             add('app_file_length_mismatch', 'The existing local file length did not match the app-message-declared length. No actual size or path is retained.')
         elif app_preview['state'] == 'file_link_count_rejected':
             add('app_file_link_count_rejected', 'This report was produced by a build that rejected a file link-count condition. Newer builds accept stable hard links while retaining path and read-stability checks.')
+        elif app_preview['state'] == 'file_unlinked':
+            add('app_file_unlinked', 'The opened local file had no remaining filesystem links and was rejected before reading contents.')
         elif app_preview['state'] == 'file_non_regular':
             add('app_file_non_regular', 'The native path did not resolve to a regular file; no contents were read.')
         elif app_preview['state'] == 'file_stat_unavailable':

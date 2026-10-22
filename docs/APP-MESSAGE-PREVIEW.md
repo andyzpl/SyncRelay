@@ -2,14 +2,15 @@
 
 ## 0.2.25 Hard-Link Compatibility
 
-The 0.2.24 device report reached the link-count guard. The native path remained
-inside the app container and identified a regular file of the declared length,
-but that file had multiple hard links. Version 0.2.25 accepts hard-linked
-regular files while still requiring the native path to remain within approved
-directories, rejecting symlinks/traversal/non-regular objects, matching the
-declared length, and verifying inode/device/size/link-count/mtime/ctime remain
-stable throughout the bounded read. This keeps the path and content checks
-without assuming each app-managed file has exactly one filesystem link.
+The 0.2.24 device report reached the link-count guard after opening an approved
+native path and identifying a regular file. It proves only that the link count
+was not one; it does not record the count or prove the later declared-length
+check passed. Version 0.2.25 accepts positive stable link counts, including
+multiple hard links, but still rejects zero links (`file_unlinked`). All native
+path, no-symlink, regular-file and exact declared-length gates remain. The
+inode/device/size/link-count/mtime/ctime must remain stable throughout the
+bounded read. This compatibility candidate still requires device verification;
+it does not establish how WeChat manages attachments or enable forwarding.
 
 ## 0.2.24 Diagnostic Refinement
 
@@ -61,8 +62,8 @@ downloads. No third-party binary is loaded or packaged.
   eligible. No user title, attachment ID or sender is used to construct a path.
 - Open directory components through pinned directory descriptors with no-follow;
   reject traversal, outside/sibling containers, symlink components and
-  nonregular files. Hard-linked files are accepted only if link count remains
-  stable across the read. Read without mmap, bounded to declared length, compare
+  nonregular files. Hard-linked files are accepted only if a positive link count
+  remains stable across the read. Read without mmap, bounded to declared length, compare
   exact length/EOF and inode/device/link count/mtime/ctime before and after.
   Copy immutable bytes into memory and compute SHA-256 of that owned copy.
   This detects normal changes but is not an authenticated remote-file checksum.

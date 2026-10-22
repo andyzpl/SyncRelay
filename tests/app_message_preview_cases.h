@@ -116,6 +116,27 @@ static void checkAppMessagePreview(void) {
     file.nativePath = hard;
     snapshot = [SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length home:home allowed:^BOOL { return YES; } state:&state];
     CHECK([state isEqual:@"file_snapshot_ready"] && [snapshot[@"data"] isEqual:bytes]);
+    CHECK(![SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length + 1 home:home allowed:^BOOL { return YES; } state:&state]);
+    CHECK([state isEqual:@"file_length_mismatch"]);
+    NSMutableData *mutatedBytes = [bytes mutableCopy]; ((unsigned char *)mutatedBytes.mutableBytes)[0] ^= 1;
+    CHECK([mutatedBytes writeToFile:path atomically:NO]);
+    CHECK([snapshot[@"data"] isEqual:bytes]);
+    CHECK([bytes writeToFile:path atomically:NO]);
+    NSString *extraHard = [documents stringByAppendingPathComponent:@"extra-hard.bin"];
+    __block NSUInteger fileChecks = 0;
+    CHECK(![SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length home:home allowed:^BOOL {
+        if (++fileChecks == 3) CHECK(link(path.fileSystemRepresentation, extraHard.fileSystemRepresentation) == 0);
+        return YES;
+    } state:&state]);
+    CHECK([state isEqual:@"file_changed"]);
+    CHECK(unlink(extraHard.fileSystemRepresentation) == 0);
+    fileChecks = 0;
+    CHECK(![SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length home:home allowed:^BOOL {
+        if (++fileChecks == 3) CHECK(unlink(hard.fileSystemRepresentation) == 0);
+        return YES;
+    } state:&state]);
+    CHECK([state isEqual:@"file_changed"]);
+    CHECK(link(path.fileSystemRepresentation, hard.fileSystemRepresentation) == 0);
     CHECK(unlink(hard.fileSystemRepresentation) == 0);
     NSString *fifo = [documents stringByAppendingPathComponent:@"fifo"];
     CHECK(mkfifo(fifo.fileSystemRepresentation, 0600) == 0); file.nativePath = fifo;

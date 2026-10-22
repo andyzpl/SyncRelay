@@ -49,6 +49,14 @@ class AppPreviewContractTests(unittest.TestCase):
         self.assertIn('snapshotForWrap:wrap expectedSize:size home:NSHomeDirectory() allowed:', receiver)
         self.assertIn('m_nsContent", NULL) isEqual:content', receiver)
 
+    def test_hard_links_keep_length_identity_and_unlink_guards(self):
+        source = self.text('Adapter/SRWeChatFileSource.m')
+        self.assertIn('before.st_nlink == 0', source)
+        self.assertIn('before.st_nlink != after.st_nlink', source)
+        self.assertIn('(unsigned long long)before.st_size != size', source)
+        self.assertNotIn('before.st_nlink != 1', source)
+        self.assertLess(source.index('before.st_nlink == 0'), source.index('NSMutableData *data'))
+
     def test_ui_does_not_open_urls_or_render_execute_files(self):
         source = self.text('UI/SRAppMessagePreviewScreen.m')
         self.assertIn('UIDataDetectorTypeNone', source)
@@ -91,6 +99,8 @@ class AppPreviewContractTests(unittest.TestCase):
     def test_file_rejections_are_distinguished_without_exposing_sizes_or_paths(self):
         cases = {
             'file_length_mismatch': ('app_file_length_mismatch', 'sensitive length'),
+            'file_unlinked': ('app_file_unlinked', 'private path'),
+            'file_link_count_rejected': ('app_file_link_count_rejected', 'private path'),
             'file_non_regular': ('app_file_non_regular', 'private path'),
             'file_stat_unavailable': ('app_file_stat_unavailable', 'private path'),
             'file_size_unavailable': ('app_file_size_unavailable', 'private path'),
