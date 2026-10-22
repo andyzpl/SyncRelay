@@ -40,8 +40,11 @@
     NSDictionary *result = nil;
     @try {
         struct stat before, after;
-        if (fstat(file, &before) || !S_ISREG(before.st_mode) || before.st_nlink != 1 || before.st_size < 0 ||
-            (unsigned long long)before.st_size != size) { *state = @"file_size_or_type_rejected"; return nil; }
+        if (fstat(file, &before)) { *state = @"file_stat_unavailable"; return nil; }
+        if (!S_ISREG(before.st_mode)) { *state = @"file_non_regular"; return nil; }
+        if (before.st_nlink != 1) { *state = @"file_link_count_rejected"; return nil; }
+        if (before.st_size < 0) { *state = @"file_size_unavailable"; return nil; }
+        if ((unsigned long long)before.st_size != size) { *state = @"file_length_mismatch"; return nil; }
         NSMutableData *data = [NSMutableData dataWithLength:(NSUInteger)size];
         NSUInteger offset = 0;
         while (offset < data.length) {

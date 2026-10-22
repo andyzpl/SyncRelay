@@ -82,7 +82,7 @@ static void checkAppMessagePreview(void) {
     CHECK([[@"different" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:NO]);
     CHECK([snapshot[@"data"] isEqual:bytes]);
     CHECK(![SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length home:home allowed:^BOOL { return YES; } state:&state]);
-    CHECK([state isEqual:@"file_size_or_type_rejected"]);
+    CHECK([state isEqual:@"file_length_mismatch"]);
     CHECK([bytes writeToFile:path atomically:NO]);
     for (NSNumber *size in @[@0, @(8ULL * 1024 * 1024 + 1)]) {
         NSUInteger reads = file.pathReads;
@@ -115,12 +115,12 @@ static void checkAppMessagePreview(void) {
     CHECK(link(path.fileSystemRepresentation, hard.fileSystemRepresentation) == 0);
     file.nativePath = hard;
     CHECK(![SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length home:home allowed:^BOOL { return YES; } state:&state]);
-    CHECK([state isEqual:@"file_size_or_type_rejected"]);
+    CHECK([state isEqual:@"file_link_count_rejected"]);
     CHECK(unlink(hard.fileSystemRepresentation) == 0);
     NSString *fifo = [documents stringByAppendingPathComponent:@"fifo"];
     CHECK(mkfifo(fifo.fileSystemRepresentation, 0600) == 0); file.nativePath = fifo;
     CHECK(![SRWeChatFileSource snapshotForWrap:file expectedSize:bytes.length home:home allowed:^BOOL { return YES; } state:&state]);
-    CHECK([state isEqual:@"file_size_or_type_rejected"]);
+    CHECK([state isEqual:@"file_non_regular"]);
     CHECK([NSFileManager.defaultManager removeItemAtPath:home error:NULL]);
     puts("PASS: preview-only link freezing and URL gates, account/generation privacy, native attachment ABI, bounded immutable file copies and path guards (no plan/send)");
 }

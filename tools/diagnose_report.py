@@ -174,7 +174,9 @@ def analyze(report):
         states = {'disabled', 'waiting', 'ready', 'cleared', 'invalid_title', 'invalid_url',
                   'file_size_rejected', 'file_extension_rejected', 'file_context_changed',
                   'file_identity_rejected', 'file_getter_unavailable', 'file_path_unavailable',
-                  'file_path_rejected', 'file_not_ready', 'file_size_or_type_rejected', 'file_changed',
+                  'file_path_rejected', 'file_not_ready', 'file_size_or_type_rejected',
+                  'file_stat_unavailable', 'file_non_regular',
+                  'file_link_count_rejected', 'file_size_unavailable', 'file_length_mismatch', 'file_changed',
                   'file_snapshot_ready'}
         valid = (isinstance(app_preview, dict) and type(app_preview.get('schema')) is int and
                  app_preview['schema'] == 1 and isinstance(app_preview.get('state'), str) and app_preview['state'] in states and
@@ -190,6 +192,16 @@ def analyze(report):
                 add('app_file_snapshot_ready', 'A bounded local file copy passed length and read-stability checks. No file rendering, persistent plan, sending or delivery is verified.')
         elif app_preview['state'] == 'file_getter_unavailable':
             add('app_file_getter_unavailable', 'The declared native attachment-path getter is missing or ABI-incompatible; no fallback, guessed path or download ran.')
+        elif app_preview['state'] == 'file_length_mismatch':
+            add('app_file_length_mismatch', 'The existing local file length did not match the app-message-declared length. No actual size or path is retained.')
+        elif app_preview['state'] == 'file_link_count_rejected':
+            add('app_file_link_count_rejected', 'The local file has more than one hard link and remains rejected by the path-safety check.')
+        elif app_preview['state'] == 'file_non_regular':
+            add('app_file_non_regular', 'The native path did not resolve to a regular file; no contents were read.')
+        elif app_preview['state'] == 'file_stat_unavailable':
+            add('app_file_stat_unavailable', 'File metadata could not be read; no contents were read.')
+        elif app_preview['state'] == 'file_size_unavailable':
+            add('app_file_size_unavailable', 'The local file did not expose a valid nonnegative length; no contents were read.')
         elif app_preview['state'] not in {'disabled', 'waiting', 'cleared'}:
             add('app_preview_rejected', 'The preview or file resource was rejected or unavailable. Export this report; no automatic download, alternate path or sending ran.')
     image = report.get('imageSource')

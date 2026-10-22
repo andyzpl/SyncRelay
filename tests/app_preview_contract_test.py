@@ -88,6 +88,21 @@ class AppPreviewContractTests(unittest.TestCase):
                 self.assertIn('app_preview_invalid', {row['code'] for row in analyze(
                     {'reportSchema': 1, 'receiveCandidate': {'appMessagePreview': malformed}})})
 
+    def test_file_rejections_are_distinguished_without_exposing_sizes_or_paths(self):
+        cases = {
+            'file_length_mismatch': ('app_file_length_mismatch', 'sensitive length'),
+            'file_link_count_rejected': ('app_file_link_count_rejected', 'private path'),
+            'file_non_regular': ('app_file_non_regular', 'private path'),
+            'file_stat_unavailable': ('app_file_stat_unavailable', 'private path'),
+            'file_size_unavailable': ('app_file_size_unavailable', 'private path'),
+        }
+        for state, (code, secret) in cases.items():
+            preview = {'schema': 1, 'state': state, 'kind': 'file', 'relayable': False,
+                       'memoryOnly': True, 'planCreationEnabled': False, 'sendingEnabled': False}
+            result = analyze({'reportSchema': 1, 'receiveCandidate': {'appMessagePreview': preview}})
+            self.assertIn(code, {row['code'] for row in result})
+            self.assertNotIn(secret, str(result))
+
 
 if __name__ == '__main__':
     unittest.main()

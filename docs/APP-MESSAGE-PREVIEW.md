@@ -1,4 +1,14 @@
-# 0.2.23 Independent App-Message Preview Experiment
+# 0.2.24 Independent App-Message Preview Experiment
+
+## 0.2.24 Diagnostic Refinement
+
+The 0.2.23 device report reached the native-file metadata gate but its combined
+`file_size_or_type_rejected` state could not distinguish a declared-length
+mismatch, a non-regular object or a multiple-link file. Version 0.2.24 reports
+those outcomes separately (`file_length_mismatch`, `file_non_regular`, and
+`file_link_count_rejected`), plus distinct stat/size-unavailable states. It
+does not relax any file gate or record a path, actual size, contents or hash in
+diagnostics. The parser continues accepting the earlier combined state.
 
 This checkpoint adds an explicitly armed, memory-only preview experiment. It is
 not file/link forwarding and does not extend configuration types, ordinary
@@ -69,7 +79,7 @@ The report parser uses fixed messages and does not echo untrusted values.
 
 ## Device Check
 
-1. Install the independently built 0.2.23 package, restart WeChat, verify version,
+1. Install the independently built 0.2.24 package, restart WeChat, verify version,
    commit and CI run. Use authorized test groups and small nonsensitive fixtures.
 2. Save the source group/member configuration. Stop normal waiting, clear any
    ordinary preview, end active rules and turn off old single-send experiments.
@@ -78,8 +88,10 @@ The report parser uses fixed messages and does not echo untrusted values.
    entry. Check the exact title/URL. No ordinary source preview is expected.
 4. Clear the experimental preview. Choose the separate file preview entry. Use
    an already-loaded file no larger than 8 MiB. Send it from the selected member,
-   reopen the entry and check title, byte count and hash. A file-path/getter error
-   stays waiting: export diagnostics rather than guessing paths or retrying sends.
+   reopen the entry and check title, byte count and hash. A file-path/getter
+   error stays waiting: export diagnostics rather than guessing paths or retrying
+   sends. The refined metadata states distinguish length mismatch, non-regular
+   files and hard links without including their sizes or paths.
 5. Export diagnostics while foreground/ready. Opening a share sheet may trigger
    inactivity after report generation and clear the in-memory preview as designed.
 6. Test incoming-from-another-selected-member separately. Background/lockscreen
