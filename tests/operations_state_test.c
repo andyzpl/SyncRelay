@@ -19,11 +19,14 @@ int main(void) {
     APPLY(SROpsMaterialReady);
     APPLY(SROpsManualStartAccepted);
     assert(SROpsDispatchAllowed(s));
+    assert(!SROpsPauseRequired(s, true, false));
+    assert(SROpsPauseRequired(s, true, true));
     assert(!SROpsApply(&s, SROpsManualStartAccepted, s.generation));
     APPLY(SROpsBackground);
     assert(!SROpsVisible(s) && !SROpsDispatchAllowed(s));
     APPLY(SROpsForeground);
     assert(!SROpsApply(&s, SROpsManualStartAccepted, s.generation));
+    assert(SROpsPauseRequired(s, true, true));
     APPLY(SROpsDrained);
     assert(!SROpsDispatchAllowed(s));
     APPLY(SROpsManualStartAccepted);
@@ -78,6 +81,13 @@ int main(void) {
             assert(SROpsVisible(s) == ((mask & 7) == 7));
             assert(!(SROpsCaptureAllowed(s) && SROpsDispatchAllowed(s)));
             if (!SROpsVisible(s)) assert(!SROpsCaptureAllowed(s) && !SROpsDispatchAllowed(s));
+            for (unsigned ready = 0; ready < 2; ready++) {
+                for (unsigned deferred = 0; deferred < 2; deferred++) {
+                    bool pause = SROpsPauseRequired(s, ready != 0, deferred != 0);
+                    assert(pause == (!SROpsVisible(s) || !ready || s.fault || deferred));
+                    if (deferred) assert(pause);
+                }
+            }
         }
     }
     puts("operations state tests passed");

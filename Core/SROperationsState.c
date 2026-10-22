@@ -8,6 +8,9 @@ bool SROpsCaptureAllowed(SROperationsState s) {
 bool SROpsDispatchAllowed(SROperationsState s) {
     return SROpsVisible(s) && s.occupied && s.phase == SROpsRunning && !s.fault;
 }
+bool SROpsPauseRequired(SROperationsState s, bool configurationReady, bool lifecyclePending) {
+    return !SROpsVisible(s) || !configurationReady || s.fault || lifecyclePending;
+}
 static void stop(SROperationsState *s) {
     s->generation++;
     if (s->phase == SROpsRunning) s->phase = SROpsDraining;

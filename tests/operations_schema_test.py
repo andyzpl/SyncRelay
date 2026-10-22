@@ -21,9 +21,11 @@ def schema(db):
 
 def additive_migration(db):
     """Run production DDL/check/version SQL in one SQLite transaction, not ObjC."""
-    section = STORE.split('if (version < 11) {', 1)[1].split('return @YES;', 1)[0]
+    section = STORE.split('if (version < 14) {', 1)[1].split('return @YES;', 1)[0]
     check, version = (sql for sql in statements(section) if sql.startswith('PRAGMA '))
     db.execute('PRAGMA foreign_keys=ON')
+    if db.in_transaction:
+        db.commit()
     try:
         db.execute('BEGIN IMMEDIATE')
         schema(db)
@@ -85,16 +87,19 @@ class OperationsSchemaTests(unittest.TestCase):
                 'native_attempt_claims', 'small_group_runs', 'text_experiments',
                 'image_experiments', 'submission_receipts')
 
-    def test_schema_11_guard_version_and_tables_agree(self):
-        self.assertIn('version >= 0 && version <= 11', STORE)
-        self.assertIn('if (version < 11) {', STORE)
-        self.assertEqual(['PRAGMA user_version=11'],
+    def test_schema_14_guard_version_and_tables_agree(self):
+        self.assertIn('version >= 0 && version <= 14', STORE)
+        self.assertIn('if (version < 14) {', STORE)
+        self.assertEqual(['PRAGMA user_version=14'],
                          [sql for sql in statements(STORE) if sql.startswith('PRAGMA user_version=')])
         additive_migration(self.db)
-        self.assertEqual(11, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
         tables = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({'operations_preferences', 'operations_contents',
                          'operations_cancellations', 'operations_legacy_adoptions'} <= tables)
+        self.assertTrue({'library_items', 'library_versions', 'media_assets',
+                         'media_references', 'content_sources'} <= tables)
+        self.assertTrue({'plan_sources', 'library_tasks'} <= tables)
         self.assertEqual(1, self.db.execute('PRAGMA foreign_keys').fetchone()[0])
 
     def test_one_current_content_per_account(self):
@@ -114,6 +119,95 @@ class OperationsSchemaTests(unittest.TestCase):
         self.content('one')
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("UPDATE operations_contents SET plan_id='missing'")
+
+    def test_archive_guard_blocks_active_or_inflight_run(self):
+        self.seed_run()
+        queries = method_sql('- (BOOL)archiveOperationsContent:', '- (NSString *)createPlanForAccount:')
+        guard = next(sql for sql in queries if sql.startswith('SELECT x.id'))
+        for state in ('running', 'paused', 'awaiting_resume', 'completed', 'ended'):
+            with self.subTest(state=state):
+                self.db.execute('UPDATE runs SET state=?', (state,))
+                self.assertTrue(self.db.execute(guard, ('plan',)).fetchall())
+        self.db.execute("UPDATE deliveries SET state='uncertain' WHERE id='first'")
+        self.assertEqual([], self.db.execute(guard, ('plan',)).fetchall())
+        for state in ('running', 'paused', 'awaiting_resume'):
+            with self.subTest(drained_state=state):
+                self.db.execute('UPDATE runs SET state=?', (state,))
+                self.assertTrue(self.db.execute(guard, ('plan',)).fetchall())
+
+    def test_archive_sql_keeps_other_content_and_all_send_ledgers(self):
+        self.seed_ledgers()
+        self.content('already-archived', message='old', archived=200)
+        self.content('current', message='new')
+        before = self.rows(self.legacy_tables())
+        queries = method_sql('- (BOOL)archiveOperationsContent:', '- (NSString *)createPlanForAccount:')
+        lookup = next(sql for sql in queries if sql.startswith('SELECT plan_id'))
+        update = next(sql for sql in queries if sql.startswith('UPDATE operations_contents'))
+        self.assertEqual([(None, 200)], self.db.execute(lookup, ('already-archived', 'account')).fetchall())
+        self.assertEqual([], self.db.execute(lookup, ('current', 'other')).fetchall())
+        self.db.execute(update, (300, 'current'))
+        self.assertEqual([('already-archived', 200), ('current', 300)], self.db.execute(
+            'SELECT id,archived_at FROM operations_contents ORDER BY rowid').fetchall())
+        self.assertEqual(before, self.rows(self.legacy_tables()))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.content('duplicate', message='new')
+
+    def test_recent_content_order_survives_clock_rollback_and_equal_timestamps(self):
+        self.seed_ledgers()
+        self.content('first', message='first-source', archived=1000)
+        self.content('second', message='second-source', archived=100)
+        self.content('current', message='current-source')
+        self.content('other-account', account='other', message='other-source', archived=2000)
+        queries = method_sql('- (NSDictionary *)operationsContentForAccount:',
+                             '- (NSString *)adoptLegacyOperationsRun:')
+        recent = next(sql for sql in queries if 'archived_at IS NOT NULL' in sql)
+        current = next(sql for sql in queries if 'archived_at IS NULL' in sql
+                       and sql.startswith('SELECT * FROM operations_contents'))
+        for first_time, second_time in ((1000, 100), (100, 100)):
+            with self.subTest(first_time=first_time, second_time=second_time):
+                self.db.execute("UPDATE operations_contents SET archived_at=? WHERE id='first'", (first_time,))
+                self.db.execute("UPDATE operations_contents SET archived_at=? WHERE id='second'", (second_time,))
+                tables = self.legacy_tables() + ('operations_contents',)
+                before = self.rows(tables)
+                cursor = self.db.execute(recent, ('account',))
+                row = dict(zip((column[0] for column in cursor.description), cursor.fetchone()))
+                self.assertEqual('second', row['id'])
+                self.assertEqual(second_time, row['archived_at'])
+                self.assertEqual('current', self.db.execute(current, ('account',)).fetchone()[0])
+                self.assertEqual('other-account', self.db.execute(recent, ('other',)).fetchone()[0])
+                self.assertEqual(before, self.rows(tables))
+
+    def test_run_card_order_survives_clock_rollback_and_equal_timestamps(self):
+        self.seed_run()
+        self.db.execute("UPDATE deliveries SET state='uncertain' WHERE state='submitting'")
+        self.db.execute("UPDATE attempts SET state='uncertain',ended_at=2")
+        self.db.execute("UPDATE deliveries SET state='cancelled' WHERE state='pending'")
+        self.db.execute("UPDATE runs SET state='ended',ended_at=2")
+        self.db.execute("INSERT INTO rules VALUES('later-rule','plan','Two',2,5,10)")
+        self.db.execute("INSERT INTO runs VALUES('later-run','later-rule','account','ended',3,4,5,10,'{}')")
+        self.db.execute("INSERT INTO deliveries VALUES('third','later-run','c',0,'cancelled',NULL,NULL,NULL)")
+        cards_sql = method_sql('- (NSArray *)ruleCardsForPlan:', '- (NSArray *)historyForRule:')
+        latest = next(sql for sql in cards_sql if 'AS creationOrder' in sql)
+        history_sql = method_sql('- (NSArray *)historyForRule:', '- (NSArray *)exceptionsForRun:')
+        history = next(sql for sql in history_sql if 'AS creationOrder' in sql)
+
+        def read(sql, values):
+            cursor = self.db.execute(sql, values)
+            return dict(zip((column[0] for column in cursor.description), cursor.fetchone()))
+
+        for old_time, new_time in ((1000, 100), (100, 100)):
+            with self.subTest(old_time=old_time, new_time=new_time):
+                self.db.execute("UPDATE runs SET started_at=? WHERE id='run'", (old_time,))
+                self.db.execute("UPDATE runs SET started_at=? WHERE id='later-run'", (new_time,))
+                before = self.rows(self.legacy_tables())
+                first = read(latest, ('rule',))
+                second = read(latest, ('later-rule',))
+                self.assertGreater(second['creationOrder'], first['creationOrder'])
+                self.assertEqual('later-run', max((first, second), key=lambda row: row['creationOrder'])['id'])
+                self.assertEqual(second, read(history, ('later-rule', 1, 0)))
+                self.assertEqual((old_time, new_time), (first['started_at'], second['started_at']))
+                self.assertEqual((2, 4), (first['ended_at'], second['ended_at']))
+                self.assertEqual(before, self.rows(self.legacy_tables()))
 
     def test_cancel_sql_only_revokes_pending(self):
         self.seed_run()
@@ -156,7 +250,7 @@ class OperationsSchemaTests(unittest.TestCase):
         before = self.rows(self.legacy_tables())
         additive_migration(self.db)
         self.assertEqual(before, self.rows(self.legacy_tables()))
-        self.assertEqual(11, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
         self.assertEqual('submitting', self.db.execute("SELECT state FROM deliveries WHERE id='first'").fetchone()[0])
         self.assertEqual([], self.db.execute('PRAGMA foreign_key_check').fetchall())
 
@@ -172,7 +266,7 @@ class OperationsSchemaTests(unittest.TestCase):
         before = self.rows(tables)
         additive_migration(self.db)
         self.assertEqual(before, self.rows(tables))
-        self.assertEqual(11, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
         self.assertEqual([], self.db.execute('SELECT * FROM operations_legacy_adoptions').fetchall())
         # Reopening/reapplying the additive DDL never resets old rows or preferences.
         additive_migration(self.db)
