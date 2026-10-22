@@ -107,15 +107,20 @@ static void checkAppMessageProbe(void) {
         @[@"<!DOCTYPE msg [<!ENTITY % a SYSTEM 'https://example.invalid/private-entity'>%a;]><msg/>", @"unsafe_xml"],
         @[@"<msg><appmsg><type>5</type><title>&private_unknown_entity;</title></appmsg></msg>", @"invalid_xml"]
     ];
+    NSUInteger caseIndex = 0;
     for (NSArray *test in cases) {
         CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:appMessage(test[0])]; pump();
         CHECK(appSamples(receiver).count == 1);
         NSDictionary *sample = appSamples(receiver)[0];
+        if (![sample[@"state"] isEqual:test[1]])
+            fprintf(stderr, "appmsg case %lu expected=%s actual=%s\n", (unsigned long)caseIndex,
+                [test[1] UTF8String], [sample[@"state"] UTF8String]);
         CHECK([sample[@"state"] isEqual:test[1]]);
         CHECK(test.count > 2 ? [sample[@"subtype"] isEqual:test[2]] : sample[@"subtype"] == nil);
         if ([sample[@"subtype"] isEqual:@2000] || [sample[@"subtype"] isEqual:@(UINT32_MAX)]) CHECK([sample[@"kindHint"] isEqual:@"other"]);
         CHECK(!accepted && [receiver.diagnostics[@"armed"] boolValue]); [receiver stop];
+        caseIndex++;
     }
     NSMutableString *deep = [NSMutableString stringWithString:@"<msg><appmsg><type>5</type>"];
     for (NSUInteger i = 0; i < 40; i++) [deep appendString:@"<x>"];

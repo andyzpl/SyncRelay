@@ -40,7 +40,8 @@ Limits and rejection rules:
   rejected rather than guessed. Unknown nested type tags cannot set the subtype.
 - DTD/entity declarations are rejected before parsing. External entity
   resolution is disabled independently. Parser errors and exception text are
-  never exported.
+  never exported. Any parser error callback rejects the sample even if the
+  Foundation implementation reports a successful parse return value.
 - NUL characters and non-UTF-8 XML encoding declarations are rejected before
   parsing, preventing alternate encoding detection from bypassing DTD preflight.
 - Each arm reserves at most 16 callbacks before queueing. Excess callbacks do

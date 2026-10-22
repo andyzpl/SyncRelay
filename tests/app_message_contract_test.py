@@ -102,6 +102,7 @@ class AppMessageContractTests(unittest.TestCase):
         self.assertLess(parser.index('NSMakeRange(0, 1)'), parser.index('dataUsingEncoding:'))
         self.assertIn('parser.shouldResolveExternalEntities = NO', parser)
         self.assertIn('NSXMLParserResolveExternalEntitiesNever', parser)
+        self.assertIn('parseErrorOccurred:', parser)
         for forbidden in ('NSLog(', 'parserError', 'contentsOfURL:', 'writeTo', 'NSURLSession', 'URLWithString:'):
             self.assertNotIn(forbidden, parser)
 

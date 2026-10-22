@@ -82,6 +82,10 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
 - (NSData *)parser:(NSXMLParser *)parser resolveExternalEntityName:(__unused NSString *)name systemID:(__unused NSString *)systemID {
     [self reject:@"unsafe_xml" parser:parser]; return nil;
 }
+- (void)parser:(__unused NSXMLParser *)parser parseErrorOccurred:(__unused NSError *)error {
+    // Some Foundation parsers report a recoverable error while parse returns YES.
+    if (!self.failure) self.failure = @"invalid_xml";
+}
 + (NSDictionary *)summaryForContent:(NSString *)content sender:(NSString *)sender {
     if (!content.length) return @{@"state": @"empty_content"};
     if (content.length > SRAppMessageByteLimit) return @{@"state": @"too_large"};
