@@ -79,6 +79,14 @@ class AppPreviewContractTests(unittest.TestCase):
         self.assertGreaterEqual(panel.count('!entry.receiver.appMessagePreviewActive'), 4)
         self.assertIn('if (self.receiver.appMessagePreviewActive)', panel.split('- (void)beginCapture {', 1)[1])
 
+    def test_preview_survives_panel_close_but_clears_on_background(self):
+        panel = self.text('UI/SRPanel.m')
+        resigning = panel.split('- (void)resigningActive:', 1)[1].split('- (void)didEnterBackground:', 1)[0]
+        background = panel.split('- (void)didEnterBackground:', 1)[1].split('@end', 1)[0]
+        self.assertIn('if (!self.receiver.appMessagePreviewActive) [self.receiver stop];', resigning)
+        self.assertIn('[self.receiver stop];', background)
+        self.assertIn('UIApplicationDidEnterBackgroundNotification', panel)
+
     def test_redacted_triage_does_not_claim_relay_or_echo_private_fields(self):
         for kind, code in (('link', 'app_link_preview_ready'), ('file', 'app_file_snapshot_ready')):
             preview = {'schema': 1, 'state': 'ready', 'kind': kind, 'relayable': False,

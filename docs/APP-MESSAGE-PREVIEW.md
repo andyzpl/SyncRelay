@@ -1,4 +1,12 @@
-# 0.2.25 Independent App-Message Preview Experiment
+# Independent App-Message Preview Experiment
+
+## 0.2.26 Panel-Close Lifecycle
+
+The app-message preview now remains armed when the SyncRelay panel closes and
+WeChat briefly resigns active. It is cleared when WeChat actually enters the
+background. Ordinary source capture and send observation retain their existing
+resign-active cancellation behavior. This matches the intended device workflow:
+arm in the panel, close it, then receive a message in the selected chat.
 
 ## 0.2.25 Hard-Link Compatibility
 
@@ -106,7 +114,8 @@ The report parser uses fixed messages and does not echo untrusted values.
    sends. The prior report reached the hard-link check; this build accepts the
    same kind of file if all path, declared-size and read-stability checks pass.
 5. Export diagnostics while foreground/ready. Opening a share sheet may trigger
-   inactivity after report generation and clear the in-memory preview as designed.
+   resign-active; the app-message preview remains armed until WeChat enters the
+   background, when it is cleared as designed.
 6. Test incoming-from-another-selected-member separately. Background/lockscreen
    must clear the preview and require explicit re-arming. No sending tests here.
 

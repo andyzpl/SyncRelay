@@ -234,7 +234,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 - (void)textExperimentInactive:(__unused NSNotification *)notification {
     [self cancelTextExperiment]; self.singleTextSendEnabled = NO;
-    [self.receiver stop];
+    if (!self.receiver.appMessagePreviewActive) [self.receiver stop];
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
@@ -1420,6 +1420,11 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.sendProbe cancelForInactivity];
     [self.textSendHost stopObservation];
     [self.imageSendHost stopObservation];
+    if (!self.receiver.appMessagePreviewActive) [self.receiver stop];
+    if ([self.capture.status[@"state"] isEqual:@"waiting"]) [self.capture cancel];
+    [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+}
+- (void)didEnterBackground:(__unused NSNotification *)notification {
     [self.receiver stop];
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) [self.capture cancel];
     [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
@@ -1444,6 +1449,7 @@ void SRInstallPanelEntry(SRStore *store) {
     };
     if (store) [entry prepareCapture];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(didEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIWindowDidBecomeKeyNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SRRelayStateChangedNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SREntryPreferencesChangedNotification object:nil];
