@@ -1,6 +1,6 @@
 # 阶段 A 下一次设备核验：当前源码检查点
 
-日期：2026-10-24。当前节点：**本地生命周期候选 `0.2.29+aprobe.4` 已通过 180 项 Python 门禁；两次精确 CI 均未完成（第一次 lifecycle 测试期望错误，第二次既有异步等待超时），测试等待已改为有界条件轮询并本地通过，第三次 CI/DEB 尚未获准。尚无可用 DEB、安装或真机证据。`.3` 仍是历史 CI/DEB 通过包（179 项 Python，未安装）；设备当前为 `.2`，已完成八轮只读采样。尚未证明 schema 迁移，完整来源时间语义和图片就绪仍未验收。** `.3` 身份见 `BUILD-0.2.28-aprobe.3.md`，`.4` 检查点见 `BUILD-0.2.29-aprobe.4.md`。与旧文字专项包步骤冲突时，以本文为准；产品范围仍服从总计划第 12–14 节。
+日期：2026-10-24。当前节点：**本地生命周期候选 `0.2.29+aprobe.4` 已通过 181 项 Python 门禁；三次精确 CI 均未完成（lifecycle 测试期望错误、既有异步等待超时、等待 block 返回类型编译错误），第三次问题已最小修正并本地通过，第四次 CI/DEB 尚未获准。尚无可用 DEB、安装或真机证据。`.3` 仍是历史 CI/DEB 通过包（179 项 Python，未安装）；设备当前为 `.2`，已完成八轮只读采样。尚未证明 schema 迁移，完整来源时间语义和图片就绪仍未验收。** `.3` 身份见 `BUILD-0.2.28-aprobe.3.md`，`.4` 检查点见 `BUILD-0.2.29-aprobe.4.md`。与旧文字专项包步骤冲突时，以本文为准；产品范围仍服从总计划第 12–14 节。
 
 ### 新增设备报告（1023007–1023010，2026-10-23）
 
@@ -154,7 +154,7 @@ hook 字段集 H：`hookSamples[].ordinal/messageOrdinal/round/receiverGeneratio
 
 `.3` 候选范围已按精确提交 `6bd977de878af89d19bb09885721ed10c20751be`、树 `d24b83f285e3c27e2394487780f3aecd5160e4fc` 构建和核验；普通 DEB 证据见 `BUILD-0.2.28-aprobe.3.md`。`tests/store_test.m` 已包含在该提交中。该结果只证明 CI 编译/链接/模拟执行和 DEB 静态核验，不是真机、宿主 ABI 或迁移证据。
 
-`.4` 的范围以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，只覆盖生命周期、诊断、测试、版本和文档；没有新增迁移 SQL，没有修改消息库派发、视频、receiver 发送 ABI 或 B/C UI。两次 CI 都实际编译并执行了来源时间程序：第一次失败于新增 lifecycle 测试的错误期望，第二次在更早的既有异步等待处超时，尚未执行到修正后的 lifecycle 用例。测试等待已改为最多 5 秒的有界条件轮询，本地 Python 通过；仍无成功的原生全量、打包或真机结果。安装 `.4` 若面对 schema 11 设备库，仍会执行既有 11→14 迁移；没有备份/回滚方案和单独授权不得安装。
+`.4` 的范围以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，只覆盖生命周期、诊断、测试、版本和文档；没有新增迁移 SQL，没有修改消息库派发、视频、receiver 发送 ABI 或 B/C UI。前三次 CI 都在编译/执行来源时间程序时失败：第一次是新增 lifecycle 测试的错误期望，第二次是更早的既有异步等待超时，第三次是等待 block 返回 `int` 与声明的 `BOOL` 不兼容，程序尚未执行。测试等待已改为最多 5 秒的有界条件轮询并显式返回 `BOOL`，本地 Python **181** 通过；仍无成功的原生全量、打包或真机结果。安装 `.4` 若面对 schema 11 设备库，仍会执行既有 11→14 迁移；没有备份/回滚方案和单独授权不得安装。
 
 ## 5. 待批准的外部动作范围
 
@@ -209,6 +209,10 @@ Python 160 项通过，含新增的只读 seam 源码守卫；SQLite/其他 Pyth
 
 2026-10-23 第二次 `.4` CI：修正断言后的提交 `b9e1fcbc6523450f46525db394a9a0e2b78af900`、树 `9fba2a718961793c87817936fa7e86b6f8b1f47e`，run `39983266913`，job `120515785520`。Python 180 项及全部 Objective-C 编译/链接通过；`source-time-probe-test` 在既有 `checkOwnAndGeneration()` 第 202 行因固定等待 1.1 秒不足而失败。该用例第一次 run 曾通过，两次之间生产代码未变，新增 lifecycle 用例尚未执行，因此记为既有异步测试定时不稳，不记 lifecycle 回归。没有 DEB artifact。两次 CI 已使用完毕，第三次必须另行获准。
 
-2026-10-24 本地测试等待修复：`checkOwnAndGeneration()` 与读回关联正向等待改为最多 5 秒、50 ms 切片的有界条件轮询；负向断言仍保留固定观察窗口。只修改 `tests/source_time_probe_test.m`，不改生产生命周期、schema、发送或媒体路径。本地全量 Python 180、探针契约 10、分析器 44 通过；Objective-C 尚未在本机执行。
+2026-10-24 本地测试等待修复：`checkOwnAndGeneration()` 与读回关联正向等待改为最多 5 秒、50 ms 切片的有界条件轮询；负向断言仍保留固定观察窗口。只修改测试，不改生产生命周期、schema、发送或媒体路径。本地全量 Python 180、探针契约 10、分析器 44 通过；Objective-C 尚未在本机执行。
 
-`.4` 候选冻结范围：以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，共 17 个变更文件（16 个修改、1 个新增构建记录）。仅含 `SRSourceTimeProbe` 生命周期、`SRPanel` 通知接线、诊断/分析器、对应 Python/Objective-C 测试、版本与文档；不包含迁移 SQL、消息库派发、视频、receiver 发送 ABI 或 B/C UI。精确提交在提交后记录于 `BUILD-0.2.29-aprobe.4.md`。
+2026-10-24 第三次 `.4` CI：精确提交 `295c40847fdfcd9d123c36892440a41db4ba0f0b`、树 `144f10f0f1704754fef1dafa908f9440e130c7fa`，run `39985086993`，job `120522058236`。Python 180 项、pacing 和 operations-state 通过；`source-time-probe-test` 在编译时出现 4 处 `incompatible block pointer types passing 'int (^)(void)' to parameter of type 'BOOL (^)(void)'`，因此 Objective-C 程序没有执行，后续打包/核验/上传全部跳过且无 DEB artifact。原因是新增有界等待辅助函数声明 `BOOL`，四处条件 block 直接返回 `NSUInteger` 比较产生的 `int`；已在测试中显式转换为 `BOOL`，未改生产代码、未放宽 `-Werror`。
+
+第三次修复后本地门禁：全量 Python **181** 项、探针契约 **11** 项、分析器 **44** 项通过；`py_compile` 和 `git diff --check` 通过（仅既有换行提示）。新增守卫要求 4 个等待 block 都返回声明的布尔类型。Objective-C 编译/链接/模拟执行仍只能由下一次获准的 macOS CI 提供。
+
+`.4` 候选冻结范围：以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，共 17 个变更文件（16 个修改、1 个新增构建记录）。仅含 `SRSourceTimeProbe` 生命周期、`SRPanel` 通知接线、诊断/分析器、对应 Python/Objective-C 测试、版本与文档；不包含迁移 SQL、消息库派发、视频、receiver 发送 ABI 或 B/C UI。第三次修复只改测试；精确提交在提交后记录于 `BUILD-0.2.29-aprobe.4.md`。

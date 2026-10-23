@@ -154,6 +154,14 @@ class SourceTimeProbeContracts(unittest.TestCase):
         self.assertLess(main.index('checkInactiveGrace();'),
                         main.index('checkCapabilityAndFaults();'))
 
+    def test_bounded_native_wait_blocks_return_the_declared_boolean_type(self):
+        native = (ROOT / 'tests/source_time_probe_test.m').read_text(encoding='utf-8')
+        self.assertIn('static BOOL waitForCondition(NSTimeInterval timeout, BOOL (^condition)(void))', native)
+        calls = native.split('waitForCondition(5, ^{')[1:]
+        self.assertEqual(4, len(calls))
+        for call in calls:
+            self.assertTrue(call.startswith(' return (BOOL)('))
+
 
 if __name__ == '__main__':
     unittest.main()

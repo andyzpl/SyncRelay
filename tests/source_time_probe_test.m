@@ -217,7 +217,7 @@ static void checkOwnAndGeneration(void) {
     settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
     settled.m_n64MesSvrID = 9007199254740994ULL;
     fixture.manager.stored = settled; fixture.wall = 2020;
-    CHECK(waitForCondition(5, ^{ return count(fixture) == 1; }));
+    CHECK(waitForCondition(5, ^{ return (BOOL)(count(fixture) == 1); }));
     CHECK([last(fixture)[@"selfSource"] boolValue]);
     CHECK([last(fixture)[@"createdAt"] isEqual:@2002] && [last(fixture)[@"receivedAt"] isEqual:@2002.5]);
     CHECK([last(fixture)[@"deliveredAt"] isEqual:@2020]);
@@ -253,7 +253,7 @@ static void checkReadbackCorrelationRejectsMismatch(void) {
     settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
     settled.m_n64MesSvrID = 9007199254740995ULL; fixture.manager.stored = settled;
     fixture.wall = 2120;
-    CHECK(waitForCondition(5, ^{ return count(fixture) == 1; }));
+    CHECK(waitForCondition(5, ^{ return (BOOL)(count(fixture) == 1); }));
     CHECK([last(fixture)[@"hookMessageOrdinal"] isEqual:@1]);
     [fixture stop];
     fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
@@ -266,7 +266,7 @@ static void checkReadbackCorrelationRejectsMismatch(void) {
     settled.m_n64MesSvrID = 9007199254740997ULL; fixture.manager.stored = settled;
     fixture.receiver.observeTimeHook = nil;
     fixture.wall = 2170;
-    CHECK(waitForCondition(5, ^{ return count(fixture) == 1; }));
+    CHECK(waitForCondition(5, ^{ return (BOOL)(count(fixture) == 1); }));
     CHECK(last(fixture)[@"hookMessageOrdinal"] == NSNull.null);
     [fixture stop];
     fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
@@ -281,7 +281,7 @@ static void checkReadbackCorrelationRejectsMismatch(void) {
     settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
     settled.m_n64MesSvrID = 9007199254740998ULL; fixture.manager.stored = settled;
     fixture.wall = 2200;
-    CHECK(waitForCondition(5, ^{ return count(fixture) == 1; }));
+    CHECK(waitForCondition(5, ^{ return (BOOL)(count(fixture) == 1); }));
     CHECK(last(fixture)[@"hookMessageOrdinal"] == NSNull.null);
     [fixture stop];
 

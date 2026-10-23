@@ -1,6 +1,6 @@
 # 0.2.29+aprobe.4 阶段 A 生命周期候选
 
-日期：2026-10-24。状态：**本地源码与 Python 门禁已复核；两次精确提交 CI 均未完成，第一次是 lifecycle 测试期望错误，第二次是既有异步等待在慢 runner 上超时。测试等待已改为有界条件轮询并本地通过；第三次 CI/DEB 尚未获准，当前没有可用 DEB。**
+日期：2026-10-24。状态：**三次精确提交 CI 均未完成。第三次暴露 4 处测试 block 返回类型编译错误，已最小修正并本地通过 181 项 Python；尚无原生全量、可用 DEB、安装或真机证据。第四次 CI/DEB 尚未获准。**
 
 ## 精确身份
 
@@ -8,7 +8,7 @@
 - 候选分支：`codex/operations-a-device-probe-20261023-aprobe4`。
 - 插件版本：`0.2.29+aprobe.4`；包 ID `andyz.syncrelay`；普通 `iphoneos-arm` DEB，预期 arm64/arm64e。
 - schema：14；不新增迁移 SQL，不改发送核心、receiver ABI、消息库派发或视频能力。
-- 隔离工作树在原 `.4` 候选上只新增 `tests/source_time_probe_test.m` 的有界等待辅助函数及四处正向等待；生产代码、版本和 schema 不变。
+- 隔离工作树在原 `.4` 候选上只修改测试：有界等待辅助函数、四处正向等待、BOOL 显式转换和对应源码守卫；生产代码、版本和 schema 不变。
 - 主工作区 `HEAD` 仍为 `f652d5e97180a15f43437fd1e449f3b3063e87fc`，暂存区为空，既有未提交成果未改动。
 
 ## 相对 `.3` 的范围
@@ -21,12 +21,12 @@
 
 ## 当前本地证据
 
-- `py -3 -m unittest discover -s tests -p '*_test.py'`：**180 项通过**。
-- `py -3 -m unittest tests.source_time_probe_contract_test -v`：**10 项通过**。
+- `py -3 -m unittest discover -s tests -p '*_test.py'`：**181 项通过**。
+- `py -3 -m unittest tests.source_time_probe_contract_test -v`：**11 项通过**。
 - `py -3 -m unittest tests.diagnose_report_test -v`：**44 项通过**。
 - `py -3 -m py_compile tools/diagnose_report.py tests/diagnose_report_test.py tests/source_time_probe_contract_test.py tests/operations_schema_test.py tests/native_build_contract_test.py`：通过。
 - `git diff --check a6d48db`：通过；仅保留既有 CRLF/LF 提示。
-- 测试修复后再次执行全量 Python：**180 项通过**；探针契约 **10 项通过**、分析器 **44 项通过**。
+- 第三次失败的最小修复后再次执行全量 Python：**181 项通过**；探针契约 **11 项通过**、分析器 **44 项通过**。
 
 以上均不是 Objective-C 编译、链接、模拟执行或真机证据。`sourceTimeSemanticsVerified=false`、`imageReadinessObserved=false` 不变；阶段 A 未整体验收。
 
@@ -39,7 +39,7 @@
 
 ## 待执行的一次 CI/DEB 核验
 
-### 两次 CI 失败（2026-10-23）
+### 前三次 CI 失败（2026-10-23 至 2026-10-24）
 
 - 精确提交 `a6554d2c1598f33fd5180043a46dcbb160b3987c`、树 `06c510dfa2859a26cdcddfcdc8756a30b9049f60`，run [39982445082](https://github.com/andyzpl/SyncRelay/actions/runs/39982445082)，job `120512938439`。
 - Python **180 项通过**；pacing、operations-state 及前 22 个 Objective-C 程序均输出 PASS。`source-time-probe-test` 编译并执行到新增 `checkInactiveGrace()` 后，在“超时后再次调用用户停止”的断言失败：期望 `state=stopped`，实际保持 `inactive`。
@@ -47,32 +47,34 @@
 - 该 run 在 `Test production core on macOS` 步骤失败，后续安装工具链、DEB 构建、包核验和上传全部跳过；没有 DEB artifact。
 - 修正测试后的提交 `b9e1fcbc6523450f46525db394a9a0e2b78af900`、树 `9fba2a718961793c87817936fa7e86b6f8b1f47e`，run [39983266913](https://github.com/andyzpl/SyncRelay/actions/runs/39983266913)，job `120515785520`。
 - 第二次 run 同样通过 Python **180 项**并完成全部 Objective-C 编译/链接；`source-time-probe-test` 在更早的既有 `checkOwnAndGeneration()` 第 202 行失败：固定等待 1.1 秒后未取得本人异步样本。第一次 run 中同一用例曾通过，两次之间生产代码未变，新增 lifecycle 用例尚未执行，因此这是既有测试定时不稳，不能记成 lifecycle 回归。
-- 第二次 run 未生成 DEB artifact；lifecycle 修复仍没有成功的原生执行证据。当前已使用两次 CI，第三次必须另行获准。
+- 第二次 run 未生成 DEB artifact；lifecycle 修复仍没有成功的原生执行证据。
+- 第三次精确提交 `295c40847fdfcd9d123c36892440a41db4ba0f0b`、树 `144f10f0f1704754fef1dafa908f9440e130c7fa`，run [39985086993](https://github.com/andyzpl/SyncRelay/actions/runs/39985086993)，job `120522058236`。Python **180 项通过**，pacing 与 operations-state 通过；`source-time-probe-test` 在编译阶段出现 4 处 `incompatible block pointer types passing 'int (^)(void)' to parameter of type 'BOOL (^)(void)'`，Objective-C 程序未执行，后续打包/核验/上传全部跳过，无 DEB artifact。
 
 ### 本地定时修复（2026-10-24）
 
 - 只改 `tests/source_time_probe_test.m`：把 `checkOwnAndGeneration()` 及读回关联用例中需要等待新样本出现的固定 1.1 秒检查改为最多 5 秒的有界条件轮询；仍保留负向断言所需的固定观察窗口，避免把“没出现”误判成失败或通过。
+- 第三次失败后，把四处等待条件显式转换为 `BOOL`，满足辅助函数声明和 `-Werror`；同时在 `tests/source_time_probe_contract_test.py` 增加源码守卫，要求 4 个调用都使用该类型转换。没有改生产代码或放宽编译告警。
 - 辅助循环按 50 ms 切片运行主 run loop，总时限明确；不增加生产调度、网络、媒体读取或任何新探针入口。
-- 本地全量 Python 180、探针契约 10、分析器 44 通过；Objective-C 只能在 macOS CI 编译/执行，本轮 Windows 本地未执行。
+- 本地全量 Python **181**、探针契约 **11**、分析器 **44** 通过；Objective-C 只能在 macOS CI 编译/执行，本轮 Windows 本地未执行。
 
-### 待批准的第三次 CI/DEB
+### 待批准的第四次 CI/DEB
 
-候选已冻结为 `b0b98ebf69f214e6a2cb7ef6b3a965ed351f2aae`、树 `3a6471a33a766957ea0744b230f329595c07045d`。批准后只执行以下精确范围：
+修复提交冻结后记录精确提交和树。批准后只执行以下精确范围：
 
-1. 将候选分支 `codex/operations-a-device-probe-20261023-aprobe4` 从 `b9e1fcb` 快进推送到 `b0b98eb`；不推送 `main`。
-2. 对该精确提交执行一次 `workflow_dispatch`，输入 `build_deb=true`；不重跑前两次失败 run。
+1. 将候选分支 `codex/operations-a-device-probe-20261023-aprobe4` 从 `295c408` 快进推送到修复提交；不推送 `main`。
+2. 对该精确提交执行一次 `workflow_dispatch`，输入 `build_deb=true`；不重跑前三次失败 run。
 3. 成功时下载并核验 artifact 到 `.build-cache/aprobe4` 与 `dist/0.2.29+aprobe.4-test-<run-id>/`，更新本文件和计划文档。
 4. 不安装、不迁移设备库、不 RootHide 转换、不自动捕获、不发送、不读取媒体。
 
 核验至少应确认：
 
-- CI 的 Python 计数为 180，Objective-C 编译、链接及三轮模拟执行通过。
+- CI 的 Python 计数为 181，Objective-C 编译、链接及三轮模拟执行通过。
 - arm64/arm64e 两架构构建成功；control 为 `0.2.29+aprobe.4`。
 - 载荷仅 dylib/plist，过滤仅 `com.tencent.xin`，无安装/卸载脚本。
 - 两切片签名，且二进制含 `inactivePending`、`inactiveGraceLimit`。
 - schema 仍为 14；`deviceVerified=false`、`installationPerformed=false`、`migrationPerformed=false`。
 
-修复提交冻结并另行获准后，才可执行第三次 CI；执行后在本文件追加 run、commit/tree、artifact、包摘要和日志证据。CI/DEB 通过仍不等于真机或阶段 A 验收。
+修复提交冻结并另行获准后，才可执行第四次 CI；执行后在本文件追加 run、commit/tree、artifact、包摘要和日志证据。CI/DEB 通过仍不等于真机或阶段 A 验收。
 
 ## 安装与设备边界
 
