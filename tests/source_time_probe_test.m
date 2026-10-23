@@ -400,7 +400,8 @@ static void checkInactiveGrace(void) {
     [fixture.probe stopForReason:SRSourceTimeProbeUserStopped];
     [fixture.probe noteApplicationInactive];
     CHECK(![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
-    CHECK([fixture.probe.diagnostics[@"state"] isEqual:@"stopped"]);
+    // A manual stop is idempotent once the timeout already chose the reason.
+    CHECK([fixture.probe.diagnostics[@"state"] isEqual:@"inactive"]);
     privateReport(fixture); [fixture stop];
 }
 

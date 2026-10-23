@@ -1,6 +1,6 @@
 # 0.2.29+aprobe.4 阶段 A 生命周期候选
 
-日期：2026-10-23。状态：**本地源码与 Python 门禁已复核，隔离候选待冻结；CI/DEB 尚未执行。**
+日期：2026-10-23。状态：**本地源码与 Python 门禁已复核；首次精确提交 CI 在新增 lifecycle 测试上失败，失败已定位为测试断言错误。修复后等待重新冻结，尚未取得可用 DEB。**
 
 ## 精确身份
 
@@ -37,6 +37,13 @@
 
 ## 待执行的一次 CI/DEB 核验
 
+### 首次 CI 失败（2026-10-23）
+
+- 精确提交 `a6554d2c1598f33fd5180043a46dcbb160b3987c`、树 `06c510dfa2859a26cdcddfcdc8756a30b9049f60`，run [39982445082](https://github.com/andyzpl/SyncRelay/actions/runs/39982445082)，job `120512938439`。
+- Python **180 项通过**；pacing、operations-state 及前 22 个 Objective-C 程序均输出 PASS。`source-time-probe-test` 编译并执行到新增 `checkInactiveGrace()` 后，在“超时后再次调用用户停止”的断言失败：期望 `state=stopped`，实际保持 `inactive`。
+- 核对源码后确认这是测试期望错误：`stopForReason:` 在采样已非 active 时按既有幂等规则不覆盖自动停止原因，`inactive` 应保留。生产生命周期逻辑不因此修改；测试改为验证手动停止不会清除 `inactivePending`，且状态仍为 `inactive`。
+- 该 run 在 `Test production core on macOS` 步骤失败，后续安装工具链、DEB 构建、包核验和上传全部跳过；没有 DEB artifact。按一次 CI 授权，**没有自动重跑**。
+
 候选冻结后，只对精确 `.4` 提交执行一次非 `main` 分支推送和一次 `workflow_dispatch`（`build_deb=true`）。核验至少应确认：
 
 - CI 的 Python 计数为 180，Objective-C 编译、链接及三轮模拟执行通过。
@@ -45,7 +52,7 @@
 - 两切片签名，且二进制含 `inactivePending`、`inactiveGraceLimit`。
 - schema 仍为 14；`deviceVerified=false`、`installationPerformed=false`、`migrationPerformed=false`。
 
-执行后在本文件追加 run、commit/tree、artifact、包摘要和日志证据。CI/DEB 通过仍不等于真机或阶段 A 验收。
+修复提交冻结并另行获准后，才可执行第二次 CI；执行后在本文件追加 run、commit/tree、artifact、包摘要和日志证据。CI/DEB 通过仍不等于真机或阶段 A 验收。
 
 ## 安装与设备边界
 
