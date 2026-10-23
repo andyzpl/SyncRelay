@@ -6,7 +6,7 @@
 
 - 基线：`51803d43fe068d16c462cea0729264a26cf5f2f5`（`0.2.27+aprobe.2`）。
 - 候选分支：`codex/operations-a-device-probe-20261023-aprobe3`。
-- 候选提交：`6bd977de878af89d19bb09885721ed10c20751be`；树 `d24b83f285e3c27e2394487780f3aecd5160e4fc`。
+- 候选构建提交：`6bd977de878af89d19bb09885721ed10c20751be`；树 `d24b83f285e3c27e2394487780f3aecd5160e4fc`。后续仅文档提交（`5deba40`、`e21688a`、`b62c72d`）不改变已核验的包字节；安装/证据必须绑定 `6bd977d` 包。
 - 插件版本：`0.2.28+aprobe.3`；包 ID `andyz.syncrelay`；普通 `iphoneos-arm` DEB。
 - schema：14；不新增迁移 SQL，不改发送核心、receiver ABI、消息库派发或视频能力。
 
