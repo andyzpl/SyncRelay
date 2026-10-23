@@ -65,6 +65,35 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertIn('field.text = size.unsignedIntegerValue == 100 ? @"10" : @"0";', panel)
         self.assertIn('默认 100 群/条', panel)
 
+    def test_source_time_row_uses_compact_copy_and_accessibility_value(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertIn('cell.textLabel.text = @"来源时间采样";', panel)
+        self.assertIn('cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %lu/16"', panel)
+        self.assertIn('cell.accessibilityLabel = @"来源时间采样";', panel)
+        self.assertIn('cell.accessibilityValue =', panel)
+        self.assertNotIn('来源时间只读采样（文字/图片元数据）', panel)
+
+    def test_floating_entry_is_draggable_and_persists_edge_placement(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        entry = panel.split('@implementation SREntry', 1)[1]
+        self.assertIn('UIPanGestureRecognizer', entry)
+        self.assertIn('@selector(floatingEntryDragged:)', entry)
+        self.assertIn('floatingEntryAvailableBoundsInWindow:', entry)
+        self.assertIn('setFloatingEntryPlacementUnitY:', entry)
+        self.assertIn('button.translatesAutoresizingMaskIntoConstraints = YES;', entry)
+        self.assertNotIn('button.trailingAnchor', entry)
+        self.assertNotIn('button.bottomAnchor', entry)
+
+    def test_floating_entry_preferences_bound_and_notify_changes(self):
+        header = (ROOT / 'Core/SREntryPreferences.h').read_text(encoding='utf-8')
+        source = (ROOT / 'Core/SREntryPreferences.m').read_text(encoding='utf-8')
+        self.assertIn('#import <CoreGraphics/CoreGraphics.h>', header)
+        self.assertIn('floatingEntryPlacementSet', header)
+        self.assertIn('setFloatingEntryPlacementUnitY:', header)
+        self.assertIn('isfinite(unitY)', source)
+        self.assertIn('MAX(0, MIN(1, unitY))', source)
+        self.assertIn('SREntryPreferencesChangedNotification', source)
+
 
 if __name__ == '__main__':
     unittest.main()

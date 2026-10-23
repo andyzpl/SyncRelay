@@ -385,9 +385,13 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         }
         if (path.row == 9) {
             NSDictionary *probe = self.sourceTimeProbe.diagnostics;
-            cell.textLabel.text = self.sourceTimeProbe.active ? @"停止来源时间采样" : @"来源时间只读采样（文字/图片元数据）";
-            cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu/16 样本 · %@", (unsigned long)[probe[@"samples"] count],
-                self.sourceTimeProbe.active ? @"采样中" : @"不捕获、不发送"];
+            NSUInteger sampleCount = [probe[@"samples"] count];
+            NSString *state = self.sourceTimeProbe.active ? @"采样中" :
+                ([probe[@"state"] isEqual:@"stopped"] ? @"已停止" : @"未开启");
+            cell.textLabel.text = @"来源时间采样";
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %lu/16", state, (unsigned long)sampleCount];
+            cell.accessibilityLabel = @"来源时间采样";
+            cell.accessibilityValue = [NSString stringWithFormat:@"%@，%lu/16", state, (unsigned long)sampleCount];
         }
     } else if (section == 1) {
         if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"未选择"; }
@@ -1143,6 +1147,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
 @property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, weak) UINavigationController *presented;
+@property(nonatomic) CGFloat floatingEntryUnitY;
+@property(nonatomic) BOOL floatingEntryLeftEdge;
+@property(nonatomic) BOOL floatingEntryPlacementSet;
+@property(nonatomic) BOOL floatingEntryDragging;
 @end
 @implementation SREntry
 - (void)refreshVisibleSettings {
@@ -1354,9 +1362,60 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }
     [self.floatingProgress showModel:model inWindow:host]; self.button.hidden = YES;
 }
+- (CGRect)floatingEntryAvailableBoundsInWindow:(UIWindow *)window {
+    if (!window) return CGRectZero;
+    return CGRectInset(UIEdgeInsetsInsetRect(window.bounds, window.safeAreaInsets), 12, 12);
+}
+- (void)placeFloatingEntryButtonInWindow:(UIWindow *)window {
+    if (!self.button || self.button.superview != window || self.floatingEntryDragging) return;
+    CGRect bounds = [self floatingEntryAvailableBoundsInWindow:window];
+    if (CGRectIsEmpty(bounds)) return;
+    CGFloat width = MAX(72, ceil(self.button.intrinsicContentSize.width + 28));
+    width = MIN(width, CGRectGetWidth(bounds));
+    CGFloat height = MIN(44, CGRectGetHeight(bounds));
+    CGSize size = CGSizeMake(width, height);
+    CGFloat x = CGRectGetMaxX(bounds) - width;
+    CGFloat y = CGRectGetMaxY(bounds) - height - 60;
+    if (self.floatingEntryPlacementSet) {
+        x = self.floatingEntryLeftEdge ? CGRectGetMinX(bounds) : CGRectGetMaxX(bounds) - width;
+        CGFloat travel = MAX(0, CGRectGetHeight(bounds) - height);
+        y = CGRectGetMinY(bounds) + travel * MAX(0, MIN(1, self.floatingEntryUnitY));
+    }
+    x = MAX(CGRectGetMinX(bounds), MIN(x, CGRectGetMaxX(bounds) - width));
+    y = MAX(CGRectGetMinY(bounds), MIN(y, CGRectGetMaxY(bounds) - height));
+    self.button.frame = (CGRect){CGPointMake(x, y), size};
+    self.button.layer.cornerRadius = height / 2;
+}
+- (void)floatingEntryDragged:(UIPanGestureRecognizer *)pan {
+    UIWindow *window = self.button.window;
+    if (!window) return;
+    if (pan.state == UIGestureRecognizerStateBegan) self.floatingEntryDragging = YES;
+    CGPoint translation = [pan translationInView:window];
+    [pan setTranslation:CGPointZero inView:window];
+    CGRect bounds = [self floatingEntryAvailableBoundsInWindow:window];
+    CGRect frame = self.button.frame;
+    frame.origin.x += translation.x; frame.origin.y += translation.y;
+    frame.origin.x = MAX(CGRectGetMinX(bounds), MIN(frame.origin.x, CGRectGetMaxX(bounds) - frame.size.width));
+    frame.origin.y = MAX(CGRectGetMinY(bounds), MIN(frame.origin.y, CGRectGetMaxY(bounds) - frame.size.height));
+    self.button.frame = frame;
+    if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled ||
+        pan.state == UIGestureRecognizerStateFailed) {
+        self.floatingEntryDragging = NO;
+        self.floatingEntryPlacementSet = YES;
+        self.floatingEntryLeftEdge = CGRectGetMidX(frame) < CGRectGetMidX(bounds);
+        CGFloat travel = CGRectGetHeight(bounds) - CGRectGetHeight(frame);
+        self.floatingEntryUnitY = travel > 0 ? MAX(0, MIN(1, (CGRectGetMinY(frame) - CGRectGetMinY(bounds)) / travel)) : 0;
+        [self.entryPreferences setFloatingEntryPlacementUnitY:self.floatingEntryUnitY leftEdge:self.floatingEntryLeftEdge];
+        if (UIAccessibilityIsReduceMotionEnabled()) [self placeFloatingEntryButtonInWindow:window];
+        else [UIView animateWithDuration:0.18 animations:^{ [self placeFloatingEntryButtonInWindow:window]; }];
+    }
+}
 - (void)install {
     [self.settingsEntry install:NULL];
     [self refreshVisibleSettings];
+    self.floatingEntryUnitY = self.entryPreferences.floatingEntryUnitY;
+    self.floatingEntryLeftEdge = self.entryPreferences.floatingEntryLeftEdge;
+    self.floatingEntryPlacementSet = self.entryPreferences.floatingEntryPlacementSet;
     if (!self.entryPreferences.floatingEntryEnabled) {
         [self.button removeFromSuperview]; self.button = nil; return;
     }
@@ -1368,7 +1427,11 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
             if (!window.isKeyWindow || window.windowLevel != UIWindowLevelNormal || !window.rootViewController) continue;
-            if (self.button.superview == window) return;
+            if (self.button.superview == window) {
+                [self placeFloatingEntryButtonInWindow:window];
+                self.button.hidden = self.presented.presentingViewController != nil || self.smallGroupSession.busy;
+                return;
+            }
             [self.button removeFromSuperview];
             UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
             [button setTitle:title forState:UIControlStateNormal];
@@ -1376,14 +1439,16 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             button.titleLabel.adjustsFontForContentSizeCategory = YES;
             button.backgroundColor = UIColor.secondarySystemBackgroundColor; button.layer.cornerRadius = 22;
             button.accessibilityLabel = @"打开 SyncRelay 转发";
+            button.accessibilityHint = @"可拖动到屏幕边缘；轻触打开设置";
             [button addTarget:self action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
-            button.translatesAutoresizingMaskIntoConstraints = NO; [window addSubview:button];
-            [NSLayoutConstraint activateConstraints:@[
-                [button.trailingAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.trailingAnchor constant:-16],
-                [button.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-72],
-                [button.widthAnchor constraintGreaterThanOrEqualToConstant:64], [button.heightAnchor constraintGreaterThanOrEqualToConstant:44]
-            ]];
-            self.button = button; self.button.hidden = self.presented.presentingViewController != nil || self.smallGroupSession.busy; return;
+            UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(floatingEntryDragged:)];
+            pan.cancelsTouchesInView = YES;
+            [button addGestureRecognizer:pan];
+            button.translatesAutoresizingMaskIntoConstraints = YES; [window addSubview:button];
+            self.button = button;
+            [self placeFloatingEntryButtonInWindow:window];
+            self.button.hidden = self.presented.presentingViewController != nil || self.smallGroupSession.busy;
+            return;
         }
     }
 }
