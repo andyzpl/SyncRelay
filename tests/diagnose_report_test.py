@@ -347,16 +347,24 @@ class ReportTests(unittest.TestCase):
             sourceTimeSemanticsVerified=True, imageReadinessObserved=True)
         self.assertIn('source_time_probe_capability_invalid', self.codes(report))
         report['sourceTimeProbe'].update(sourceTimeSemanticsVerified=False, imageReadinessObserved=False,
-            inactivePending=True, inactiveGraceLimit=2)
+            inactivePending=True, inactiveGraceLimit=2, resumedAfterInactive=False)
         self.assertNotIn('source_time_probe_lifecycle_invalid', self.codes(report))
         report['sourceTimeProbe']['inactivePending'] = False
         self.assertNotIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe']['resumedAfterInactive'] = True
+        self.assertNotIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe']['inactivePending'] = True
+        self.assertIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe'].update(inactivePending=False, resumedAfterInactive=False)
         report['sourceTimeProbe']['inactivePending'] = True
         report['sourceTimeProbe']['active'] = False
         self.assertIn('source_time_probe_lifecycle_invalid', self.codes(report))
         report['sourceTimeProbe'].update(active=True, inactivePending=False, inactiveGraceLimit=3)
         self.assertIn('source_time_probe_lifecycle_invalid', self.codes(report))
         report['sourceTimeProbe']['inactiveGraceLimit'] = 2
+        report['sourceTimeProbe']['resumedAfterInactive'] = 'private flag'
+        self.assertIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe']['resumedAfterInactive'] = False
         del report['sourceTimeProbe']['inactivePending']
         self.assertIn('source_time_probe_lifecycle_invalid', self.codes(report))
         report['sourceTimeProbe']['inactivePending'] = False

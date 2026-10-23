@@ -51,6 +51,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
 @property(nonatomic) double startedMonotonic;
 @property(nonatomic) BOOL inactivePending;
 @property(nonatomic) double inactiveSince;
+@property(nonatomic) BOOL resumedAfterInactive;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSDictionary *frozenConfiguration;
 @property(nonatomic, copy) NSString *state;
@@ -138,7 +139,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     self.lastProbeGeneration = MAX(self.lastProbeGeneration, self.receiverGeneration);
     self.account = [account copy]; self.frozenConfiguration = frozen;
     self.listeningSince = [diagnostic[@"armedAt"] doubleValue]; self.startedMonotonic = monotonic;
-    self.inactivePending = NO; self.inactiveSince = 0;
+    self.inactivePending = NO; self.inactiveSince = 0; self.resumedAfterInactive = NO;
     self.getterEncoding = encoding; self.state = @"sampling";
     [self.samples removeAllObjects]; [self.messageOrdinals removeAllObjects];
     [self.hookSamples removeAllObjects]; [self.hookOrdinals removeAllObjects];
@@ -158,7 +159,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
 - (void)stopWithState:(NSString *)state clearSamples:(BOOL)clearSamples {
     BOOL stopReceiver = self.listening && [self ownsReceiver];
     self.listening = NO; self.starting = NO; self.state = state;
-    self.inactivePending = NO; self.inactiveSince = 0;
+    self.inactivePending = NO; self.inactiveSince = 0; self.resumedAfterInactive = NO;
     self.receiver.observeTimeHook = nil;
     [self.messageOrdinals removeAllObjects];
     [self.hookOrdinals removeAllObjects];
@@ -207,7 +208,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     if (now - inactiveSince >= SRInactiveGraceLimit) {
         [self stopForReason:SRSourceTimeProbeInactive]; return;
     }
-    self.inactivePending = NO; self.inactiveSince = 0;
+    self.inactivePending = NO; self.inactiveSince = 0; self.resumedAfterInactive = YES;
 }
 - (void)tick {
     if (!NSThread.isMainThread || self.starting || !self.account) return;
@@ -345,6 +346,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     return @{@"schema": @1, @"observerOnly": @YES, @"textOnly": @NO, @"deliveredTextOnly": @YES, @"active": @(self.active),
         @"state": self.state, @"round": @(self.round), @"sampleLimit": @(SRSampleLimit), @"durationLimit": @(SRDurationLimit),
         @"inactivePending": @(self.inactivePending), @"inactiveGraceLimit": @(SRInactiveGraceLimit),
+        @"resumedAfterInactive": @(self.resumedAfterInactive),
         @"getterDeclaredReturnEncoding": self.getterEncoding, @"getterDeclarationScope": @"configured_wrap_class",
         @"actualWrapABIObserved": @(self.hookSamples.count > 0), @"sourceTimeSemanticsVerified": @NO, @"imageReadinessObserved": @NO,
         @"prefilteredCallbacksObserved": @(self.hookSamples.count > 0), @"sendingEnabled": @NO, @"samples": [self.samples copy],

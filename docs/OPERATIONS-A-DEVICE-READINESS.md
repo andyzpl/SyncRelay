@@ -1,6 +1,6 @@
-# 阶段 A 下一次设备核验：当前源码检查点
+# 阶段 A 下一次设备核验：`.5` 当前源码检查点
 
-日期：2026-10-24。当前节点：**本地生命周期候选 `0.2.29+aprobe.4` 已通过 181 项 Python 门禁；三次精确 CI 均未完成（lifecycle 测试期望错误、既有异步等待超时、等待 block 返回类型编译错误），第三次问题已最小修正并本地通过，第四次 CI/DEB 尚未获准。尚无可用 DEB、安装或真机证据。`.3` 仍是历史 CI/DEB 通过包（179 项 Python，未安装）；设备当前为 `.2`，已完成八轮只读采样。尚未证明 schema 迁移，完整来源时间语义和图片就绪仍未验收。** `.3` 身份见 `BUILD-0.2.28-aprobe.3.md`，`.4` 检查点见 `BUILD-0.2.29-aprobe.4.md`。与旧文字专项包步骤冲突时，以本文为准；产品范围仍服从总计划第 12–14 节。
+日期：2026-10-24。当前节点：**隔离工作树新增只读 `resumedAfterInactive`，候选版本拟为 `0.2.30+aprobe.5`；尚未提交、推送、CI、构建、安装、迁移或取得真机证据。** `.4` 已绑定精确提交 `03abb9b` / 树 `b99c855`，[run 39986009254](https://github.com/andyzpl/SyncRelay/actions/runs/39986009254) 成功，DEB SHA-256 `9a45171f6270cbae4946c620b0e29e6925bec589bf555e9a30888aa91aba29af`，但没有 `resumedAfterInactive` 字段，不能用它完成切页恢复判定。设备已确认的证据仍为 `.2` 的八轮只读采样；本机无 USB/SSH，微信临时目录最新报告仍是 2026-10-23 20:54 的 `.2` `10231`。`.4` 是否已安装、是否发生 schema 迁移均未验证；完整来源时间语义和图片就绪仍未验收。** `.3` 身份见 `BUILD-0.2.28-aprobe.3.md`，`.4` 身份见 `BUILD-0.2.29-aprobe.4.md`。与旧文字专项包步骤冲突时，以本文为准；产品范围仍服从总计划第 12–14 节。
 
 ### 新增设备报告（1023007–1023010，2026-10-23）
 
@@ -77,11 +77,13 @@
 
 该修复已在 `0.2.27+aprobe.2` 候选中完成 CI 原生/生产双架构构建、普通 DEB 核验并安装到设备；八份报告显示采样可持续、可停止，后台仍会停止。页面切换没有成对前后导出，故只记为有限支持证据，不标完整通过。schema、数据库迁移、receiver hook 和采样字段没有改变。
 
+`.2` 安装后报告暴露的生命周期边界仍成立：`WillResignActive` 不能直接等于后台停止，否则微信内切页或短暂系统过渡会错误结束采样；真正后台必须立即停止。当前本地实现采用 2 秒单调时钟宽限，`DidBecomeActive` 也会在清除 pending 前重新核对是否超时，避免“计时器被挂起后回前台又继续采样”的漏洞。该逻辑目前只有 Python 源码契约和 Objective-C 测试源码，没有本机原生执行证据。
+
 - 接手时 HEAD 为 `f652d5e97180a15f43437fd1e449f3b3063e87fc`，真实暂存区为空。34 文件白名单按 Git 过滤后的 blob 与 `90ed08af6b2687056358642aef1c66aa1a02c162` 全部一致，树为 `ba9b583c91fead76f8294916b010007cf4dfc636`。没有重跑相同快照的 CI，也没有重新审计已关闭的底座缺陷。
 - 已有证据：A-1/A-2/A-3 的隔离快照编译、链接、71 次程序模拟执行及迁移/事务测试，详见原生验收文档。不是整个当前工作区、微信宿主或真机的验收。
 - 已有入口待真机：可交付的离线旧文字、自然同秒、配置失效、本人延迟补 ID、图片离线旧图及页面切换/到限生命周期。实时本人/他人文字、实际 getter、图片早期元数据、停止保存和后台停止已有本轮有限结果；图片资源就绪没有安全被动入口。
 - 本次补足入口：同一 hook 的选定来源文字/图片早期元数据、无服务器 ID 的回调、实际对象创建时间 getter 声明。`.2` 精确提交 `51803d43fe068d16c462cea0729264a26cf5f2f5` 已在 macOS CI 编译/链接并完成生产双架构构建；不是实际宿主对象/语义或触控验收。
-- 仍缺入口：图片实际资源就绪及其与首次消息身份的可靠关联。`getMsgHdOrMiddleImg:` 是现有手动捕获的主动 getter；声明兼容和 `nativeDownloadEnabled=false` 不能证明调用没有宿主副作用。没有把调用它、轮询它或制作快照塞入只读采样。需要可靠的被动就绪通知/只读状态 ABI 证据，否则先报告边界，不能猜通知名、下载、准备或写素材。
+- 仍缺入口：图片实际资源就绪及其与首次消息身份的可靠关联。`getMsgHdOrMiddleImg:` 是现有手动捕获的主动 getter；声明兼容和 `nativeDownloadEnabled=false` 不能证明调用没有宿主副作用。2026-10-23 再次只读检索本地研究材料，仍只确认该主动 getter；`m_uiImgStatus`、`m_uiDownloadStatus`、`readyTransmitMediaIDs`、`downLoadImg:WithBlock:` 等名称没有可靠的实际对象 ABI、调用语义或被动通知证据。没有把调用、轮询、下载或制作快照塞入只读采样，也不猜 selector。需要可靠的被动就绪通知/只读状态 ABI 证据，否则保持 `imageReadinessObserved=false` 并继续阻塞完整 A。
 - A 的剩余阻塞是当前支持微信版本的完整时间单位/语义、本人延迟补 ID、实际对象 ABI 的完整覆盖以及图片资源就绪。离线旧/新文字边界已有两轮有限观察，但同一轮停止保留仍未证明，不等于全部离线同步语义认证。新增观察代码的独立编译/模拟门槛已通过；来源认证继续为 false。C 的目标级群来源账本、排除、新群和备份实现不属于 A 已完成项；A 已固定其事务契约。B/C 不因准备文档或一次采样而开放。
 
 ## 2. 本地新增观察能力的精确边界
@@ -100,7 +102,7 @@
 
 每轮都保存一次完整的本地诊断用于工程核对；对外只分享脱敏字段，不上传私有诊断到公开仓库。
 
-公共字段集 P：`iOS`、`wechatVersion`、`wechatBuild`、`build.plugin/commit/ciRun`、`storageReady`、`schemaVersion`；`sourceTimeProbe` 下 `state/round/active/sampleLimit/durationLimit/hookSampleLimit/hookScope`、配置类 `getterDeclaredReturnEncoding/getterDeclarationScope`、三个未认证能力位及两个实际观测位。附本轮操作顺序、手动输入时间与已知间隔，不附正文、wxid 或群名。`schemaVersion` 是 `SRStore` 构造及迁移事务完成、外键复核后读回的当前版本；存储不可用或初始化失败时为 `null`，不是迁移前版本、旧行保留或迁移原子性证明。当前已安装的 `.2` 不导出该字段。
+公共字段集 P：`iOS`、`wechatVersion`、`wechatBuild`、`build.plugin/commit/ciRun`、`storageReady`、`schemaVersion`；`sourceTimeProbe` 下 `state/round/active/sampleLimit/durationLimit/hookSampleLimit/hookScope/inactivePending/inactiveGraceLimit`、配置类 `getterDeclaredReturnEncoding/getterDeclarationScope`、三个未认证能力位及两个实际观测位。附本轮操作顺序、手动输入时间与已知间隔，不附正文、wxid 或群名。`schemaVersion` 是 `SRStore` 构造及迁移事务完成、外键复核后读回的当前版本；存储不可用或初始化失败时为 `null`，不是迁移前版本、旧行保留或迁移原子性证明。已核对的 `.2` 报告均不含该字段；`.4` 才包含该字段和 inactive 宽限字段，不能用旧报告代替 `.4` 基线。
 
 文字字段集 T：`samples[].ordinal/messageOrdinal/hookMessageOrdinal/round/receiverGeneration/selfSource/createdAt/receivedAt/listeningSince/deliveredAt/deliveryClockRollback/relationship/strictPolicyWouldAccept`。`hookMessageOrdinal` 只在本次进程内 exact local ID 已与早期 hook 关联时出现，否则为 null；它不包含原始 local/server ID。
 
@@ -108,19 +110,34 @@ hook 字段集 H：`hookSamples[].ordinal/messageOrdinal/round/receiverGeneratio
 
 安全字段集 S：`receiveCandidate.armed/receiverGeneration/imageReads/imagePending/imageState`、`imageSource.reads`、`sourceCapture.state`、发送实验/倒计时/观察布尔与 `smallGroupExecution` 的执行状态。本轮前后各导出一次，对照是否出现新活动；单凭这些字段不等于对数据库逐行无写入作出证明。
 
-`actualWrapABIObserved` 和 `prefilteredCallbacksObserved` 仅在至少有一个 H 样本时为 true，表示观察发生，**不表示 ABI 全部兼容或语义通过**。`hookScope` 明确只覆盖选定来源的文字/图片，不是所有原始事件流。`sourceTimeSemanticsVerified`、`imageReadinessObserved`、`sendingEnabled` 始终为 false。`textOnly=false` 指包含图片元数据，`deliveredTextOnly=true` 指文字交付数组。
+`actualWrapABIObserved` 和 `prefilteredCallbacksObserved` 仅在至少有一个 H 样本时为 true，表示观察发生，**不表示 ABI 全部兼容或语义通过**。`hookScope` 明确只覆盖选定来源的文字/图片，不是所有原始事件流。`sourceTimeSemanticsVerified`、`imageReadinessObserved`、`sendingEnabled` 始终为 false。`textOnly=false` 指包含图片元数据，`deliveredTextOnly=true` 指文字交付数组。`resumedAfterInactive` 只在本轮至少一次前台 inactive 宽限内恢复后为 true，表示观察到短暂 inactive 后仍在前台；它不是系统后台证据，也不证明宿主页面切换完成或完整生命周期通过。没有该字段的 `.2`/`.4` 报告不能据此判切页恢复。
 
 ## 3. 下一次设备测试清单
 
-设备当前安装的是 `.2` 并已导出八份诊断；报告确认包身份匹配。`.3` 的已核验包绑定构建提交 `6bd977d`，但没有安装。`.4` 目前只是本地源码检查点，尚未编译或打包；不能用 `.2`/`.3` 的结果冒充 `.4`。尚未取得数据库迁移过程证据，不能把 `storageReady=1` 写成迁移验收。不要安装旧 timeprobe 包或为采样取消旧任务；后续覆盖安装、RootHide 转换或再次迁移仍需单独授权。新候选首次导出必须确认 `storageReady=1` 且 `schemaVersion=14`；存储不可用时 `schemaVersion` 应为 `null`，但报告仍只表示未验证；存储可用而字段缺失、为 `null`、非整数或不是 14 时，停止该项并保留脱敏报告，不据此改库或降级。
+已确认的设备报告来自 `.2`，共八份且包身份匹配。`.3` 的已核验包绑定构建提交 `6bd977d`，但没有安装。`.4` 已在精确提交 `03abb9b` 上通过 CI、双架构生产构建和普通 DEB 静态核验，但没有可核验的安装证据；不能用 `.2`/`.3` 的结果冒充 `.4`，也不能把 `.4` 的 CI 结果或口头安装陈述冒充真机。用户报告“已经安装”后，临时目录未出现 2026-10-24 之后的诊断，最新仍是 `.2` 的 `10231`，因此下一步先从微信内导出首份 `.4` 基线。尚未取得数据库迁移过程证据，不能把 `storageReady=1` 写成迁移验收。不要安装旧 timeprobe 包或为采样取消旧任务；后续覆盖安装、RootHide 转换或再次迁移仍需单独授权。新候选首次导出必须确认 `storageReady=1` 且 `schemaVersion=14`；存储不可用时 `schemaVersion` 应为 `null`，但报告仍只表示未验证；存储可用而字段缺失、为 `null`、非整数或不是 14 时，停止该项并保留脱敏报告，不据此改库或降级。
 
 统一准备：没有活动捕获/预览、发送或在途动作时，保存授权母群、本人及一位测试成员、文字类型；关闭发送实验和手动发送观察。图片元数据在二次确认中明确授权，不要求开启原“等待源消息”。先导出基线 P+S。入口为“更多设置 → 来源时间只读采样（文字/图片元数据）”。每行单独开始、停止、导出，**先导出再开下一轮**；一轮少于 16 个 hook，避免配额耗尽造成假阴性。
+
+### 3.1 首份 `.4` 基线门禁（先只做这一份）
+
+入口：我 → 设置 → SyncRelay 转发 → 更多设置 → **导出运行诊断**。不要在导出前开始采样、手动等待、预览或发送。
+
+| 检查 | 通过标准 | 不通过时 |
+| --- | --- | --- |
+| 包身份 | `build.plugin=0.2.29+aprobe.4`、`build.commit=03abb9bfaccd46f05d68877f37f7eefeb92bee6b`、`build.ciRun=39986009254` | 说明当前加载的不是 `.4` 或不是该次构建；停止，不继续按 `.4` 判据测试 |
+| 存储 | `storageReady=1`、`schemaVersion=14` | 缺字段/`null`/非整数/非 14：停止并保全报告，不改库、不降级；存储不可用时只记录 `schemaVersion=null`，不能当作迁移通过 |
+| 发送安全 | `sendingEnabled=false`、`batchSendingEnabled=false`、`build.defaultSendingEnabled=false`、`build.batchSendingEnabled=false` | 任一项不是 false：停止后续采样，先排查是否有活动实验或发送 |
+| 捕获/采样 | `sourceCapture.state=idle`、`receiveCandidate.armed=false`、`sourceTimeProbe.state=off`、`sourceTimeProbe.active=false` | 先按对应入口取消/停止，再重新导出；不能把未停止状态当基线 |
+| 媒体边界 | `imageSource.reads=0`、`receiveCandidate.imageReads=0`、`sourceTimeProbe.imageReadinessObserved=false` | 读取变化或能力位被写成 true：判安全失败，停止后续批次并保全报告 |
+| 身份/字段 | `iOS`、`wechatVersion`、`wechatBuild` 可读；`sourceTimeProbe.schema=1`；`inactivePending=false`、`inactiveGraceLimit=2` 可见（off 状态也应导出） | 字段缺失或类型错误：只记证据不足，不推测兼容；先保留报告 |
+
+通过后才进入下面各批次。每一批都要先导出原始脱敏 JSON，再执行对应分析命令；未通过的门槛不得用后续样本补齐。基线失败时不要开始任何采样。
 
 批次与取证规则（`.4` 获得安装授权并安装后执行；不要与旧 `.2`/`.3` 报告混算）：
 
 - 先做“基线门禁”批次：确认包身份、`storageReady=1`、`schemaVersion=14`、账号可读、发送关闭、图片读取 0、手动捕获 idle。失败立即停止，不进入采样。
-- 再做“页面切换”批次：同一轮切页前 A、在 2 秒内返回并导出 B，使用 `py -3 tools/diagnose_report.py --pair A B`；这是唯一允许把 A/B 作为页面切换成对证据的入口。A/B 必须均为 `inactivePending=false`；若导出时仍为 `true`，先回到稳定前台再重新导出，不得当作通过。
-- 再做“离线/停止”批次：同一轮 active A、明确手动停止 B，使用 `py -3 tools/diagnose_report.py --stop-pair A B`；离线旧/新消息必须都在同一轮，不能用不同 round 拼接。
+- 再做“页面切换”批次：**导出本身会打开系统分享面板，属于系统级 inactive；不要在切页前导出 A。** 开始采样后先在微信内完成页面切换，并在 2 秒内返回稳定前台，再只导出一份 B。该轮必须满足 `active=true/state=sampling`、`inactivePending=false`、`resumedAfterInactive=true`、receiver 仍 armed，且 `runtimeLog` 中没有本轮新增的 `receiver_stopped` 或 `environment_blocked`。该字段只证明本轮前台恢复且采样未停，不证明宿主页面切换完成；当前分析器没有切页前内存快照，`--pair` 只能用于外部已有合法 A/B 的回归，不能把单份 B 冒充完整成对证据。本批次结论记为“切页后短暂 inactive 恢复且未停采样”的有限通过。
+- 再做“离线/停止”批次：同一轮 active A、明确手动停止 B，使用 `py -3 tools/diagnose_report.py --stop-pair A B`；离线旧/新消息必须都在同一轮，不能用不同 round 拼接。A 的导出会打开系统分享面板；A 若在导出后已经变为 `inactive`，不能用 `--stop-pair` 冒充“手动停止后保留”，该轮只记生命周期中断。分享面板关闭后**不要**靠快速重开采样补 A/B；B 必须来自同一 round 的真实手动停止。
 - 再做“本人 local-ID”批次：单独一轮，只测试本人合成文字；保留 `hookMessageOrdinal`、`messageOrdinal`、round、generation、时间关系及安全字段。没有 early local hook 时记“不足”，不制造第二条消息或轮询。
 - 图片只做“早期元数据”批次：不点图、不请求原图、不启动手动捕获、不准备/下载媒体；`imageReads` 变化或 `imageReadinessObserved=true` 即停止并判安全失败。资源就绪仍未覆盖，不能用缩略图人工可见替代。
 - 每个批次导出后先保留原始脱敏 JSON，再用对应分析命令；输出通过码与失败码一起保存。任何 `database_schema_invalid`、样本丢失/变化、receiver 未按预期 arm/disarm、图片读取变化或发送开启都停止后续批次。
@@ -130,11 +147,11 @@ hook 字段集 H：`hookSamples[].ordinal/messageOrdinal/round/receiverGeneratio
 | 项目 | 操作顺序 | 导出字段 | 通过/失败/不足标准 |
 | --- | --- | --- | --- |
 | 1 他人实时文字与实际 ABI | 开始 → 关面板 → 等至少 2 秒 → 选定成员手动发 2–3 条合成文字，记录例如 3 秒/5 秒间隔 → 停止导出 | P+T+H+S | 实际 getter 编码兼容，创建值增量与已知间隔/单位一致，`receivedAt` 保留原方法前时间；假设秒单位时创建时间晚于边界、不晚于首次回调。缺字段/样本不足为不足；时间指向错误、单位矛盾为失败。不单凭位数认定 epoch 秒。同一来源组内只算一次有限通过，不把 8.0.76/8.0.79 或不同账号的样本混算 |
-| 2 本人早期与后续回调 | 新轮 → 等 2 秒 → 本人手动发合成文字 → 停止导出；观察自然出现 early hook，不额外制造或轮询 | P+T+H+S，重点 `path/serverIDPresent/correlationScope/hookMessageOrdinal` | 若出现无 server ID 的 H，应保留早期原值；最终 T 不得用 ID 就绪时刻代替首次观察。通过需同一 round/generation、本人 type 1、早期 H 为 `correlationScope=local` 且 getter 可读、T 为 `after_boundary` 且严格策略接受，并且 T 的 `hookMessageOrdinal` 与该 H 的 `messageOrdinal` 相同；分析器应给出 `source_time_self_local_id_readback_correlated`，不得同时给出 `source_time_self_local_id_correlation_incomplete`。当前设备上的 `.2` 不导出 `hookMessageOrdinal`，必须先完成新候选构建与安装授权；旧报告只能记“证据不足/关联入口不足” |
-| 3 他人离线旧文字 | 路由器/另一设备断测试机网络，微信保持前台 → 他人在断网期间发合成文字，记时 → 等至少 2 秒后开始采样 → 外部恢复网络 → 等待旧/新回调 → **采样仍 active 时先导出 A** → 停止采样 → 导出 B；A/B 必须同一合法 round，A 的 receiver 必须明确 `armed=true`，B 必须明确 `armed=false` 且 generation 已前移 | P+T+H+S、断网/发消息/开始/恢复的顺序；用 `py -3 tools/diagnose_report.py --stop-pair A B` 核对同轮保留 | 旧消息 `older_than_boundary` 且严格策略拒绝，新消息 `after_boundary` 且严格策略接受；`--stop-pair` 必须只输出 `source_time_same_round_samples_retained_after_stop`，即同 round、A/B 的 arm 状态和 generation 变化符合停止流程、B 保留 A 的样本、capture idle、图片读取不变、发送关闭。`1023011`（第 5 轮）与 `1023012`（第 6 轮）已被分析器拒绝为不同 round；同一轮停止保留仍需 `.3` 新 A/B 证明。 |
+| 2 本人早期与后续回调 | 新轮 → 等 2 秒 → 本人手动发合成文字 → 停止导出；观察自然出现 early hook，不额外制造或轮询 | P+T+H+S，重点 `path/serverIDPresent/correlationScope/hookMessageOrdinal` | 若出现无 server ID 的 H，应保留早期原值；最终 T 不得用 ID 就绪时刻代替首次观察。通过需同一 round/generation、本人 type 1、早期 H 为 `correlationScope=local` 且 getter 可读、T 为 `after_boundary` 且严格策略接受，并且 T 的 `hookMessageOrdinal` 与该 H 的 `messageOrdinal` 相同；分析器应给出 `source_time_self_local_id_readback_correlated`，不得同时给出 `source_time_self_local_id_correlation_incomplete`。当前设备上的 `.2` 不导出 `hookMessageOrdinal`；`.4` 已包含该字段但尚未安装。旧报告只能记“证据不足/关联入口不足” |
+| 3 他人离线旧文字 | 路由器/另一设备断测试机网络，微信保持前台 → 他人在断网期间发合成文字，记时 → 等至少 2 秒后开始采样 → 外部恢复网络 → 等待旧/新回调 → 采样仍 active 时导出 A（分享面板返回后 2 秒内回微信）→ 停止采样 → 导出 B；A/B 必须同一合法 round，A 的 receiver 必须明确 `armed=true`，B 必须明确 `armed=false` 且 generation 已前移 | P+T+H+S、断网/发消息/开始/恢复的顺序；用 `py -3 tools/diagnose_report.py --stop-pair A B` 核对同轮保留 | 旧消息 `older_than_boundary` 且严格策略拒绝，新消息 `after_boundary` 且严格策略接受；`--stop-pair` 必须只输出 `source_time_same_round_samples_retained_after_stop`，即同 round、A/B 的 arm 状态和 generation 变化符合停止流程、B 保留 A 的样本、capture idle、图片读取不变、发送关闭。若 A 仍处于前台 inactive 宽限，分析器必须拒绝 `source_time_stop_pair_before_inactive_pending`；`1023011`（第 5 轮）与 `1023012`（第 6 轮）已被拒绝为不同 round，同一轮停止保留仍需新候选真机 A/B 证明。 |
 | 4 图片首次时间与离线旧图 | 他人与本人各一轮；实时图为开始后等 2 秒再发；旧图按第 3 项在开始前发送，再恢复网络；不点图、不请求原图、不启动捕获 | P+H+S，重点 type 3、原时间、实际 ABI、`imageReads` | **实时图片早期 hook 已有限通过（1023013，`.2`）**：type 3、实际 getter、server ID 与边界可观察，且无图片读取。离线旧图、资源就绪/可预览/可派发仍未覆盖；`.3` 尚未取得同项证据，不能用旧结果冒充。 |
 | 5 自然重复与历史重现 | 若微信在自然历史同步中重复回调，同一轮保留两次；不靠插件发送或制造伪消息 | P+T+H+S | 同轮同 server 关联可比创建值；晚到不应刷新创建时间。无重复、只有 local/server 两种不同 scope、配额已满都记不足；不是持久去重验收 |
-| 6 停止/后台/到限 | 新轮 → 手动停止 → 再发输入；另开一轮 → 在微信前台于设置、聊天列表、来源群之间切换页面，在 2 秒内返回，切页前导出 A、返回后仍 active 导出 B；再另开一轮打开控制中心或 App Switcher 并停留超过 2 秒，返回后导出；另开空闲轮等待 120 秒 | P+T+H+S，停止前后轮次及数组长度；页面切换用 `py -3 tools/diagnose_report.py --pair A B`；手动停止用 `--stop-pair A B` | 手动停止后无新样本且 receiver 已停；**仅微信内切页/短暂 inactive 不得停采样，A/B 均 `active=true/state=sampling`、`inactivePending=false`、同 round、receiver armed 且 generation 不变、无新增 receiver stop/environment_blocked**。`--pair` 允许 B 在 A 的样本前缀之后新增样本，但只把“同轮持续/前缀保留”判为页面切换通过；新增样本是否属于离线旧图或图片就绪，仍按对应专项标准另判。系统 inactive 超过 2 秒或真正后台后 `active=false/state=inactive`、receiver `armed=false`，回前台不重开；空闲到 `time_limit`。再次明确开始才换轮。旧事件不得重标新轮；无晚事件则晚回调项不足。`.4` 尚未安装，不能把 `.2` 结果冒充 `.4`。 |
+| 6 停止/后台/到限 | 新轮 → 手动停止 → 再发输入；另开一轮 → 在微信前台于设置、聊天列表、来源群之间切换页面，在 2 秒内返回稳定前台，再导出 B（切页前不导出）；再另开一轮打开控制中心或 App Switcher 并停留超过 2 秒，返回后导出；另开空闲轮等待 120 秒 | P+T+H+S，停止前后轮次及数组长度；手动停止用 `--stop-pair A B` | 手动停止后无新样本且 receiver 已停；**仅微信内切页/短暂 inactive 后应仍 `active=true/state=sampling`、`inactivePending=false`、`resumedAfterInactive=true`、receiver armed，且本轮没有新增 receiver stop/environment_blocked**。单份 B 只能证明短暂 inactive 后恢复且未停止，不能代替切页前后成对快照；当前分析器没有切页前内存快照入口，不得用 `--pair` 把单份报告冒充 A/B。系统 inactive 超过 2 秒或真正后台后 `active=false/state=inactive`、`resumedAfterInactive=false`、receiver `armed=false`，回前台不重开；空闲到 `time_limit`。再次明确开始才换轮。旧事件不得重标新轮；无晚事件则晚回调项不足。`.2`/`.4` 没有该字段，不能冒充 `.5`。 |
 | 7 配置失效 | 先导出需要保留的样本 → 保存不同测试来源配置 → 导出；账号测试仅在确有安全条件时另做 | P+S、两个数组长度 | 停止且旧报告清空，不展示旧账号样本；保存新配置不发起发送。不得为完成此项强迫切实际账号或丢失重要任务 |
 | 8 图片资源就绪 | 本轮不执行主动 getter/轮询/下载/快照；若宿主自然显示缩略图，只记录人工观察，不当成插件素材就绪证据 | 保持 `imageReadinessObserved=false` | **未覆盖，仍阻塞完整 A 验收**。有被动 ABI 证据前不能将该项填通过 |
 
@@ -145,7 +162,7 @@ hook 字段集 H：`hookSamples[].ordinal/messageOrdinal/round/receiverGeneratio
 ## 4. 源码、现有包与 schema 兼容边界
 
 - 当前 `SRStore` 支持并迁移至 schema 14，拒绝更高版本；插件版本文件仍是 `0.2.21`，二者不是同一版本。新探针没有改 schema、迁移 SQL、素材账本或发送核心。
-- 当前诊断的 `storageReady=1` 只表示 `SRStore` 构造成功；报告没有直接导出 `PRAGMA user_version` 或迁移前版本。启动流程还会调用 `recoverInterruptedRuns`，它会把遗留的 `submitting` 收尾为 `uncertain`、把 `running/paused` 转为 `awaiting_resume`，因此不能把“安装后能打开诊断”写成“数据库只读、未发生状态写入”。当前证据只能证明库可用和既有恢复路径成功，不能证明迁移前的库版本、迁移原子性、旧行逐项保留或回滚行为。
+- `.2` 报告的 `storageReady=1` 只表示 `SRStore` 构造成功；`.2` 不导出 `schemaVersion`，也没有迁移前版本。`.4` 新增的是构造及迁移事务完成、外键复核后读回的当前 `schemaVersion`，仍不导出迁移前版本。启动流程还会调用 `recoverInterruptedRuns`，它会把遗留的 `submitting` 收尾为 `uncertain`、把 `running/paused` 转为 `awaiting_resume`，因此不能把“安装后能打开诊断”写成“数据库只读、未发生状态写入”。`.4` 首次报告只能证明当前版本与恢复路径，不能证明迁移前的库版本、迁移原子性、旧行逐项保留或回滚行为。
 - 本地旧 `0.2.21+timeprobe.1` 的 DEB SHA-256 重新只读核对为 `34dfdb48d37e29af85da75c015e5dac3a0145f3431826be6a4387aacbbf7416c`，与旧记录一致；它的源码 schema 为 11，不能打开当前 schema 14 库。它不是这次候选包。
 - 本地 0.2.24/25/26 构建请求所指提交分别为 `75dd2ec716f15b58a30421ebabf6429d0d834f57`、`ca2b6d20b8c69e507467d63c1b4656b6642130ba`、`05fc85743ea4eb3bd315cd65fd69bd5962748534`；用本地 Git 对象只读核对，其迁移目标均为 11。没有据此宣称手机安装的就是这些精确包，也没有宣称功能集合相同或已验证升级。
 - 新候选若打开 schema 11 设备库，会执行现有 11→14 增量迁移和触发器刷新。该动作属于**另需明确授权的数据迁移**；本轮未对任何设备库运行。schema 14 开发库也会运行现有初始化/约束刷新事务；不称零写入。未知或 >14 的设备库不安装、不降 user_version、不清数据。
@@ -154,7 +171,7 @@ hook 字段集 H：`hookSamples[].ordinal/messageOrdinal/round/receiverGeneratio
 
 `.3` 候选范围已按精确提交 `6bd977de878af89d19bb09885721ed10c20751be`、树 `d24b83f285e3c27e2394487780f3aecd5160e4fc` 构建和核验；普通 DEB 证据见 `BUILD-0.2.28-aprobe.3.md`。`tests/store_test.m` 已包含在该提交中。该结果只证明 CI 编译/链接/模拟执行和 DEB 静态核验，不是真机、宿主 ABI 或迁移证据。
 
-`.4` 的范围以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，只覆盖生命周期、诊断、测试、版本和文档；没有新增迁移 SQL，没有修改消息库派发、视频、receiver 发送 ABI 或 B/C UI。前三次 CI 都在编译/执行来源时间程序时失败：第一次是新增 lifecycle 测试的错误期望，第二次是更早的既有异步等待超时，第三次是等待 block 返回 `int` 与声明的 `BOOL` 不兼容，程序尚未执行。测试等待已改为最多 5 秒的有界条件轮询并显式返回 `BOOL`，本地 Python **181** 通过；仍无成功的原生全量、打包或真机结果。安装 `.4` 若面对 schema 11 设备库，仍会执行既有 11→14 迁移；没有备份/回滚方案和单独授权不得安装。
+`.4` 的范围以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，只覆盖生命周期、诊断、测试、版本和文档；没有新增迁移 SQL，没有修改消息库派发、视频、receiver 发送 ABI 或 B/C UI。前三次 CI 都在编译/执行来源时间程序时失败：第一次是新增 lifecycle 测试的错误期望，第二次是更早的既有异步等待超时，第三次是等待 block 返回 `int` 与声明的 `BOOL` 不兼容，程序尚未执行。测试等待已改为最多 5 秒的有界条件轮询并显式返回 `BOOL`；第四次精确提交 `03abb9b` 的 CI 已通过 181 项 Python、全部 Objective-C 编译/链接/三轮模拟执行和双架构生产构建，DEB 下载静态核验通过。仍无安装、设备库迁移或真机结果。安装 `.4` 若面对 schema 11 设备库，会执行既有 11→14 迁移；没有备份/回滚方案和单独授权不得安装。
 
 ## 5. 待批准的外部动作范围
 
@@ -201,18 +218,4 @@ Python 160 项通过，含新增的只读 seam 源码守卫；SQLite/其他 Pyth
 
 2026-10-23 后续本地补充：在既有 receiver 的精确 `GetMsg:LocalID:` 回读成功且原消息账号/群/类型/正文仍匹配、时间证据复核通过后，才把 exact local ID 放入本轮进程内关联表；probe 用它把早期匿名 hook ordinal 写入交付文字样本的 `hookMessageOrdinal`。原始 ID 不进入诊断，停止/重开即清空。没有早期 hook、ID 不匹配、跨群/账号/类型/正文变化或 hook 已移除时不得关联。分析器只在同一 round/generation、本人 type 1、早期 hook 为 local scope 且 getter 可读、交付为 after-boundary/严格接受时判关联；带 ordinal 但不完整则明确报 `source_time_self_local_id_correlation_incomplete`。同轮 pair 比较现覆盖交付时间、严格策略、hook ordinal 等全部已导出样本字段。相关 Objective-C 用例已补但尚未实际编译/运行。
 
-本轮本地回归：在本人 local-ID 关联检查点之后补充只读 `schemaVersion`，`py -3 -m unittest discover -s tests -p '*_test.py'` 最终为 **179 项 OK**；`py -3 -m unittest tests.diagnose_report_test -v` 为 **44 项 OK**，`tests.source_time_probe_contract_test` 为 **9 项 OK**，`tests.operations_schema_test` 为 **17 项 OK**，`tests.native_build_contract_test` 为 **9 项 OK**；`py -3 -m py_compile tools/diagnose_report.py tests/diagnose_report_test.py tests/source_time_probe_contract_test.py tests/operations_schema_test.py tests/native_build_contract_test.py` 通过；`git diff --check` 仅有既有 CRLF/LF 提示，无空白错误。用真实历史报告复核：`1023011` 单独分析正常；`1023011`/`1023012` 被 `--pair` 拒绝为不同 round/generation；旧同轮 `102303`/`102304` 仍可识别停止保留，仅作分析器回归，不是 `.2` 新证据。`.3` 单次 CI `39971512703` 已在该精确提交上完成 179 项 Python、Objective-C 编译/链接/模拟执行及双架构普通 DEB 构建；下载核验通过，未安装、未迁移、未 RootHide 转换。本轮没有修改生产数据库 schema、发送核心、消息库派发、视频或 UI 功能。
-
-2026-10-23 `.4` 本地检查点：`SRSourceTimeProbe` 增加 2 秒前台 inactive 单调时钟宽限，`DidBecomeActive` 在清除 pending 前重算是否已超时，`DidEnterBackground` 仍立即停止并释放 receiver；诊断增加 `inactivePending` 和固定 `inactiveGraceLimit=2`，`--pair`/`--stop-pair` 拒绝未决宽限。新增 Objective-C `checkInactiveGrace()` 已接入 native `main()`；`py -3 -m unittest discover -s tests -p '*_test.py'` 为 **180 项 OK**，probe 契约 10、分析器 44。以上均为本地 Python/源码守卫，不能据此宣称原生或真机通过。阶段 A 仍未整体验收。
-
-2026-10-23 首次 `.4` CI：精确提交 `a6554d2c1598f33fd5180043a46dcbb160b3987c`、树 `06c510dfa2859a26cdcddfcdc8756a30b9049f60`，run `39982445082`，job `120512938439`。Python 180 项及前 22 个 Objective-C 程序通过；`source-time-probe-test` 在 `checkInactiveGrace()` 第 403 行失败，原因是测试错误地期望超时后的幂等手动停止把 `inactive` 改成 `stopped`。生产实现保留首次停止原因，行为正确；测试已改为断言状态仍为 `inactive` 且 pending 已清。CI 在 macOS 测试步骤失败，DEB 构建/包核验/上传全部跳过，未生成可用包；按授权未自动重跑。
-
-2026-10-23 第二次 `.4` CI：修正断言后的提交 `b9e1fcbc6523450f46525db394a9a0e2b78af900`、树 `9fba2a718961793c87817936fa7e86b6f8b1f47e`，run `39983266913`，job `120515785520`。Python 180 项及全部 Objective-C 编译/链接通过；`source-time-probe-test` 在既有 `checkOwnAndGeneration()` 第 202 行因固定等待 1.1 秒不足而失败。该用例第一次 run 曾通过，两次之间生产代码未变，新增 lifecycle 用例尚未执行，因此记为既有异步测试定时不稳，不记 lifecycle 回归。没有 DEB artifact。两次 CI 已使用完毕，第三次必须另行获准。
-
-2026-10-24 本地测试等待修复：`checkOwnAndGeneration()` 与读回关联正向等待改为最多 5 秒、50 ms 切片的有界条件轮询；负向断言仍保留固定观察窗口。只修改测试，不改生产生命周期、schema、发送或媒体路径。本地全量 Python 180、探针契约 10、分析器 44 通过；Objective-C 尚未在本机执行。
-
-2026-10-24 第三次 `.4` CI：精确提交 `295c40847fdfcd9d123c36892440a41db4ba0f0b`、树 `144f10f0f1704754fef1dafa908f9440e130c7fa`，run `39985086993`，job `120522058236`。Python 180 项、pacing 和 operations-state 通过；`source-time-probe-test` 在编译时出现 4 处 `incompatible block pointer types passing 'int (^)(void)' to parameter of type 'BOOL (^)(void)'`，因此 Objective-C 程序没有执行，后续打包/核验/上传全部跳过且无 DEB artifact。原因是新增有界等待辅助函数声明 `BOOL`，四处条件 block 直接返回 `NSUInteger` 比较产生的 `int`；已在测试中显式转换为 `BOOL`，未改生产代码、未放宽 `-Werror`。
-
-第三次修复后本地门禁：全量 Python **181** 项、探针契约 **11** 项、分析器 **44** 项通过；`py_compile` 和 `git diff --check` 通过（仅既有换行提示）。新增守卫要求 4 个等待 block 都返回声明的布尔类型。Objective-C 编译/链接/模拟执行仍只能由下一次获准的 macOS CI 提供。
-
-`.4` 候选冻结范围：以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，共 17 个变更文件（16 个修改、1 个新增构建记录）。仅含 `SRSourceTimeProbe` 生命周期、`SRPanel` 通知接线、诊断/分析器、对应 Python/Objective-C 测试、版本与文档；不包含迁移 SQL、消息库派发、视频、receiver 发送 ABI 或 B/C UI。第三次修复只改测试；精确提交在提交后记录于 `BUILD-0.2.29-aprobe.4.md`。
+本轮本地回归：在本人 local-ID 关联检查点之后补充只读 `schemaVersion`，随后加入 foreground-inactive 2 秒宽限与 `--stop-pair` pending 门禁，并补上 BOOL 返回类型守卫。2026-10-24 主工作区执行 `py -3 -m unittest discover -s tests -p '*_test.py'` 为 **181 项 OK**；`py -3 -m unittest tests.source_time_probe_contract_test -v` 为 **11 项 OK**；`tests.diagnose_report_test` 为 **44 项 OK**；指定 5 个 Python 文件 `py_compile` 通过；`git diff --check` 通过，仅有既有 CRLF/LF 提示。新增源码守卫要求 native `main()` 在边界与能力用例之间调用 `checkInactiveGrace()`，并要求 4 个有界等待 block 显式返回 `BOOL`。两份来源时间测试的 Git blob 与 `.4` 提交 `03abb9b` 一致：`tests/source_time_probe_test.m` 为 `4be1cda5e117ad2b3b39a385b28b92073bf74649`，`tests/source_time_probe_contract_test.py` 为 `3db9283f122417386ff8aa36996c0bb9fb15a102`。用真实历史报告复核：`1023011` 单独分析正常；`1023011`/`1023012` 被 `--pair` 拒绝为不同 round/generation；旧同轮 `102303`/`102304` 仍可识别停止保留，仅作分析器回归，不是 `.2` 新证据。`.3` 单次 CI `39971512703` 已在该精确提交上完成 179 项 Python、Objective-C 编译/链接/模拟执行及双架构普通 DEB 构建；下载核验通过，未安装、未迁移、未 RootHide 转换。但 `.3` 的 native `main()` 未调用 lifecycle 用例，因此该用例的编译只能证明源码可编译，不能证明已执行。当前 181 项和 lifecycle 增量不是 `.3` 包证据；`.4` 的 181 项、原生模拟和 DEB 证据仍绑定 `03abb9b`，本轮测试回填没有重跑 CI、Objective-C 编译/链接/模拟、生产构建、安装或迁移。本轮没有修改生产数据库 schema、发送核心、消息库派发、视频或 UI 功能。

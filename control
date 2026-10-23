@@ -1,8 +1,8 @@
 Package: andyz.syncrelay
 Name: SyncRelay (Development)
-Version: 0.2.29+aprobe.4
+Version: 0.2.30+aprobe.5
 Architecture: iphoneos-arm
-Description: Stage A source-time lifecycle checkpoint, explicit opt-in; delivered text and bounded text/image hook metadata only. Adds a two-second foreground-inactive grace with timeout stop and immediate background stop. Schema 14. No media preparation, probe sending, automatic capture or operations UI. Device behavior and image readiness are unverified.
+Description: Stage A source-time lifecycle checkpoint, explicit opt-in; delivered text and bounded text/image hook metadata only. Adds a two-second foreground-inactive grace with timeout stop, immediate background stop, and a read-only resumed-after-inactive flag. Schema 14. No media preparation, probe sending, automatic capture or operations UI. Device behavior and image readiness are unverified.
 Maintainer: andyz
 Author: andyz
 Section: Tweaks

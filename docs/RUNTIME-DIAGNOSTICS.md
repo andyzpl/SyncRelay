@@ -41,6 +41,7 @@
 | `inactive` 出现在等待开始之后 | 应用曾失活，等待按设计停止 | 保持前台并手动重新等待 |
 | `sourceTimeProbe.inactivePending=true` | 只读采样进入短暂前台 inactive 宽限，尚未到 2 秒 | 立即回到微信前台；成对快照不应把该状态当作稳定页面切换通过 |
 | `sourceTimeProbe.state=inactive` | 系统级 inactive 超过宽限或真正进入后台，采样已停止且 receiver 已释放 | 回前台不会自动重开，需明确重新开始并换 round |
+| `sourceTimeProbe.resumedAfterInactive=true` | 本轮至少一次短暂前台 inactive 在 2 秒内恢复，且采样仍 active | 只证明前台恢复，不证明页面切换完成、系统后台行为或完整生命周期通过 |
 | `capture_accepted` / `state = preview` | 冻结了一条匹配源消息 | 用户核对预览，不代表任何目标收到转发 |
 
 ### 单群手动发送观察

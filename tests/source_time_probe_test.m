@@ -392,6 +392,7 @@ static void checkInactiveGrace(void) {
     TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
     CHECK([fixture start]);
     CHECK(![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    CHECK(![fixture.probe.diagnostics[@"resumedAfterInactive"] boolValue]);
     fixture.monotonic = 20;
     [fixture.probe noteApplicationInactive];
     fixture.monotonic = 21;
@@ -401,6 +402,7 @@ static void checkInactiveGrace(void) {
     fixture.monotonic = 22;
     [fixture.probe tick];
     CHECK(fixture.probe.active && ![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    CHECK([fixture.probe.diagnostics[@"resumedAfterInactive"] boolValue]);
     fixture.monotonic = 30;
     [fixture.probe noteApplicationInactive];
     fixture.monotonic = 31.999;
@@ -410,9 +412,11 @@ static void checkInactiveGrace(void) {
     [fixture.probe tick];
     CHECK(!fixture.probe.active && ![fixture.receiver.diagnostics[@"armed"] boolValue]);
     CHECK([fixture.probe.diagnostics[@"state"] isEqual:@"inactive"]);
+    CHECK(![fixture.probe.diagnostics[@"resumedAfterInactive"] boolValue]);
     fixture.monotonic = 40;
     CHECK([fixture start]);
     CHECK(![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    CHECK(![fixture.probe.diagnostics[@"resumedAfterInactive"] boolValue]);
     fixture.monotonic = 50;
     [fixture.probe noteApplicationInactive];
     fixture.monotonic = 52;

@@ -145,8 +145,15 @@ class SourceTimeProbeContracts(unittest.TestCase):
         self.assertIn('now - inactiveSince >= SRInactiveGraceLimit', active)
         self.assertIn('stopForReason:SRSourceTimeProbeInactive', active)
         self.assertLess(active.index('SRInactiveGraceLimit'), active.index('self.inactivePending = NO'))
+        self.assertIn('self.resumedAfterInactive = YES', active)
+        self.assertLess(active.index('SRInactiveGraceLimit'), active.index('self.resumedAfterInactive = YES'))
+        diagnostics = source.split('- (NSDictionary *)diagnostics {', 1)[1].split('@end', 1)[0]
+        self.assertIn('@"resumedAfterInactive": @(self.resumedAfterInactive)', diagnostics)
         native = (ROOT / 'tests/source_time_probe_test.m').read_text(encoding='utf-8')
         self.assertIn('static void checkInactiveGrace(void)', native)
+        grace = native.split('static void checkInactiveGrace(void) {', 1)[1].split('static void checkCapabilityAndFaults', 1)[0]
+        self.assertIn('CHECK([fixture.probe.diagnostics[@"resumedAfterInactive"] boolValue]);', grace)
+        self.assertIn('CHECK(![fixture.probe.diagnostics[@"resumedAfterInactive"] boolValue]);', grace)
         main = native.split('int main(void)', 1)[1]
         self.assertIn('checkBoundsAndInvalidation();', main)
         self.assertLess(main.index('checkBoundsAndInvalidation();'),

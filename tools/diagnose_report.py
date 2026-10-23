@@ -162,6 +162,10 @@ def analyze(report):
                         (inactive_pending and active is not True):
                     add('source_time_probe_lifecycle_invalid',
                         'The foreground-inactive grace state is malformed or outside active sampling.')
+                resumed = flag(probe.get('resumedAfterInactive')) if 'resumedAfterInactive' in probe else False
+                if resumed is None or (resumed and inactive_pending):
+                    add('source_time_probe_lifecycle_invalid',
+                        'The foreground-inactive resume flag is malformed or inconsistent.')
             if flag(probe.get('observerOnly')) is not True or flag(probe.get('sendingEnabled')) is not False:
                 add('source_time_probe_scope_invalid',
                     'The source-time probe is not marked observer-only with sending disabled.')
