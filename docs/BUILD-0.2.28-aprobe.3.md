@@ -31,3 +31,12 @@
 - 证据：`.build-cache/aprobe3/verification.json`、`.build-cache/aprobe3/job-120475133844.log`、`dist/0.2.28+aprobe.3-test-39971512703/ci-provenance.json`。
 
 上述成功只覆盖源码编译、原生模拟和普通 DEB 静态核验。未安装、未 RootHide 转换、未执行设备库迁移或清理数据；`.3` 真机行为与 schema 迁移证据仍需另行授权。`0.2.28+aprobe.3` 高于设备当前 `.2`，但不承诺是 `.2` 全部行为的超集。
+
+## 安装前与安装后门禁
+
+- 安装前先记录设备当前插件版本、当前报告中的 `storageReady`/账号可读状态，并保全现有导出与任务；不得删除数据库、旧 claims 或媒体。普通 DEB 只适用于已确认的安装方式；若设备实际使用 RootHide 环境，必须先另行确认转换与安装方式，不能直接覆盖普通包。
+- 若设备库可能是旧 schema，打开 `.3` 会执行既有迁移，属于另需明确授权的数据迁移；没有可恢复备份与回滚方案时不要安装。迁移后不能通过 schema 11 旧包降级。
+- 安装后首次只读基线导出必须同时满足 `storageReady=1`、`schemaVersion=14`、发送开关为 0、图片读取为 0、手动捕获 idle；任一项不满足就停止后续采样并保全报告，不改库、不降级、不删除数据。
+- `schemaVersion=14` 只证明当前打开版本，不证明迁移前版本、旧行保留、迁移原子性或回滚；不得把它写成设备迁移验收。
+- `.3` 的诊断字段新增 `hookMessageOrdinal`，仅表示同轮精确 local-ID 回读后的匿名关联；原始 local/server ID 不导出。`sourceTimeSemanticsVerified` 与 `imageReadinessObserved` 在设备证据完整前必须保持 false。
+- 真机步骤、导出字段和通过标准以 `OPERATIONS-A-DEVICE-READINESS.md` 第 3 节为准；页面切换只用 `--pair`，手动停止只用 `--stop-pair`，不能把 `.2` 报告冒充 `.3`。
