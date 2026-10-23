@@ -57,7 +57,14 @@
 
 ### 待批准的第三次 CI/DEB
 
-候选冻结后，只对精确 `.4` 提交执行一次非 `main` 分支推送和一次 `workflow_dispatch`（`build_deb=true`）。核验至少应确认：
+候选已冻结为 `b0b98ebf69f214e6a2cb7ef6b3a965ed351f2aae`、树 `3a6471a33a766957ea0744b230f329595c07045d`。批准后只执行以下精确范围：
+
+1. 将候选分支 `codex/operations-a-device-probe-20261023-aprobe4` 从 `b9e1fcb` 快进推送到 `b0b98eb`；不推送 `main`。
+2. 对该精确提交执行一次 `workflow_dispatch`，输入 `build_deb=true`；不重跑前两次失败 run。
+3. 成功时下载并核验 artifact 到 `.build-cache/aprobe4` 与 `dist/0.2.29+aprobe.4-test-<run-id>/`，更新本文件和计划文档。
+4. 不安装、不迁移设备库、不 RootHide 转换、不自动捕获、不发送、不读取媒体。
+
+核验至少应确认：
 
 - CI 的 Python 计数为 180，Objective-C 编译、链接及三轮模拟执行通过。
 - arm64/arm64e 两架构构建成功；control 为 `0.2.29+aprobe.4`。
