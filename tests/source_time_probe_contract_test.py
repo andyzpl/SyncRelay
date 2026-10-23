@@ -95,10 +95,14 @@ class SourceTimeProbeContracts(unittest.TestCase):
         self.assertIn('if (!entry || UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return NO;', probe_setup)
         resigning = entry.split('- (void)resigningActive:', 1)[1].split('- (void)enteredBackground:', 1)[0]
         background = entry.split('- (void)enteredBackground:', 1)[1].split('@end', 1)[0]
+        self.assertIn('noteApplicationInactive', resigning)
         self.assertNotIn('stopForReason:SRSourceTimeProbeInactive', resigning)
         self.assertIn('stopForReason:SRSourceTimeProbeInactive', background)
         self.assertIn('UIApplicationDidEnterBackgroundNotification', panel)
         self.assertIn('report[@"sourceTimeProbe"] = self.sourceTimeProbe.diagnostics', panel)
+        became_active = entry.split('- (void)becameActive:', 1)[1].split('- (void)resigningActive:', 1)[0]
+        self.assertIn('noteApplicationActive', became_active)
+        self.assertIn('selector:@selector(becameActive:)', entry)
 
     def test_diagnostic_entry_preserves_manual_capture_and_lifecycle(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
@@ -134,6 +138,21 @@ class SourceTimeProbeContracts(unittest.TestCase):
         self.assertGreaterEqual(receive.count('self.round != round'), 2)
         tick = source.split('- (void)tick {', 1)[1].split('- (void)receiveMessage:', 1)[0]
         self.assertGreaterEqual(tick.count('self.round != round'), 3)
+
+    def test_activation_rechecks_inactive_grace_before_clearing_it(self):
+        source = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
+        active = source.split('- (void)noteApplicationActive {', 1)[1].split('- (void)tick {', 1)[0]
+        self.assertIn('now - inactiveSince >= SRInactiveGraceLimit', active)
+        self.assertIn('stopForReason:SRSourceTimeProbeInactive', active)
+        self.assertLess(active.index('SRInactiveGraceLimit'), active.index('self.inactivePending = NO'))
+        native = (ROOT / 'tests/source_time_probe_test.m').read_text(encoding='utf-8')
+        self.assertIn('static void checkInactiveGrace(void)', native)
+        main = native.split('int main(void)', 1)[1]
+        self.assertIn('checkBoundsAndInvalidation();', main)
+        self.assertLess(main.index('checkBoundsAndInvalidation();'),
+                        main.index('checkInactiveGrace();'))
+        self.assertLess(main.index('checkInactiveGrace();'),
+                        main.index('checkCapabilityAndFaults();'))
 
 
 if __name__ == '__main__':

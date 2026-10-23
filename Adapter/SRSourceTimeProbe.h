@@ -24,6 +24,11 @@ typedef NS_ENUM(NSUInteger, SRSourceTimeProbeStopReason) {
                         changed:(void (^)(void))changed;
 - (BOOL)startForAccount:(NSString *)account configuration:(NSDictionary *)configuration error:(NSError **)error;
 - (void)stopForReason:(SRSourceTimeProbeStopReason)reason;
+/* A foreground page transition may briefly make UIKit inactive. Mark it here;
+ * the entry's existing timer stops the probe if active does not return within
+ * the bounded grace period. A real background event stops immediately. */
+- (void)noteApplicationInactive;
+- (void)noteApplicationActive;
 /* Call from the entry's existing timer, not a settings-page timer. */
 - (void)tick;
 /* Numeric/allowlisted evidence only. Semantics remain unverified. */

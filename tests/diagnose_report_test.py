@@ -346,6 +346,20 @@ class ReportTests(unittest.TestCase):
         report['sourceTimeProbe'].update(active=True, state='sampling', sendingEnabled=False,
             sourceTimeSemanticsVerified=True, imageReadinessObserved=True)
         self.assertIn('source_time_probe_capability_invalid', self.codes(report))
+        report['sourceTimeProbe'].update(sourceTimeSemanticsVerified=False, imageReadinessObserved=False,
+            inactivePending=True, inactiveGraceLimit=2)
+        self.assertNotIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe']['inactivePending'] = False
+        self.assertNotIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe']['inactivePending'] = True
+        report['sourceTimeProbe']['active'] = False
+        self.assertIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe'].update(active=True, inactivePending=False, inactiveGraceLimit=3)
+        self.assertIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe']['inactiveGraceLimit'] = 2
+        del report['sourceTimeProbe']['inactivePending']
+        self.assertIn('source_time_probe_lifecycle_invalid', self.codes(report))
+        report['sourceTimeProbe']['inactivePending'] = False
         report['sourceTimeProbe']['samples'] = 'private message'
         self.assertIn('source_time_probe_samples_invalid', self.codes(report))
         self.assertNotIn('private message', str(analyze(report)))
@@ -488,6 +502,10 @@ class ReportTests(unittest.TestCase):
         self.assertIn('source_time_pair_environment_blocked',
                       {item['code'] for item in compare_source_time_snapshots(before, after)})
         after['sourceTimeProbe']['state'] = 'sampling'
+        after['sourceTimeProbe']['inactivePending'] = True
+        self.assertIn('source_time_pair_inactive_pending',
+                      {item['code'] for item in compare_source_time_snapshots(before, after)})
+        after['sourceTimeProbe']['inactivePending'] = False
         after['sourceTimeProbe']['round'] = 3
         self.assertIn('source_time_pair_round_changed',
                       {item['code'] for item in compare_source_time_snapshots(before, after)})
@@ -620,6 +638,10 @@ class ReportTests(unittest.TestCase):
         self.assertIn('source_time_stop_pair_samples_changed',
                       {item['code'] for item in compare_source_time_stop_snapshots(before, after)})
         after['sourceTimeProbe']['samples'][0]['deliveredAt'] = 101.7
+        before['sourceTimeProbe']['inactivePending'] = True
+        self.assertIn('source_time_stop_pair_before_inactive_pending',
+                      {item['code'] for item in compare_source_time_stop_snapshots(before, after)})
+        before['sourceTimeProbe']['inactivePending'] = False
         after['receiveCandidate']['receiverGeneration'] = 10
         after['receiveCandidate']['armed'] = True
         self.assertIn('source_time_stop_pair_receiver_still_armed',

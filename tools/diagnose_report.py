@@ -146,12 +146,22 @@ def analyze(report):
             scope_values = {'server', 'local', 'none'}
             active = flag(probe.get('active'))
             state = probe.get('state')
+            inactive_pending = flag(probe.get('inactivePending'))
+            inactive_grace = probe.get('inactiveGraceLimit')
             if active is None or not isinstance(state, str) or state not in probe_states:
                 add('source_time_probe_lifecycle_invalid', 'The source-time probe lifecycle fields are malformed.')
             elif active and state != 'sampling':
                 add('source_time_probe_lifecycle_invalid', 'An active source-time probe is not in the sampling state.')
             elif not active and state == 'sampling':
                 add('source_time_probe_lifecycle_invalid', 'A non-active source-time probe still reports sampling.')
+            if ('inactivePending' in probe) != ('inactiveGraceLimit' in probe):
+                add('source_time_probe_lifecycle_invalid',
+                    'The foreground-inactive grace fields are incomplete.')
+            elif 'inactivePending' in probe:
+                if inactive_pending is None or type(inactive_grace) is not int or inactive_grace != 2 or \
+                        (inactive_pending and active is not True):
+                    add('source_time_probe_lifecycle_invalid',
+                        'The foreground-inactive grace state is malformed or outside active sampling.')
             if flag(probe.get('observerOnly')) is not True or flag(probe.get('sendingEnabled')) is not False:
                 add('source_time_probe_scope_invalid',
                     'The source-time probe is not marked observer-only with sending disabled.')
@@ -624,6 +634,9 @@ def compare_source_time_snapshots(before, after):
     for label, probe in (('before', before_probe), ('after', after_probe)):
         if flag(probe.get('active')) is not True or probe.get('state') != 'sampling':
             add('source_time_pair_not_active', f'The {label} snapshot is not an active sampling snapshot.')
+        if 'inactivePending' in probe and flag(probe.get('inactivePending')) is not False:
+            add('source_time_pair_inactive_pending',
+                f'The {label} snapshot still has an unresolved foreground-inactive grace period.')
     before_round = before_probe.get('round')
     after_round = after_probe.get('round')
     if type(before_round) is not int or before_round < 0 or type(after_round) is not int or after_round < 0:
@@ -731,6 +744,9 @@ def compare_source_time_stop_snapshots(before, after):
         return result
     if flag(before_probe.get('active')) is not True or before_probe.get('state') != 'sampling':
         add('source_time_stop_pair_before_not_active', 'The before snapshot is not active sampling.')
+    if 'inactivePending' in before_probe and flag(before_probe.get('inactivePending')) is not False:
+        add('source_time_stop_pair_before_inactive_pending',
+            'The before snapshot still has an unresolved foreground-inactive grace period.')
     stopped_states = {'stopped', 'inactive', 'configuration_changed', 'account_invalidated',
                       'environment_blocked', 'receiver_stopped', 'clock_invalid',
                       'time_limit', 'sample_limit', 'context_unavailable'}

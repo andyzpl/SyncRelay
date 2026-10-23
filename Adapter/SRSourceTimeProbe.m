@@ -9,6 +9,7 @@
 
 static const NSUInteger SRSampleLimit = 16;
 static const double SRDurationLimit = 120;
+static const double SRInactiveGraceLimit = 2;
 
 static BOOL SRProbeTime(id value) {
     return [value isKindOfClass:NSNumber.class] && isfinite([value doubleValue]) && [value doubleValue] > 0;
@@ -48,6 +49,8 @@ static NSString *SRProbeGetterEncoding(Class type) {
 @property(nonatomic) NSUInteger lastProbeGeneration;
 @property(nonatomic) NSTimeInterval listeningSince;
 @property(nonatomic) double startedMonotonic;
+@property(nonatomic) BOOL inactivePending;
+@property(nonatomic) double inactiveSince;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSDictionary *frozenConfiguration;
 @property(nonatomic, copy) NSString *state;
@@ -135,6 +138,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     self.lastProbeGeneration = MAX(self.lastProbeGeneration, self.receiverGeneration);
     self.account = [account copy]; self.frozenConfiguration = frozen;
     self.listeningSince = [diagnostic[@"armedAt"] doubleValue]; self.startedMonotonic = monotonic;
+    self.inactivePending = NO; self.inactiveSince = 0;
     self.getterEncoding = encoding; self.state = @"sampling";
     [self.samples removeAllObjects]; [self.messageOrdinals removeAllObjects];
     [self.hookSamples removeAllObjects]; [self.hookOrdinals removeAllObjects];
@@ -154,6 +158,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
 - (void)stopWithState:(NSString *)state clearSamples:(BOOL)clearSamples {
     BOOL stopReceiver = self.listening && [self ownsReceiver];
     self.listening = NO; self.starting = NO; self.state = state;
+    self.inactivePending = NO; self.inactiveSince = 0;
     self.receiver.observeTimeHook = nil;
     [self.messageOrdinals removeAllObjects];
     [self.hookOrdinals removeAllObjects];
@@ -177,6 +182,33 @@ static NSString *SRProbeGetterEncoding(Class type) {
     if (reason == SRSourceTimeProbeAccountInvalidated) state = @"account_invalidated";
     [self stopWithState:state clearSamples:invalidate];
 }
+- (void)noteApplicationInactive {
+    if (!NSThread.isMainThread || !self.active || self.inactivePending) return;
+    double now;
+    @try { now = self.monotonicClock(); } @catch (__unused id exception) { return; }
+    if (!isfinite(now) || now < 0) return;
+    self.inactiveSince = now;
+    self.inactivePending = YES;
+}
+- (void)noteApplicationActive {
+    if (!NSThread.isMainThread || !self.inactivePending) return;
+    NSUInteger round = self.round;
+    double inactiveSince = self.inactiveSince;
+    double now = NAN;
+    BOOL clockRead = NO;
+    @try { now = self.monotonicClock(); clockRead = YES; }
+    @catch (__unused id exception) { }
+    if (self.round != round || !self.listening || !self.inactivePending) return;
+    if (!clockRead || !isfinite(now) || now < inactiveSince) {
+        [self stopWithState:@"clock_invalid" clearSamples:NO]; return;
+    }
+    // The entry timer may be suspended while the app is inactive. Recheck the
+    // grace here so an over-limit transition cannot be cleared by activation.
+    if (now - inactiveSince >= SRInactiveGraceLimit) {
+        [self stopForReason:SRSourceTimeProbeInactive]; return;
+    }
+    self.inactivePending = NO; self.inactiveSince = 0;
+}
 - (void)tick {
     if (!NSThread.isMainThread || self.starting || !self.account) return;
     NSUInteger round = self.round; NSString *account = self.account;
@@ -186,6 +218,16 @@ static NSString *SRProbeGetterEncoding(Class type) {
         [self stopWithState:problem clearSamples:![problem isEqual:@"environment_blocked"]]; return;
     }
     if (!self.listening) return;
+    if (self.inactivePending) {
+        double now;
+        @try { now = self.monotonicClock(); } @catch (__unused id exception) { now = NAN; }
+        if (!isfinite(now) || now < self.inactiveSince) {
+            [self stopWithState:@"clock_invalid" clearSamples:NO]; return;
+        }
+        if (now - self.inactiveSince >= SRInactiveGraceLimit) {
+            [self stopForReason:SRSourceTimeProbeInactive]; return;
+        }
+    }
     BOOL owns = [self ownsReceiver];
     if (self.round != round || !self.listening) return;
     if (!owns) { [self stopWithState:@"receiver_stopped" clearSamples:NO]; return; }
@@ -302,6 +344,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     [self tick];
     return @{@"schema": @1, @"observerOnly": @YES, @"textOnly": @NO, @"deliveredTextOnly": @YES, @"active": @(self.active),
         @"state": self.state, @"round": @(self.round), @"sampleLimit": @(SRSampleLimit), @"durationLimit": @(SRDurationLimit),
+        @"inactivePending": @(self.inactivePending), @"inactiveGraceLimit": @(SRInactiveGraceLimit),
         @"getterDeclaredReturnEncoding": self.getterEncoding, @"getterDeclarationScope": @"configured_wrap_class",
         @"actualWrapABIObserved": @(self.hookSamples.count > 0), @"sourceTimeSemanticsVerified": @NO, @"imageReadinessObserved": @NO,
         @"prefilteredCallbacksObserved": @(self.hookSamples.count > 0), @"sendingEnabled": @NO, @"samples": [self.samples copy],

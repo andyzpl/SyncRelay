@@ -366,6 +366,44 @@ static void checkBoundsAndInvalidation(void) {
     privateReport(fixture); [fixture stop];
 }
 
+static void checkInactiveGrace(void) {
+    TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+    CHECK([fixture start]);
+    CHECK(![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    fixture.monotonic = 20;
+    [fixture.probe noteApplicationInactive];
+    fixture.monotonic = 21;
+    [fixture.probe tick];
+    CHECK(fixture.probe.active && [fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    [fixture.probe noteApplicationActive];
+    fixture.monotonic = 22;
+    [fixture.probe tick];
+    CHECK(fixture.probe.active && ![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    fixture.monotonic = 30;
+    [fixture.probe noteApplicationInactive];
+    fixture.monotonic = 31.999;
+    [fixture.probe tick];
+    CHECK(fixture.probe.active);
+    fixture.monotonic = 32;
+    [fixture.probe tick];
+    CHECK(!fixture.probe.active && ![fixture.receiver.diagnostics[@"armed"] boolValue]);
+    CHECK([fixture.probe.diagnostics[@"state"] isEqual:@"inactive"]);
+    fixture.monotonic = 40;
+    CHECK([fixture start]);
+    CHECK(![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    fixture.monotonic = 50;
+    [fixture.probe noteApplicationInactive];
+    fixture.monotonic = 52;
+    [fixture.probe noteApplicationActive];
+    CHECK(!fixture.probe.active && ![fixture.receiver.diagnostics[@"armed"] boolValue]);
+    CHECK([fixture.probe.diagnostics[@"state"] isEqual:@"inactive"]);
+    [fixture.probe stopForReason:SRSourceTimeProbeUserStopped];
+    [fixture.probe noteApplicationInactive];
+    CHECK(![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    CHECK([fixture.probe.diagnostics[@"state"] isEqual:@"stopped"]);
+    privateReport(fixture); [fixture stop];
+}
+
 static void checkCapabilityAndFaults(void) {
     for (Class type in @[TimeProbeWrap.class, FloatingTimeWrap.class]) {
         TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:type];
@@ -457,7 +495,7 @@ static void checkSupplementalHooks(void) {
 int main(void) {
     @autoreleasepool {
         checkObservation(); checkOwnAndGeneration(); checkReadbackCorrelationRejectsMismatch();
-        checkBoundsAndInvalidation(); checkCapabilityAndFaults(); checkMetadataAndClocks(); checkReentrantRestart(); checkSupplementalHooks();
+        checkBoundsAndInvalidation(); checkInactiveGrace(); checkCapabilityAndFaults(); checkMetadataAndClocks(); checkReentrantRestart(); checkSupplementalHooks();
         puts("PASS: read-only source-time text probe, original chain, frozen evidence, bounded rounds, identity invalidation, no image preparation and legacy capture routing");
     }
     return 0;

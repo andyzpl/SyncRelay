@@ -1427,7 +1427,12 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (NSThread.isMainThread) { [self install]; [self refreshFloatingProgress]; }
     else dispatch_async(dispatch_get_main_queue(), ^{ [self install]; [self refreshFloatingProgress]; });
 }
+- (void)becameActive:(NSNotification *)notification {
+    [self.sourceTimeProbe noteApplicationActive];
+    [self windowChanged:notification];
+}
 - (void)resigningActive:(__unused NSNotification *)notification {
+    [self.sourceTimeProbe noteApplicationInactive];
     [self.smallGroupSession becameInactive]; [self updateSmallGroupState];
     [SRRuntimeLog.shared record:@"inactive" facts:@{}];
     [self.sendProbe cancelForInactivity];
@@ -1464,7 +1469,7 @@ void SRInstallPanelEntry(SRStore *store) {
         });
     };
     if (store) [entry prepareCapture];
-    [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(becameActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:UIWindowDidBecomeKeyNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SRRelayStateChangedNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SREntryPreferencesChangedNotification object:nil];
