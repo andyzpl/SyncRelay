@@ -1,6 +1,6 @@
 # 阶段 A 下一次设备核验：当前源码检查点
 
-日期：2026-10-23。当前节点：**本地生命周期候选 `0.2.29+aprobe.4` 已通过 180 项 Python 门禁；首次精确 CI 已编译并执行新增 lifecycle 程序，但测试断言错误导致失败，尚未取得可用 DEB、安装或真机证据。`.3` 仍是历史 CI/DEB 通过包（179 项 Python，未安装）；设备当前为 `.2`，已完成八轮只读采样。尚未证明 schema 迁移，完整来源时间语义和图片就绪仍未验收。** `.3` 身份见 `BUILD-0.2.28-aprobe.3.md`，`.4` 检查点见 `BUILD-0.2.29-aprobe.4.md`。与旧文字专项包步骤冲突时，以本文为准；产品范围仍服从总计划第 12–14 节。
+日期：2026-10-24。当前节点：**本地生命周期候选 `0.2.29+aprobe.4` 已通过 180 项 Python 门禁；两次精确 CI 均未完成（第一次 lifecycle 测试期望错误，第二次既有异步等待超时），测试等待已改为有界条件轮询并本地通过，第三次 CI/DEB 尚未获准。尚无可用 DEB、安装或真机证据。`.3` 仍是历史 CI/DEB 通过包（179 项 Python，未安装）；设备当前为 `.2`，已完成八轮只读采样。尚未证明 schema 迁移，完整来源时间语义和图片就绪仍未验收。** `.3` 身份见 `BUILD-0.2.28-aprobe.3.md`，`.4` 检查点见 `BUILD-0.2.29-aprobe.4.md`。与旧文字专项包步骤冲突时，以本文为准；产品范围仍服从总计划第 12–14 节。
 
 ### 新增设备报告（1023007–1023010，2026-10-23）
 
@@ -154,7 +154,7 @@ hook 字段集 H：`hookSamples[].ordinal/messageOrdinal/round/receiverGeneratio
 
 `.3` 候选范围已按精确提交 `6bd977de878af89d19bb09885721ed10c20751be`、树 `d24b83f285e3c27e2394487780f3aecd5160e4fc` 构建和核验；普通 DEB 证据见 `BUILD-0.2.28-aprobe.3.md`。`tests/store_test.m` 已包含在该提交中。该结果只证明 CI 编译/链接/模拟执行和 DEB 静态核验，不是真机、宿主 ABI 或迁移证据。
 
-`.4` 的范围以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，只覆盖生命周期、诊断、测试、版本和文档；没有新增迁移 SQL，没有修改消息库派发、视频、receiver 发送 ABI 或 B/C UI。首次 CI 已实际编译并执行到新增 lifecycle 程序；其失败是测试期望覆盖了既有自动停止原因，修正后尚未重跑，仍无成功的原生全量、打包或真机结果。安装 `.4` 若面对 schema 11 设备库，仍会执行既有 11→14 迁移；没有备份/回滚方案和单独授权不得安装。
+`.4` 的范围以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，只覆盖生命周期、诊断、测试、版本和文档；没有新增迁移 SQL，没有修改消息库派发、视频、receiver 发送 ABI 或 B/C UI。两次 CI 都实际编译并执行了来源时间程序：第一次失败于新增 lifecycle 测试的错误期望，第二次在更早的既有异步等待处超时，尚未执行到修正后的 lifecycle 用例。测试等待已改为最多 5 秒的有界条件轮询，本地 Python 通过；仍无成功的原生全量、打包或真机结果。安装 `.4` 若面对 schema 11 设备库，仍会执行既有 11→14 迁移；没有备份/回滚方案和单独授权不得安装。
 
 ## 5. 待批准的外部动作范围
 
@@ -206,5 +206,9 @@ Python 160 项通过，含新增的只读 seam 源码守卫；SQLite/其他 Pyth
 2026-10-23 `.4` 本地检查点：`SRSourceTimeProbe` 增加 2 秒前台 inactive 单调时钟宽限，`DidBecomeActive` 在清除 pending 前重算是否已超时，`DidEnterBackground` 仍立即停止并释放 receiver；诊断增加 `inactivePending` 和固定 `inactiveGraceLimit=2`，`--pair`/`--stop-pair` 拒绝未决宽限。新增 Objective-C `checkInactiveGrace()` 已接入 native `main()`；`py -3 -m unittest discover -s tests -p '*_test.py'` 为 **180 项 OK**，probe 契约 10、分析器 44。以上均为本地 Python/源码守卫，不能据此宣称原生或真机通过。阶段 A 仍未整体验收。
 
 2026-10-23 首次 `.4` CI：精确提交 `a6554d2c1598f33fd5180043a46dcbb160b3987c`、树 `06c510dfa2859a26cdcddfcdc8756a30b9049f60`，run `39982445082`，job `120512938439`。Python 180 项及前 22 个 Objective-C 程序通过；`source-time-probe-test` 在 `checkInactiveGrace()` 第 403 行失败，原因是测试错误地期望超时后的幂等手动停止把 `inactive` 改成 `stopped`。生产实现保留首次停止原因，行为正确；测试已改为断言状态仍为 `inactive` 且 pending 已清。CI 在 macOS 测试步骤失败，DEB 构建/包核验/上传全部跳过，未生成可用包；按授权未自动重跑。
+
+2026-10-23 第二次 `.4` CI：修正断言后的提交 `b9e1fcbc6523450f46525db394a9a0e2b78af900`、树 `9fba2a718961793c87817936fa7e86b6f8b1f47e`，run `39983266913`，job `120515785520`。Python 180 项及全部 Objective-C 编译/链接通过；`source-time-probe-test` 在既有 `checkOwnAndGeneration()` 第 202 行因固定等待 1.1 秒不足而失败。该用例第一次 run 曾通过，两次之间生产代码未变，新增 lifecycle 用例尚未执行，因此记为既有异步测试定时不稳，不记 lifecycle 回归。没有 DEB artifact。两次 CI 已使用完毕，第三次必须另行获准。
+
+2026-10-24 本地测试等待修复：`checkOwnAndGeneration()` 与读回关联正向等待改为最多 5 秒、50 ms 切片的有界条件轮询；负向断言仍保留固定观察窗口。只修改 `tests/source_time_probe_test.m`，不改生产生命周期、schema、发送或媒体路径。本地全量 Python 180、探针契约 10、分析器 44 通过；Objective-C 尚未在本机执行。
 
 `.4` 候选冻结范围：以 `a6d48dbb94ebb8d44ada62a70a57906046c50efa` 为基线，共 17 个变更文件（16 个修改、1 个新增构建记录）。仅含 `SRSourceTimeProbe` 生命周期、`SRPanel` 通知接线、诊断/分析器、对应 Python/Objective-C 测试、版本与文档；不包含迁移 SQL、消息库派发、视频、receiver 发送 ABI 或 B/C UI。精确提交在提交后记录于 `BUILD-0.2.29-aprobe.4.md`。

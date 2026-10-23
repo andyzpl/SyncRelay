@@ -216,7 +216,7 @@ payload 白名单：formatVersion=1、sourceAccount、exportedAt、配置（母�
 
 ### 来源时间文字采样子集（非运营功能）
 
-`SRSourceTimeProbe` 已复用全局唯一 receiver 接入设置页诊断；默认关闭、明确开始/停止、16 个文字回调/120 秒，保留原始创建整数/首回调/监听边界、另列消费时间；只输出匿名顺序与固定关系码。账号/配置失效清样本；关闭页面不停止，后台停止且不自动重开。采样期间捕获、预览、发送和接口实验互斥，不生成内容/计划/run/claim，不修改发送核心或保存配置。2026-10-23 本地补充：`WillResignActive` 仅启动 2 秒单调时钟宽限，`DidBecomeActive` 在清除 pending 前重算超时；超时或 `DidEnterBackground` 立即按 `inactive` 停止并释放 receiver。该补充只改变观察器生命周期，尚未取得成功的原生编译、模拟、打包或真机验证；`.3` 包不含此补充。首次 `.4` CI 已实际编译并执行到新增 lifecycle 程序，但测试错误地期望超时后的幂等手动停止改成 `stopped`；实现保留 `inactive`，测试已修正，未自动重跑。当前本地 Python 全量 180 项通过（分析器 44、probe 契约 10）。页面切换验证必须在 2 秒内返回，A/B 均要求 `inactivePending=false`；超过 2 秒应停止，不能当作“切页后仍可采样”。
+`SRSourceTimeProbe` 已复用全局唯一 receiver 接入设置页诊断；默认关闭、明确开始/停止、16 个文字回调/120 秒，保留原始创建整数/首回调/监听边界、另列消费时间；只输出匿名顺序与固定关系码。账号/配置失效清样本；关闭页面不停止，后台停止且不自动重开。采样期间捕获、预览、发送和接口实验互斥，不生成内容/计划/run/claim，不修改发送核心或保存配置。2026-10-23 本地补充：`WillResignActive` 仅启动 2 秒单调时钟宽限，`DidBecomeActive` 在清除 pending 前重算超时；超时或 `DidEnterBackground` 立即按 `inactive` 停止并释放 receiver。该补充只改变观察器生命周期，尚未取得成功的原生编译、模拟、打包或真机验证；`.3` 包不含此补充。两次 `.4` CI 都未完成：第一次实际编译并执行到新增 lifecycle 程序，但测试错误地期望超时后的幂等手动停止改成 `stopped`；第二次在更早的既有 `checkOwnAndGeneration()` 固定等待处超时，修正后的 lifecycle 用例仍未执行通过。实现保留 `inactive`，测试等待已改为最多 5 秒的有界条件轮询；第三次 CI/DEB 尚未获准。当前本地 Python 全量 180 项通过（分析器 44、probe 契约 10）。页面切换验证必须在 2 秒内返回，A/B 均要求 `inactivePending=false`；超过 2 秒应停止，不能当作“切页后仍可采样”。
 
 采样 arm 仅在配置副本选择 text，不进入图片资源准备链。实际 wrap 的逐对象 ABI、图片延迟、被 receiver 提前过滤的事件仍未覆盖；配置类 getter 编码或假设 epoch 秒的本地策略命中，均不能把来源语义认证从 false 改为 true。该模块的匿名消息序号是本轮有界关联，不是目标级持久防重，不冲抵第 3–7 节的 C 阶段实现。首轮采样原生回归已通过；复核另补同步停止通知内明确重开时的轮次围栏及模拟用例，最新本地 102 项 Python、C 状态/间隔及双架构 98 单元语法通过。逻辑提交 `91b310d...` 已独立通过 19 个 Objective-C 程序各三轮、92 项 Python 和两个 C 程序，证据见 OPERATIONS-A-NATIVE-VALIDATION.md。
 

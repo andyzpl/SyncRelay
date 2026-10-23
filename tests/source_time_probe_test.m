@@ -110,6 +110,25 @@
 @end
 
 static void pump(void) { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, false); }
+static void runMainLoopFor(NSTimeInterval duration) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:duration];
+    while (YES) {
+        NSTimeInterval remaining = [deadline timeIntervalSinceNow];
+        if (remaining <= 0) break;
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, fmin(remaining, 0.05), false);
+    }
+}
+static BOOL waitForCondition(NSTimeInterval timeout, BOOL (^condition)(void)) {
+    // Poll in bounded slices so a slow CI runner cannot turn a positive wait
+    // into a fixed-time assertion, while still failing at a known deadline.
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    while (!condition()) {
+        NSTimeInterval remaining = [deadline timeIntervalSinceNow];
+        if (remaining <= 0) return NO;
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, fmin(remaining, 0.05), false);
+    }
+    return YES;
+}
 static IntegerTimeWrap *message(unsigned long long created) {
     IntegerTimeWrap *wrap = [IntegerTimeWrap new];
     wrap.m_nsFromUsr = @"private_source@chatroom"; wrap.m_nsToUsr = @"wxid_time_private";
@@ -198,8 +217,8 @@ static void checkOwnAndGeneration(void) {
     settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
     settled.m_n64MesSvrID = 9007199254740994ULL;
     fixture.manager.stored = settled; fixture.wall = 2020;
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
-    CHECK(count(fixture) == 1 && [last(fixture)[@"selfSource"] boolValue]);
+    CHECK(waitForCondition(5, ^{ return count(fixture) == 1; }));
+    CHECK([last(fixture)[@"selfSource"] boolValue]);
     CHECK([last(fixture)[@"createdAt"] isEqual:@2002] && [last(fixture)[@"receivedAt"] isEqual:@2002.5]);
     CHECK([last(fixture)[@"deliveredAt"] isEqual:@2020]);
     CHECK([last(fixture)[@"hookMessageOrdinal"] isEqual:@1]);
@@ -215,7 +234,7 @@ static void checkOwnAndGeneration(void) {
     // A text delivery already queued on main and an own-ID poll must both die.
     [fixture.manager AsyncOnAddMsg:@"private_source@chatroom" MsgWrap:message(3001)];
     [fixture.probe stopForReason:SRSourceTimeProbeUserStopped]; fixture.wall = 3002.5; CHECK([fixture start]);
-    own.m_n64MesSvrID = 123; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
+    own.m_n64MesSvrID = 123; runMainLoopFor(1.1);
     CHECK(count(fixture) == 0 && fixture.legacyCalls == 0 && [fixture.probe.diagnostics[@"round"] isEqual:@3]);
     fixture.wall = 3003.5; receive(fixture, message(3003)); CHECK(count(fixture) == 1);
     privateReport(fixture); [fixture stop];
@@ -233,8 +252,9 @@ static void checkReadbackCorrelationRejectsMismatch(void) {
     IntegerTimeWrap *settled = message(2102); settled.m_nsFromUsr = fixture.current;
     settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
     settled.m_n64MesSvrID = 9007199254740995ULL; fixture.manager.stored = settled;
-    fixture.wall = 2120; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
-    CHECK(count(fixture) == 1 && [last(fixture)[@"hookMessageOrdinal"] isEqual:@1]);
+    fixture.wall = 2120;
+    CHECK(waitForCondition(5, ^{ return count(fixture) == 1; }));
+    CHECK([last(fixture)[@"hookMessageOrdinal"] isEqual:@1]);
     [fixture stop];
     fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
     CHECK([fixture start]); fixture.wall = 2152.5;
@@ -245,8 +265,9 @@ static void checkReadbackCorrelationRejectsMismatch(void) {
     settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
     settled.m_n64MesSvrID = 9007199254740997ULL; fixture.manager.stored = settled;
     fixture.receiver.observeTimeHook = nil;
-    fixture.wall = 2170; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
-    CHECK(count(fixture) == 1 && last(fixture)[@"hookMessageOrdinal"] == NSNull.null);
+    fixture.wall = 2170;
+    CHECK(waitForCondition(5, ^{ return count(fixture) == 1; }));
+    CHECK(last(fixture)[@"hookMessageOrdinal"] == NSNull.null);
     [fixture stop];
     fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
     CHECK([fixture start]); fixture.wall = 2182.5;
@@ -259,8 +280,9 @@ static void checkReadbackCorrelationRejectsMismatch(void) {
     settled = message(2182); settled.m_nsFromUsr = fixture.current;
     settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
     settled.m_n64MesSvrID = 9007199254740998ULL; fixture.manager.stored = settled;
-    fixture.wall = 2200; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
-    CHECK(count(fixture) == 1 && last(fixture)[@"hookMessageOrdinal"] == NSNull.null);
+    fixture.wall = 2200;
+    CHECK(waitForCondition(5, ^{ return count(fixture) == 1; }));
+    CHECK(last(fixture)[@"hookMessageOrdinal"] == NSNull.null);
     [fixture stop];
 
     NSArray *mutations = @[
@@ -280,7 +302,7 @@ static void checkReadbackCorrelationRejectsMismatch(void) {
         settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
         settled.m_n64MesSvrID = 9007199254740996ULL; mutate(settled, fixture);
         fixture.manager.stored = settled; fixture.wall = 2220;
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
+        runMainLoopFor(1.1);
         CHECK(count(fixture) == 0);
         [fixture stop];
     }
