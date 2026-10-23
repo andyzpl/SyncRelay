@@ -3,7 +3,8 @@ NS_ASSUME_NONNULL_BEGIN
 /* Read-only, manually armed candidate. No send API and no guessed image path.
  * Diagnostics also expose a bounded numeric message-type probe and callback
  * sequence. Unknown codes are observed only; they are never normalized into a
- * relayable payload. */
+ * relayable payload. Selected type-49 callbacks may additionally produce a
+ * bounded, redacted appmsg structural summary; never an XML/media payload. */
 @interface SRWeChatReceiver : NSObject
 @property(nonatomic, copy, nullable) void (^trace)(NSString *event, NSDictionary *facts);
 /* Main-thread preparation: nil/no error means not ready; error stops this candidate.
@@ -14,6 +15,10 @@ NS_ASSUME_NONNULL_BEGIN
  * hook time and generation through local-ID/image waits, never preparation time.
  * Getter availability is not proof of real-host timestamp semantics. */
 @property(nonatomic, copy, nullable) void (^receivedWithTimeEvidence)(NSDictionary *message, NSDictionary *evidence);
+/* Opt-in supplemental hook metadata, before ID/content/type readiness filters.
+ * Main-thread delivery, at most 16 reservations per arm; no media reads.
+ * Set only after an explicit probe start, clear before stopping. */
+@property(nonatomic, copy, nullable) void (^observeTimeHook)(NSDictionary *observation);
 - (instancetype)initWithVersion:(NSString *)version classResolver:(Class _Nullable (^)(NSString *))resolver
                 currentAccount:(NSString * _Nullable (^)(void))currentAccount
                       received:(void (^)(NSDictionary *))received;

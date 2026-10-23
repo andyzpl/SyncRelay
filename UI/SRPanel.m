@@ -19,6 +19,7 @@
 #include <math.h>
 #import "Adapter/SRWeChatReader.h"
 #import "Adapter/SRWeChatReceiver.h"
+#import "Adapter/SRSourceTimeProbe.h"
 #import "Adapter/SRWeChatSendProbe.h"
 #import "Adapter/SRWeChatTextSendAdapter.h"
 #import "Adapter/SRWeChatTextSendHost.h"
@@ -155,6 +156,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRWeChatReader *reader;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
+@property(nonatomic, strong) SRSourceTimeProbe *sourceTimeProbe;
 @property(nonatomic, strong) SRWeChatImageSource *imageSource;
 @property(nonatomic, strong) SRWeChatImageSendProbe *imageSendProbe;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
@@ -197,7 +199,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         currentAccount:^NSString * { SRPanel *panel = weakSelf; return panel && [panel.reader connect:NULL] ? panel.reader.accountID : nil; }
         environmentAllowed:^BOOL {
             SRPanel *panel = weakSelf;
-            return panel && panel.singleTextSendEnabled && UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+            return panel && !panel.sourceTimeProbe.active && panel.singleTextSendEnabled && UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
         }
         operation:^(NSDictionary *request, SRSendCompletion completion) {
             SRPanel *panel = weakSelf;
@@ -240,6 +242,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         [self cancelTextExperiment];
         self.ready = NO; self.status = @"账号无法核对或已经改变，请重新读取。原账号的设置没有写入新账号。";
         self.singleTextSendEnabled = NO; [self.textSendAdapter reset];
+        [self.sourceTimeProbe stopForReason:SRSourceTimeProbeAccountInvalidated];
         [self.receiver stop]; [self.capture cancel];
     }
     [self refresh];
@@ -274,6 +277,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         [self cancelTextExperiment];
         self.ready = NO;
         self.singleTextSendEnabled = NO; [self.textSendAdapter reset];
+        [self.sourceTimeProbe stopForReason:SRSourceTimeProbeAccountInvalidated];
         [self.receiver stop]; [self.capture cancel];
         self.status = error.localizedDescription ?: @"请先重新读取账号";
         [self refresh]; SRAlert(self, @"操作已停止", self.status); return NO;
@@ -292,6 +296,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.tableView reloadData];
 }
 - (void)changed {
+    [self.sourceTimeProbe stopForReason:SRSourceTimeProbeConfigurationChanged];
     if (self.smallGroupSession.busy) [self.smallGroupSession pauseForAccount:self.account error:NULL];
     [self cancelTextExperiment];
     self.dirty = YES;
@@ -317,14 +322,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         [SRRuntimeLog.shared record:@"draft_save_failed" facts:@{@"errorCode": @(error.code)}];
         SRAlert(self, @"保存失败", error.localizedDescription); return;
     }
-    self.dirty = NO; [self refresh];
+    self.dirty = NO; [self.sourceTimeProbe tick]; [self refresh];
     [SRRuntimeLog.shared record:@"draft_saved" facts:[self diagnosticDraft]];
     SRAlert(self, @"已保存", @"下次打开会恢复该账号的统一转发条件、排除群和规则分组。保存不会创建发送任务。" );
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     section = SRPanelSection(section);
-    if (section == 0) return 9;
+    if (section == 0) return 10;
     if (section == 1) return 4;
     if (section == 2) return 1;
     if (section == 4) return 6;
@@ -377,6 +382,12 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             [toggle addTarget:self action:(image ? @selector(singleImageSendChanged:) : @selector(singleTextSendChanged:)) forControlEvents:UIControlEventValueChanged];
             cell.accessoryType = UITableViewCellAccessoryNone; cell.accessoryView = toggle; cell.selectionStyle = UITableViewCellSelectionStyleNone;
             cell.detailTextLabel.text = toggle.on ? @"已开启：仅允许一次、一个目标群" : @"默认关闭，需明确开启";
+        }
+        if (path.row == 9) {
+            NSDictionary *probe = self.sourceTimeProbe.diagnostics;
+            cell.textLabel.text = self.sourceTimeProbe.active ? @"停止来源时间采样" : @"来源时间只读采样（文字/图片元数据）";
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu/16 样本 · %@", (unsigned long)[probe[@"samples"] count],
+                self.sourceTimeProbe.active ? @"采样中" : @"不捕获、不发送"];
         }
     } else if (section == 1) {
         if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"未选择"; }
@@ -433,7 +444,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开启本次实验" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-        if (self.ownsIdleTimer) return;
+        if (self.ownsIdleTimer || self.sourceTimeProbe.active) return;
         [self cancelImageExperiment]; self.singleTextSendEnabled = YES; [self refresh];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -448,7 +459,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开启本次图片实验" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-        if (self.ownsIdleTimer) return;
+        if (self.ownsIdleTimer || self.sourceTimeProbe.active) return;
         [self cancelTextExperiment]; self.singleTextSendEnabled = NO; self.singleImageSendEnabled = YES; [self refresh];
     }]];
     SRPresentAlert(self, alert);
@@ -680,6 +691,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"storageReady"] = @(self.store != nil);
     report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
+    report[@"sourceTimeProbe"] = self.sourceTimeProbe.diagnostics ?: @{@"state": @"unavailable"};
     report[@"imageSource"] = self.imageSource.diagnostics ?: @{};
     report[@"imageSendPreparation"] = self.imageSendProbe.diagnostics ?: @{};
     report[@"sourceCapture"] = self.capture.diagnostics ?: @{@"state": @"unavailable"};
@@ -755,6 +767,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.navigationController pushViewController:viewer animated:YES];
 }
 - (void)beginSendProbe {
+    if (self.sourceTimeProbe.active) { SRAlert(self, @"请先停止来源时间采样", @"来源时间与发送观察分轮验证，不叠加监听或发送。"); return; }
     if (self.smallGroupSession.busy) { SRAlert(self, @"请先暂停并结束小群测试", @"只读观察与真实规则执行分开进行。"); return; }
     if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { [self.sendProbe stop]; return; }
     if (![self checkAccount]) return;
@@ -773,7 +786,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"开启观察（不代发）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             if (![panel checkAccount] || ![panel.account isEqual:account]) return;
-            if (panel.ownsIdleTimer || [panel.capture.status[@"state"] isEqual:@"waiting"]) { SRAlert(panel, @"先取消活动实验或源消息等待", @"本次观察未开启。"); return; }
+            if (panel.sourceTimeProbe.active || panel.ownsIdleTimer || [panel.capture.status[@"state"] isEqual:@"waiting"]) { SRAlert(panel, @"先取消活动实验或源消息等待", @"本次观察未开启。"); return; }
             NSError *failure = nil;
             if (![panel.sendProbe armForAccount:account targetGroup:group error:&failure]) SRAlert(panel, @"观察候选不可用", failure.localizedDescription);
         }]];
@@ -794,6 +807,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier], self.smallGroupSession) animated:YES];
 }
 - (BOOL)allowLegacyExperiment {
+    if (self.sourceTimeProbe.active) { SRAlert(self, @"请先停止来源时间采样", @"只读采样期间不开放发送实验。"); return NO; }
     if (!self.smallGroupSession.busy && !self.smallGroupSession.usedNativeHost) return YES;
     SRAlert(self, @"本次请使用小群规则测试", @"小群执行与旧单群实验互斥。请在内容计划中暂停、继续或结束；本进程用过小群发送后不再开启旧单群实验。"); return NO;
 }
@@ -984,6 +998,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }];
 }
 - (void)inspectImageSendContract {
+    if (self.sourceTimeProbe.active) { SRAlert(self, @"请先停止来源时间采样", @"只读时间采样不进入图片构造或资源准备链。"); return; }
     if (self.smallGroupSession.busy) { SRAlert(self, @"当前有小群批次", @"请先结束当前测试，再做独立接口检查。"); return; }
     if (![self checkAccount]) return;
     if (self.dirty || self.ownsIdleTimer || self.textCountdown || self.imageCountdown || [self.textSendHost.diagnostics[@"observing"] boolValue] ||
@@ -996,7 +1011,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"检查（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        if (![self checkAccount] || ![self.account isEqual:account] || self.dirty || self.ownsIdleTimer || self.textCountdown || self.imageCountdown ||
+        if (![self checkAccount] || ![self.account isEqual:account] || self.sourceTimeProbe.active || self.dirty || self.ownsIdleTimer || self.textCountdown || self.imageCountdown ||
             !self.viewIfLoaded.window || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
         NSError *error = nil;
         BOOL compatible = [self.imageSendProbe inspectForAccount:account error:&error];
@@ -1011,6 +1026,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]]; return alert;
 }
 - (void)beginCapture {
+    if (self.sourceTimeProbe.active) { SRAlert(self, @"请先停止来源时间采样", @"时间采样与源消息预览共用同一接收器，不能同时开始。"); return; }
     if (self.smallGroupSession.busy) { SRAlert(self, @"当前有小群批次", @"现有规则继续使用已经确认的源消息；请先完成或结束它，再等待新内容。"); return; }
     [SRRuntimeLog.shared record:@"capture_attempt" facts:[self diagnosticDraft]];
     if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { SRAlert(self, @"请先停止手动发送观察", @"两种诊断分开进行；停止观察不会发送或修改规则。"); return; }
@@ -1026,7 +1042,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群消息？" message:@"仅捕获所选 wxid 和类型，支持本人。图片需有服务器消息 ID 和可用图片资源，最多等待 30 秒。可能包含补同步，请核对实际预览；切后台取消等待。预览和确认都不会发送；确认后需到内容计划手动开始小群测试。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        if (![self checkDraft:snapshot account:account]) return;
+        if (![self checkDraft:snapshot account:account] || self.sourceTimeProbe.active) return;
         NSError *error = nil;
         if (![self.capture armForAccount:account configuration:snapshot error:&error]) {
             [SRRuntimeLog.shared record:@"capture_arm_failed" facts:@{@"errorCode": @(error.code)}];
@@ -1038,6 +1054,33 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         }
         [SRRuntimeLog.shared record:@"capture_started" facts:[self diagnosticDraft]];
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+    }]];
+    SRPresentAlert(self, alert);
+}
+- (void)toggleSourceTimeProbe {
+    if (self.sourceTimeProbe.active) {
+        [self.sourceTimeProbe stopForReason:SRSourceTimeProbeUserStopped]; [self refresh]; return;
+    }
+    if (![self checkAccount]) return;
+    if (self.dirty || self.ownsIdleTimer || self.singleTextSendEnabled || self.singleImageSendEnabled ||
+        self.smallGroupSession.busy || ![self.capture.status[@"state"] isEqual:@"idle"] ||
+        [self.sendProbe.diagnostics[@"armed"] boolValue] || [self.textSendHost.diagnostics[@"observing"] boolValue] ||
+        [self.imageSendHost.diagnostics[@"observing"] boolValue]) {
+        SRAlert(self, @"请先保存并结束捕获或发送实验", @"来源时间采样独立进行；已有预览、计划、进度不会被采样覆盖或删除。"); return;
+    }
+    if (![self.draft[@"types"] containsObject:@"text"]) { SRAlert(self, @"请先保存文字来源条件", @"文字交付采样要求保存文字类型；同一授权来源的图片只观察回调元数据，不准备资源，不代表阶段 A 已验收。"); return; }
+    NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"开始来源时间只读采样？"
+        message:@"使用已保存的母群和来源成员，最多 16 个文字交付回调或 120 秒，另限量观察 16 个文字/图片原始回调元数据。关闭本页后仍可采样，切后台/锁屏、账号或配置改变即停止，回前台不会自动重开。\n\n只保留创建时间、首次回调、实际 getter ABI 等脱敏证据，不生成预览/计划，不发送。新一轮替换上一轮样本，请先导出需要保留的运行诊断。\n\n图片不下载、不准备资源，资源就绪仍未观察；错误来源和其他类型不采样。字段存在、样本出现均不代表时间语义已验证。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"开始采样（不捕获、不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        if (![self checkDraft:snapshot account:account]) return;
+        NSError *error = nil;
+        if (![self.sourceTimeProbe startForAccount:account configuration:snapshot error:&error]) {
+            SRAlert(self, @"采样未开启", error.localizedDescription ?: @"采样入口不可用，请导出诊断。"); return;
+        }
+        [self refresh];
     }]];
     SRPresentAlert(self, alert);
 }
@@ -1053,6 +1096,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (path.row == 3) [self beginSendProbe];
         if (path.row == 5) [self showUsage];
         if (path.row == 6) [self exportDiagnosticFromController:self];
+        if (path.row == 9) [self toggleSourceTimeProbe];
         return;
     }
     if (![self checkAccount]) return;
@@ -1081,6 +1125,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) UIButton *button;
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
+@property(nonatomic, strong) SRSourceTimeProbe *sourceTimeProbe;
 @property(nonatomic, strong) SRWeChatImageSource *imageSource;
 @property(nonatomic, strong) SRWeChatImageSendProbe *imageSendProbe;
 @property(nonatomic, strong) SRWeChatSendProbe *sendProbe;
@@ -1121,6 +1166,16 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     self.imageSource = [[SRWeChatImageSource alloc] initWithClassResolver:^Class(NSString *name) { return NSClassFromString(name); }];
     self.identityReader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
     __weak typeof(self) weakSelf = self;
+    void (^received)(NSDictionary *) = ^(NSDictionary *message) {
+        SREntry *entry = weakSelf;
+        if ([entry.capture offerEnvelope:message]) {
+            [SRRuntimeLog.shared record:@"capture_accepted" facts:@{}];
+            [entry.receiver stop]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+        } else {
+            if ([message[@"type"] isEqual:@"image"]) [entry.store.imageAssets discardPayload:message[@"payload"]];
+            [SRRuntimeLog.shared record:@"capture_rejected" facts:@{@"reasonCode": entry.capture.diagnostics[@"lastReasonCode"] ?: @0}];
+        }
+    };
     self.receiver = [[SRWeChatReceiver alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
         currentAccount:^NSString * {
             SREntry *entry = weakSelf; if (!entry) return nil;
@@ -1131,16 +1186,31 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
                 [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
             }
             return current;
-        } received:^(NSDictionary *message) {
+        } received:received];
+    self.sourceTimeProbe = [[SRSourceTimeProbe alloc] initWithReceiver:self.receiver
+        classResolver:^Class(NSString *name) { return NSClassFromString(name); }
+        currentAccount:^NSString * {
             SREntry *entry = weakSelf;
-            if ([entry.capture offerEnvelope:message]) {
-                [SRRuntimeLog.shared record:@"capture_accepted" facts:@{}];
-                [entry.receiver stop]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
-            } else {
-                if ([message[@"type"] isEqual:@"image"]) [entry.store.imageAssets discardPayload:message[@"payload"]];
-                [SRRuntimeLog.shared record:@"capture_rejected" facts:@{@"reasonCode": entry.capture.diagnostics[@"lastReasonCode"] ?: @0}];
-            }
-        }];
+            return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
+        } configurationForAccount:^NSDictionary *(NSString *account) { return [weakSelf.store configurationForAccount:account error:NULL]; }
+        environmentAllowed:^BOOL {
+            SREntry *entry = weakSelf;
+            // Switching WeChat pages can transiently make the app inactive without
+            // entering background. Once armed, do not consult the settings panel:
+            // it may be dismissed or replaced while the host remains foreground.
+            if (!entry || UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return NO;
+            if (entry.sourceTimeProbe.active) return !entry.smallGroupSession.busy && [entry.capture.status[@"state"] isEqual:@"idle"] &&
+                ![entry.sendProbe.diagnostics[@"armed"] boolValue] && ![entry.textSendHost.diagnostics[@"observing"] boolValue] &&
+                ![entry.imageSendHost.diagnostics[@"observing"] boolValue];
+            SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
+            BOOL panelIdle = ![panel isKindOfClass:SRPanel.class] || (!panel.dirty && !panel.ownsIdleTimer &&
+                !panel.singleTextSendEnabled && !panel.singleImageSendEnabled && !panel.textCountdown && !panel.imageCountdown);
+            return panelIdle && !entry.smallGroupSession.busy && [entry.capture.status[@"state"] isEqual:@"idle"] &&
+                ![entry.sendProbe.diagnostics[@"armed"] boolValue] && ![entry.textSendHost.diagnostics[@"observing"] boolValue] &&
+                ![entry.imageSendHost.diagnostics[@"observing"] boolValue];
+        } monotonicClock:^double { return NSProcessInfo.processInfo.systemUptime; }
+        wallClock:^NSTimeInterval { return NSDate.date.timeIntervalSince1970; } legacyReceived:received
+        changed:^{ [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; }];
     self.receiver.prepareImage = ^NSDictionary *(id wrap, NSDictionary *source, NSError **error) {
         SREntry *entry = weakSelf; if (!entry) return nil;
         UIImage *image = [entry.imageSource imageForWrap:wrap error:error];
@@ -1176,7 +1246,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
-            return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+            return entry && !entry.sourceTimeProbe.active && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
                 ![entry.imageSendHost.diagnostics[@"attemptConsumed"] boolValue];
@@ -1189,7 +1259,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
             SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
-            return entry && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled &&
+            return entry && !entry.sourceTimeProbe.active && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled &&
                 !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 panel.viewIfLoaded.window && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !panel.dirty && ![entry.capture.status[@"state"] isEqual:@"waiting"] &&
@@ -1204,7 +1274,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
-            return entry && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+            return entry && !entry.sourceTimeProbe.active && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !entry.smallGroupSession.busy &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
                 ![entry.textSendHost.diagnostics[@"observing"] boolValue] && ![entry.imageSendHost.diagnostics[@"observing"] boolValue];
@@ -1216,7 +1286,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         SREntry *entry = weakSelf;
         SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
         BOOL panelIdle = ![panel isKindOfClass:SRPanel.class] || (!panel.dirty && !panel.ownsIdleTimer && !panel.textCountdown && !panel.imageCountdown);
-        return entry && panelIdle && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+        return entry && !entry.sourceTimeProbe.active && panelIdle && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
             ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
             ![entry.textSendHost.diagnostics[@"submissionAttempted"] boolValue] && ![entry.imageSendHost.diagnostics[@"attemptConsumed"] boolValue];
     } targetAllowed:^BOOL(NSString *target) {
@@ -1241,6 +1311,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     dispatch_resume(self.smallGroupTimer);
 }
 - (void)updateSmallGroupState {
+    [self.sourceTimeProbe tick];
     [self.smallGroupSession tick];
     BOOL hold = self.smallGroupSession.needsIdleTimer;
     if (hold && !self.smallGroupOwnsIdleTimer) {
@@ -1332,7 +1403,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     while (presenter.presentedViewController) presenter = presenter.presentedViewController;
     if (!presenter || presenter.isBeingDismissed || presenter.isBeingPresented || [presenter isKindOfClass:UIAlertController.class]) return;
     SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleGrouped]; panel.store = self.store;
-    panel.capture = self.capture; panel.receiver = self.receiver;
+    panel.capture = self.capture; panel.receiver = self.receiver; panel.sourceTimeProbe = self.sourceTimeProbe;
     panel.imageSource = self.imageSource;
     panel.imageSendProbe = self.imageSendProbe;
     panel.sendProbe = self.sendProbe;
@@ -1361,6 +1432,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.sendProbe cancelForInactivity];
     [self.textSendHost stopObservation];
     [self.imageSendHost stopObservation];
+    // UIApplicationWillResignActive also fires for transient page/system
+    // transitions. Do not tear down the read-only source observer here; the
+    // background notification is the actual stop boundary. Manual capture and
+    // send observation remain stopped by their existing lifecycle paths.
+    [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+}
+- (void)enteredBackground:(__unused NSNotification *)notification {
+    [self.sourceTimeProbe stopForReason:SRSourceTimeProbeInactive];
     [self.receiver stop];
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) [self.capture cancel];
     [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
@@ -1389,5 +1468,6 @@ void SRInstallPanelEntry(SRStore *store) {
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SRRelayStateChangedNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(windowChanged:) name:SREntryPreferencesChangedNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(resigningActive:) name:UIApplicationWillResignActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:entry selector:@selector(enteredBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
     [entry install];
 }
