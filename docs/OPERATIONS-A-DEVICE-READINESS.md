@@ -119,16 +119,17 @@ hook 字段集 H：`hookSamples[].ordinal/messageOrdinal/round/receiverGeneratio
 批次与取证规则（`.3` 安装后执行；不要与旧 `.2` 报告混算）：
 
 - 先做“基线门禁”批次：确认包身份、`storageReady=1`、`schemaVersion=14`、账号可读、发送关闭、图片读取 0、手动捕获 idle。失败立即停止，不进入采样。
-- 再做“页面切换”批次：同一轮切页前 A、返回后 B，使用 `--pair A B`；这是唯一允许把 A/B 作为页面切换成对证据的入口。
-- 再做“离线/停止”批次：同一轮 active A、明确手动停止 B，使用 `--stop-pair A B`；离线旧/新消息必须都在同一轮，不能用不同 round 拼接。
+- 再做“页面切换”批次：同一轮切页前 A、返回后 B，使用 `py -3 tools/diagnose_report.py --pair A B`；这是唯一允许把 A/B 作为页面切换成对证据的入口。
+- 再做“离线/停止”批次：同一轮 active A、明确手动停止 B，使用 `py -3 tools/diagnose_report.py --stop-pair A B`；离线旧/新消息必须都在同一轮，不能用不同 round 拼接。
 - 再做“本人 local-ID”批次：单独一轮，只测试本人合成文字；保留 `hookMessageOrdinal`、`messageOrdinal`、round、generation、时间关系及安全字段。没有 early local hook 时记“不足”，不制造第二条消息或轮询。
 - 图片只做“早期元数据”批次：不点图、不请求原图、不启动手动捕获、不准备/下载媒体；`imageReads` 变化或 `imageReadinessObserved=true` 即停止并判安全失败。资源就绪仍未覆盖，不能用缩略图人工可见替代。
 - 每个批次导出后先保留原始脱敏 JSON，再用对应分析命令；输出通过码与失败码一起保存。任何 `database_schema_invalid`、样本丢失/变化、receiver 未按预期 arm/disarm、图片读取变化或发送开启都停止后续批次。
 - 所有样本上限、120 秒时长、16 个 hook 预留和停止/重开清空规则不变；不要为了凑样本延长一轮或把不同 round 的数组拼在一起。
+- 诊断导出会包含插件运行状态与脱敏采样字段；对外只提供 P/T/H/S 所需字段和操作记录，不粘贴正文、wxid、群名、原始 local/server ID 或完整日志。若报告出现这些私有值，停止并保留本地原件，不把它上传公开仓库。
 
 | 项目 | 操作顺序 | 导出字段 | 通过/失败/不足标准 |
 | --- | --- | --- | --- |
-| 1 他人实时文字与实际 ABI | 开始 → 关面板 → 等至少 2 秒 → 选定成员手动发 2–3 条合成文字，记录例如 3 秒/5 秒间隔 → 停止导出 | P+T+H+S | 实际 getter 编码兼容，创建值增量与已知间隔/单位一致，`receivedAt` 保留原方法前时间；假设秒单位时创建时间晚于边界、不晚于首次回调。缺字段/样本不足为不足；时间指向错误、单位矛盾为失败。不单凭位数认定 epoch 秒 |
+| 1 他人实时文字与实际 ABI | 开始 → 关面板 → 等至少 2 秒 → 选定成员手动发 2–3 条合成文字，记录例如 3 秒/5 秒间隔 → 停止导出 | P+T+H+S | 实际 getter 编码兼容，创建值增量与已知间隔/单位一致，`receivedAt` 保留原方法前时间；假设秒单位时创建时间晚于边界、不晚于首次回调。缺字段/样本不足为不足；时间指向错误、单位矛盾为失败。不单凭位数认定 epoch 秒。同一来源组内只算一次有限通过，不把 8.0.76/8.0.79 或不同账号的样本混算 |
 | 2 本人早期与后续回调 | 新轮 → 等 2 秒 → 本人手动发合成文字 → 停止导出；观察自然出现 early hook，不额外制造或轮询 | P+T+H+S，重点 `path/serverIDPresent/correlationScope/hookMessageOrdinal` | 若出现无 server ID 的 H，应保留早期原值；最终 T 不得用 ID 就绪时刻代替首次观察。通过需同一 round/generation、本人 type 1、早期 H 为 `correlationScope=local` 且 getter 可读、T 为 `after_boundary` 且严格策略接受，并且 T 的 `hookMessageOrdinal` 与该 H 的 `messageOrdinal` 相同；分析器应给出 `source_time_self_local_id_readback_correlated`，不得同时给出 `source_time_self_local_id_correlation_incomplete`。当前设备上的 `.2` 不导出 `hookMessageOrdinal`，必须先完成新候选构建与安装授权；旧报告只能记“证据不足/关联入口不足” |
 | 3 他人离线旧文字 | 路由器/另一设备断测试机网络，微信保持前台 → 他人在断网期间发合成文字，记时 → 等至少 2 秒后开始采样 → 外部恢复网络 → 等待旧/新回调 → **采样仍 active 时先导出 A** → 停止采样 → 导出 B；A/B 必须同一合法 round，A 的 receiver 必须明确 `armed=true`，B 必须明确 `armed=false` 且 generation 已前移 | P+T+H+S、断网/发消息/开始/恢复的顺序；用 `py -3 tools/diagnose_report.py --stop-pair A B` 核对同轮保留 | 旧消息 `older_than_boundary` 且严格策略拒绝，新消息 `after_boundary` 且严格策略接受；`--stop-pair` 必须只输出 `source_time_same_round_samples_retained_after_stop`，即同 round、A/B 的 arm 状态和 generation 变化符合停止流程、B 保留 A 的样本、capture idle、图片读取不变、发送关闭。`1023011`（第 5 轮）与 `1023012`（第 6 轮）已被分析器拒绝为不同 round；同一轮停止保留仍需 `.3` 新 A/B 证明。 |
 | 4 图片首次时间与离线旧图 | 他人与本人各一轮；实时图为开始后等 2 秒再发；旧图按第 3 项在开始前发送，再恢复网络；不点图、不请求原图、不启动捕获 | P+H+S，重点 type 3、原时间、实际 ABI、`imageReads` | **实时图片早期 hook 已有限通过（1023013，`.2`）**：type 3、实际 getter、server ID 与边界可观察，且无图片读取。离线旧图、资源就绪/可预览/可派发仍未覆盖；`.3` 尚未取得同项证据，不能用旧结果冒充。 |
