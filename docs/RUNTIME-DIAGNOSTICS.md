@@ -24,6 +24,8 @@
 
 先看 `build` 和 `reportSchema`，再看 `draftSummary`、`sourceCapture`、`receiveCandidate.counters`，最后结合 `runtimeLog.events` 时间线。不能仅凭一次回调计数就判断版本兼容或发送成功。
 
+`schemaVersion` 只在 `SRStore` 构造、迁移事务完成且外键复核通过后读回，表示当前 `PRAGMA user_version`。`storageReady=true` 但字段缺失时解析器输出 `database_schema_unverified`；字段为 `null`、非整数或不是 14 时输出 `database_schema_invalid`。`storageReady=false` 时字段应为 `null`，此时只保留 `storage_unavailable`，不重复归因数据库版本。该字段不记录迁移前版本，不证明旧行保留、迁移原子性或回滚行为。
+
 | 证据 | 可确定的情况 | 后续动作 |
 | --- | --- | --- |
 | `capture_arm_failed.errorCode = 14` | 缺少来源成员 | 更换母群后重新勾选本人或指定成员并保存 |

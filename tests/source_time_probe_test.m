@@ -33,8 +33,12 @@
 @property(nonatomic) NSUInteger originalCalls;
 @property(nonatomic, copy) void (^duringOriginal)(void);
 @property(nonatomic) BOOL throws;
+@property(nonatomic, strong) TimeProbeWrap *stored;
+@property(nonatomic, copy) NSString *lookupGroup;
+@property(nonatomic) unsigned int lookupLocalID;
 - (void)AsyncOnAddMsg:(id)session MsgWrap:(id)wrap;
 - (void)AddMsg:(id)session MsgWrap:(id)wrap;
+- (id)GetMsg:(NSString *)group LocalID:(unsigned int)localID;
 @end
 @implementation TimeProbeManager
 - (void)AsyncOnAddMsg:(__unused id)session MsgWrap:(__unused id)wrap {
@@ -43,6 +47,9 @@
     if (self.throws) @throw @"private original exception";
 }
 - (void)AddMsg:(id)session MsgWrap:(id)wrap { [self AsyncOnAddMsg:session MsgWrap:wrap]; }
+- (id)GetMsg:(NSString *)group LocalID:(unsigned int)localID {
+    self.lookupGroup = group; self.lookupLocalID = localID; return self.stored;
+}
 @end
 
 @interface TimeProbeFixture : NSObject
@@ -187,11 +194,16 @@ static void checkOwnAndGeneration(void) {
     IntegerTimeWrap *own = message(2002); own.m_nsFromUsr = fixture.current;
     own.m_nsToUsr = @"private_source@chatroom"; own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
     [fixture.manager AddMsg:@"private_source@chatroom" MsgWrap:own]; pump(); CHECK(count(fixture) == 0);
-    own.m_n64MesSvrID = 9007199254740994ULL; fixture.wall = 2020;
+    IntegerTimeWrap *settled = message(2002); settled.m_nsFromUsr = fixture.current;
+    settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
+    settled.m_n64MesSvrID = 9007199254740994ULL;
+    fixture.manager.stored = settled; fixture.wall = 2020;
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
     CHECK(count(fixture) == 1 && [last(fixture)[@"selfSource"] boolValue]);
     CHECK([last(fixture)[@"createdAt"] isEqual:@2002] && [last(fixture)[@"receivedAt"] isEqual:@2002.5]);
     CHECK([last(fixture)[@"deliveredAt"] isEqual:@2020]);
+    CHECK([last(fixture)[@"hookMessageOrdinal"] isEqual:@1]);
+    CHECK([fixture.manager.lookupGroup isEqual:@"private_source@chatroom"] && fixture.manager.lookupLocalID == 42);
     NSDictionary *oldEvidence = @{@"schema": @1, @"generation": last(fixture)[@"receiverGeneration"],
         @"createdAt": @2002, @"receivedAt": @2002.5, @"listeningSince": @2000.5};
     [fixture.probe stopForReason:SRSourceTimeProbeUserStopped];
@@ -207,6 +219,71 @@ static void checkOwnAndGeneration(void) {
     CHECK(count(fixture) == 0 && fixture.legacyCalls == 0 && [fixture.probe.diagnostics[@"round"] isEqual:@3]);
     fixture.wall = 3003.5; receive(fixture, message(3003)); CHECK(count(fixture) == 1);
     privateReport(fixture); [fixture stop];
+}
+
+static void checkReadbackCorrelationRejectsMismatch(void) {
+    // Exact local ID, account, group, type and body must all still match.
+    TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+    CHECK([fixture start]); fixture.wall = 2102.5;
+    IntegerTimeWrap *own = message(2102); own.m_nsFromUsr = fixture.current;
+    own.m_nsToUsr = @"private_source@chatroom"; own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
+    [fixture.manager AddMsg:@"private_source@chatroom" MsgWrap:own]; pump();
+    NSDictionary *hook = [fixture.probe.diagnostics[@"hookSamples"] lastObject];
+    CHECK([hook[@"messageOrdinal"] isEqual:@1] && [hook[@"correlationScope"] isEqual:@"local"]);
+    IntegerTimeWrap *settled = message(2102); settled.m_nsFromUsr = fixture.current;
+    settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
+    settled.m_n64MesSvrID = 9007199254740995ULL; fixture.manager.stored = settled;
+    fixture.wall = 2120; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
+    CHECK(count(fixture) == 1 && [last(fixture)[@"hookMessageOrdinal"] isEqual:@1]);
+    [fixture stop];
+    fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+    CHECK([fixture start]); fixture.wall = 2152.5;
+    own = message(2152); own.m_nsFromUsr = fixture.current;
+    own.m_nsToUsr = @"private_source@chatroom"; own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
+    [fixture.manager AddMsg:@"private_source@chatroom" MsgWrap:own]; pump();
+    settled = message(2152); settled.m_nsFromUsr = fixture.current;
+    settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
+    settled.m_n64MesSvrID = 9007199254740997ULL; fixture.manager.stored = settled;
+    fixture.receiver.observeTimeHook = nil;
+    fixture.wall = 2170; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
+    CHECK(count(fixture) == 1 && last(fixture)[@"hookMessageOrdinal"] == NSNull.null);
+    [fixture stop];
+    fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+    CHECK([fixture start]); fixture.wall = 2182.5;
+    own = message(2182); own.m_nsFromUsr = fixture.current;
+    own.m_nsToUsr = @"private_source@chatroom"; own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
+    // Remove the early hook first: a local ID alone must not invent an ordinal.
+    fixture.receiver.observeTimeHook = nil;
+    [fixture.manager AddMsg:@"private_source@chatroom" MsgWrap:own]; pump();
+    CHECK([fixture.probe.diagnostics[@"hookSamples"] count] == 0);
+    settled = message(2182); settled.m_nsFromUsr = fixture.current;
+    settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
+    settled.m_n64MesSvrID = 9007199254740998ULL; fixture.manager.stored = settled;
+    fixture.wall = 2200; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
+    CHECK(count(fixture) == 1 && last(fixture)[@"hookMessageOrdinal"] == NSNull.null);
+    [fixture stop];
+
+    NSArray *mutations = @[
+        ^(IntegerTimeWrap *stored, __unused TimeProbeFixture *fixture) { stored.m_uiMesLocalID = 99; },
+        ^(IntegerTimeWrap *stored, __unused TimeProbeFixture *fixture) { stored.m_nsToUsr = @"wrong@chatroom"; },
+        ^(IntegerTimeWrap *stored, __unused TimeProbeFixture *fixture) { stored.m_nsFromUsr = @"wxid_wrong"; },
+        ^(IntegerTimeWrap *stored, __unused TimeProbeFixture *fixture) { stored.m_uiMessageType = 3; },
+        ^(IntegerTimeWrap *stored, __unused TimeProbeFixture *fixture) { stored.m_nsContent = @"different body"; },
+    ];
+    for (void (^mutate)(IntegerTimeWrap *, TimeProbeFixture *) in mutations) {
+        fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+        CHECK([fixture start]); fixture.wall = 2202.5;
+        own = message(2202); own.m_nsFromUsr = fixture.current;
+        own.m_nsToUsr = @"private_source@chatroom"; own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
+        [fixture.manager AddMsg:@"private_source@chatroom" MsgWrap:own]; pump();
+        settled = message(2202); settled.m_nsFromUsr = fixture.current;
+        settled.m_nsToUsr = @"private_source@chatroom"; settled.m_nsRealChatUsr = nil;
+        settled.m_n64MesSvrID = 9007199254740996ULL; mutate(settled, fixture);
+        fixture.manager.stored = settled; fixture.wall = 2220;
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.1, false);
+        CHECK(count(fixture) == 0);
+        [fixture stop];
+    }
 }
 
 static void checkMetadataAndClocks(void) {
@@ -379,7 +456,8 @@ static void checkSupplementalHooks(void) {
 
 int main(void) {
     @autoreleasepool {
-        checkObservation(); checkOwnAndGeneration(); checkBoundsAndInvalidation(); checkCapabilityAndFaults(); checkMetadataAndClocks(); checkReentrantRestart(); checkSupplementalHooks();
+        checkObservation(); checkOwnAndGeneration(); checkReadbackCorrelationRejectsMismatch();
+        checkBoundsAndInvalidation(); checkCapabilityAndFaults(); checkMetadataAndClocks(); checkReentrantRestart(); checkSupplementalHooks();
         puts("PASS: read-only source-time text probe, original chain, frozen evidence, bounded rounds, identity invalidation, no image preparation and legacy capture routing");
     }
     return 0;

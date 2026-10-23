@@ -19,6 +19,15 @@ class SourceTimeProbeContracts(unittest.TestCase):
         self.assertIn('textOnly[@"types"] = @[@"text"]', source)
         self.assertIn('newMessagesOnly:NO', source)
 
+    def test_receiver_can_observe_early_image_metadata_without_preparation(self):
+        source = (ROOT / 'Adapter/SRWeChatReceiver.m').read_text(encoding='utf-8')
+        observe = source.split('- (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {',
+                               1)[1].split('- (void)observeMessageType:', 1)[0]
+        early = observe.index('if (![self allowsSender:sender type:type]) return;')
+        image_branch = observe.index('if ([type isEqual:@3]) {')
+        self.assertLess(early, image_branch)
+        self.assertNotIn('probeHookType', observe)
+
     def test_evidence_is_bounded_unverified_and_explicitly_partial(self):
         source = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
         self.assertIn('SRSampleLimit = 16', source)
@@ -45,6 +54,24 @@ class SourceTimeProbeContracts(unittest.TestCase):
         self.assertIn('self.round != round', raw)
         self.assertNotIn('@"serverID":', raw)
         self.assertNotIn('@"localID":', raw)
+        self.assertNotIn('@"correlationLocalID":', raw)
+
+    def test_local_id_correlation_is_exact_in_memory_and_never_exported(self):
+        receiver = (ROOT / 'Adapter/SRWeChatReceiver.m').read_text(encoding='utf-8')
+        readback = receiver.split('- (void)pollOutgoing:', 1)[1].split('- (BOOL)imageWrap:', 1)[0]
+        self.assertIn('correlated[@"correlationLocalID"] = pending.localID;', readback)
+        self.assertIn('self.counters[@"time_hook_reserved"]', readback)
+        self.assertLess(readback.index('ownWrap:stored matchesPending:'),
+                        readback.index('correlated[@"correlationLocalID"]'))
+        self.assertLess(readback.index('acceptsTimeEvidence:pending.timeEvidence'),
+                        readback.index('correlated[@"correlationLocalID"]'))
+        probe = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
+        consumer = probe.split('- (void)receiveMessage:', 1)[1].split('- (void)receiveTimeHook:', 1)[0]
+        self.assertIn('@"hookMessageOrdinal":', consumer)
+        diagnostics = probe.split('- (NSDictionary *)diagnostics', 1)[1]
+        for key in ('localID', 'serverID', 'correlationLocalID'):
+            self.assertNotIn(f'@"{key}":', diagnostics)
+        self.assertNotIn('correlatedLocalIDs', diagnostics)
 
     def test_sampling_is_entry_owned_and_gates_production_dispatch(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')

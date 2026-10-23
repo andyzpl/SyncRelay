@@ -633,6 +633,9 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
     NSNumber *serverID = SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL);
     [self observeMessageType:type];
     if ([type isEqual:@49]) [self observeAppMessageWrap:wrap sender:sender from:from to:to timeEvidence:evidence generation:generation];
+    // The source-time probe has already consumed bounded text/image metadata
+    // in the original hook path. Delivery remains restricted to the normal
+    // filters; early type-3 callbacks without a server ID cannot prepare media.
     if (![self allowsSender:sender type:type]) return;
     if (!serverID.unsignedLongLongValue) { [self note:@"receive_no_server_id"]; return; }
     if (![self acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
@@ -809,6 +812,16 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
                 if (![self acceptsTimeEvidence:pending.timeEvidence wrap:stored generation:generation]) {
                     self.pendingOutgoing = nil; self.ownTextState = @"conflict"; [self note:@"own_conflict"]; return;
                 }
+                // Keep the exact local ID in-process so the source-time probe can
+                // correlate this settled readback with its earlier anonymous hook.
+                // It is never written to diagnostics.
+                NSMutableDictionary *correlated = [pending.timeEvidence mutableCopy];
+                @synchronized(self) {
+                    if (self.armed && self.generation == generation && self.observeTimeHook &&
+                        self.counters[@"time_hook_reserved"])
+                        correlated[@"correlationLocalID"] = pending.localID;
+                }
+                pending.timeEvidence = correlated;
                 wrap = stored;
             }
         }

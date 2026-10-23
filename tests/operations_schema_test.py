@@ -90,6 +90,7 @@ class OperationsSchemaTests(unittest.TestCase):
     def test_schema_14_guard_version_and_tables_agree(self):
         self.assertIn('version >= 0 && version <= 14', STORE)
         self.assertIn('if (version < 14) {', STORE)
+        self.assertIn('self.schemaVersion = [row[@"user_version"] integerValue];', STORE)
         self.assertEqual(['PRAGMA user_version=14'],
                          [sql for sql in statements(STORE) if sql.startswith('PRAGMA user_version=')])
         additive_migration(self.db)

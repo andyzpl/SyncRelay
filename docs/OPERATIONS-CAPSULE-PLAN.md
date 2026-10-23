@@ -1,6 +1,6 @@
 # 运营胶囊与系统联动开发计划
 
-状态：开发基线 v2（第 12–14 节按各自优先规则适用）；2026-10-23 schema 14 的只读采样候选 `0.2.27+aprobe.1` 已经单次 CI 通过 160 项 Python、71 次原生模拟执行、arm64/arm64e 普通 DEB 构建及下载后核验，提交 `45c468418e08`、run `39815504152`。设备已加载该精确包并完成第 3 轮停止快照：他人 receive 回调含 server ID、创建时间与回调边界自洽，实际 getter 编码 `I`，本人 receive/outgoing 的无 ID 早期回调也被观察到；该有限文字/ABI观察通过，但不等于来源时间语义认证。后续手动等待捕获已由 `1023005` 确认取消并恢复 idle，尚无离线同步或本人 server ID 延迟证据。另发现现有候选在切换微信页面的 inactive 过渡中会误停采样，已在本地修复，待 `0.2.27+aprobe.2` 原生构建后复测。图片资源仍未验收；A 未整体验收，B/C 不开放。旧 schema 11 的 `timeprobe.1` 不用于验证当前库。设备诊断和下一步见 `OPERATIONS-A-DEVICE-READINESS.md`，包证据见 `BUILD-0.2.27-aprobe.1.md`。下面历史批次不覆盖本状态。
+状态：开发基线 v2（第 12–14 节按各自优先规则适用）；2026-10-23 schema 14 的只读采样修复候选 `0.2.27+aprobe.2` 已经单次 CI 通过 160 项 Python、原生模拟/生产双架构构建及普通 DEB 下载核验，提交 `51803d43fe068d16c462cea0729264a26cf5f2f5`、run `39920510733`。设备现已加载 `.2` 并导出八份报告：本人、他人各 3 条实时文字样本；第 5、6 轮各自观察到旧消息 `older_than_boundary/strict=0` 与新消息 `after_boundary/strict=1`，但两轮不是同一轮前后快照，同一轮停止后保留仍未证明；图片轮观察到 1 条 type 3 早期 hook，实际 getter `I`、server ID 和边界自洽，且无图片读取；最新本人轮仅观察到正常有 server ID 的回调，延迟补 ID 仍不足。页面切换仅有有限支持证据，图片资源就绪仍无证据，A 未整体验收，B/C 不开放。本地已恢复探针配置为文字-only，并新增独立的同轮 `--stop-pair` 分析入口；该入口现已收紧为只接受合法同 round、前快照 receiver 明确 armed、后快照 `state=stopped` 且 receiver 明确 disarmed、generation 前移，后台/环境阻塞/到限等其他终止状态均判非手动停止，并补齐反例测试。页面切换 `--pair` 也要求合法同 round、合法 receiver generation、两边都明确 armed，并拒绝样本丢失/变化、图片读取变化和发送开启；同样补齐反例测试。同轮比较现已覆盖 `hookMessageOrdinal/deliveredAt/deliveryClockRollback/relationship/strictPolicyWouldAccept`，避免只保留部分字段。本人延迟关联新增进程内 exact local ID 映射及 `hookMessageOrdinal` 导出；分析器要求同一 round/generation、本人 type 1、早期 local hook、getter 可读、after-boundary/严格接受，匹配不完整单独报 `source_time_self_local_id_correlation_incomplete`。新增原生模拟用例覆盖精确关联及错 ID/群/账号/类型/正文、hook 缺失。本地已补只读 `schemaVersion` 诊断及对应 SQLite/源码守卫；最新全量 Python **179 项通过**（分析器 44、probe 契约 9、运营 schema 17、原生构建契约 9），`py_compile` 通过。Objective-C 新用例尚未编译/链接/执行，这些源码改动尚未重新打包或真机验证。`.2` 不含 `hookMessageOrdinal` 或 `schemaVersion`，不能复用历史设备报告充当本人延迟关联或设备 schema 证据。旧 schema 11 的 `timeprobe.1` 不用于验证当前库。设备诊断和下一步见 `OPERATIONS-A-DEVICE-READINESS.md`，`.2` 包证据见 `BUILD-0.2.27-aprobe.2.md`。下面历史批次不覆盖本状态。
 
 **最新定稿：2026-10-22 用户要求将后续讨论全部写入计划。第 12 节为 v2 增补，冲突时优先于第 1–11 节及旧文档。新增范围尚未实现，不改变阶段 A 的既有实现/验收状态。新开发会话继续工作前必须完整阅读第 12 节。**
 
@@ -140,12 +140,30 @@ v2 范围覆盖提示：上一段关于新群分配、主动重发的延期已�
 
 | 阶段 | 工作 | 验收门槛 | 状态 |
 | --- | --- | --- | --- |
-| A 联动模型 | 单一状态源、迁移与账号隔离、捕获/发送恢复差异；补齐 pending、取消、重发批次、人工排除撤销授权及备份原子恢复契约 | 无 UI 完整循环与兼容测试；来源时间方案可验证；各事务边界明确 | 进行中：schema 14；设备已完成一轮停止快照，有限文字/ABI观察通过（他人实时文字、实际 getter、receiver 停止保留样本），但本人延迟、离线同步/图片就绪和完整时间语义未验收，未证明设备库迁移，不用 schema 11 旧包代测。当前设备步骤见 OPERATIONS-A-DEVICE-READINESS.md |
+| A 联动模型 | 单一状态源、迁移与账号隔离、捕获/发送恢复差异；补齐 pending、取消、重发批次、人工排除撤销授权及备份原子恢复契约 | 无 UI 完整循环与兼容测试；来源时间方案可验证；各事务边界明确 | 进行中：schema 14；八份设备报告已取得实时文字、实际 getter、图片早期元数据、后台停止等有限证据；但页面切换缺同轮 A/B、离线缺同轮停止前后快照、本人延迟补 ID、图片资源就绪和完整时间语义未验收，未证明设备库迁移，不用 schema 11 旧包代测。当前设备步骤见 OPERATIONS-A-DEVICE-READINESS.md |
 | B 常驻胶囊及三页面 | 唯一入口、三页面固定结构、短胶囊三形态、菜单、拖动/收纳、完整日期、暂停/取消交互及异常优先级 | 空闲/运行/暂停/完成可找；页面关闭不影响业务；手机触控/键盘/视频号验证；未就绪动作不可用 | 待开发 |
 | C 运营闭环与 v2 模块 | 自动捕获、唯一源与去重；新群按开关自动入组；人工排除撤销授权；明确重发；免密码备份恢复及两个导入入口适配 | 各模块先测试再联调；目标级去重、重发幂等、排除/claim 顺序、基线漏读、导入限额/回滚/不清 claims 通过 | 待开发，不再按旧范围排除重发、新群或备份 |
 | D 联合恢复与交付 | 完整生命周期/旧版升级回归；验收后退出测试入口及旧设置球，保留原生设置和诊断 | 第 10 节及 12.10 新增矩阵通过；普通 DEB 核验；10–20 群真机反馈，无重复发送 | 待开发 |
 
 阶段 B 可先打一个仅常驻胶囊的验证包；必须明确 C 尚未开放，不为实现总开关而提前暴露半成品自动捕获。阶段 C/D 才验证完整运营流程。日常只测试，达到真机检查点再显式启用 build_deb。
+
+### 阶段 A 阻塞项与证据状态（2026-10-23）
+
+本表只列阻止 A 整体验收的当前门槛；已经取得有限设备证据的项目不再重复审计，除非新样本推翻原结论。
+
+| 门槛 | 当前证据 | 可用入口 | 下一次设备动作 | 未满足时结论 |
+| --- | --- | --- | --- | --- |
+| 同一轮离线旧/新文字与停止后保留 | `1023011` 有旧 `older_than_boundary/strict=0` 与新 `after_boundary/strict=1`，但仍是 sampling；`1023012` 是不同 round，不能配对 | 已有 `.2`：开始、采样中导出 A、停止、导出 B；`--stop-pair A B` | 保持微信前台，断网期间由他人发合成文字，记时后开始采样，恢复网络，active 导出 A，停止导出 B；A/B 必须同 round，A armed、B disarmed 且 generation 前移 | 证据不足；不得把第 5/6 轮拼成通过 |
+| 页面切换生命周期 | `1023007` 仅证明关闭面板后仍 sampling；无切页前/后成对快照 | 已有 `.2`：微信内设置/聊天列表/来源群切换，不切系统后台；`--pair A B` | active 时导出 A，切页返回后仍 active 导出 B；同 round、generation 不变、两边 armed、A 的样本前缀保留；B 可新增样本但不得据此外推图片就绪 | 证据不足；`1023007` 不能单独通过 |
+| 本人早期无 server ID 到后续有 ID | 第 3 轮曾见 receive local ID + outgoing 无 ID，但无可靠后续补 ID 关联；`10231` 只有正常有 ID 回调。本地已补“精确回读 local ID → 匿名 hook ordinal”关联和反例测试，但未编译、未打包、未真机 | 本地新代码；`.2` 没有 `hookMessageOrdinal`，不能复用其报告 | 新候选安装后新轮本人发合成文字并导出；要求同一 round/generation、早期 H 为本人 type 1/local scope/getter 可读、T 为 after-boundary/严格接受且 `hookMessageOrdinal` 与 H 的 `messageOrdinal` 相同；分析器只给关联通过且不报 incomplete | 当前仍证据不足；只有新包真机同一消息完整匹配才可通过，不能把不同 scope 回调拼接 |
+| 实际对象 ABI 完整覆盖 | 多轮文字/图片早期 hook 均见 `actualGetterEncoding=I`，但仅覆盖已选中来源的有限回调 | 已有 `.2` 的 hook 字段；不新增 hook | 继续用已有入口覆盖文字/图片方向与自然历史回调；记录 getter 为 missing/incompatible 的样本 | 有限通过不等于完整 ABI |
+| 图片资源就绪/可预览/可派发 | `1023013` 只有 type 3 早期元数据，`imageReads=0`；没有被动就绪证据 | **缺安全被动入口**；不得调用主动 getter、轮询、下载或准备资源 | 本轮不执行；先找已证实的被动通知/只读状态 ABI，否则保持未覆盖 | 阻塞完整 A；不能用早期 hook 代替 |
+| 设备 schema 迁移与旧行保留 | `.2` 报告 `storageReady=1`，但没有 `user_version` 或迁移前后证据；启动还会执行 `recoverInterruptedRuns` 状态收尾 | 本地已实现只读 `schemaVersion`，但尚未编译、打包或真机验证；`.2` 不导出该字段 | 新候选首次导出须确认 `storageReady=1 && schemaVersion=14`；字段缺失、null 或非 14 时停止该项并保全报告，不据此改库或降级；该字段仍不证明迁移前版本、旧行保留或原子性 | 当前证据不足；不得把 storageReady 或当前版本 14 写成迁移验收 |
+| 到限、停止后晚回调、自然重复/同秒/配置失效 | 后台停止有 `1023010`；停止保存有单轮结果；其余未覆盖或仅有模拟 | 已有 `.2` 的部分入口；自然事件不可强造 | 按设备清单分轮执行，空样本记不足；不修改系统时间 | 未覆盖项保持未覆盖 |
+
+下一次候选的源码边界（本地核对，未构建）：以 `.2` 的精确 48 文件 manifest 为基线，当前工作区有 31 个文件字节一致、17 个文件不同。差异中 11 个是工程/测试文件：`Core/SRStore.h`、`Core/SRStore.m`、`Adapter/SRWeChatReceiver.m`、`Adapter/SRSourceTimeProbe.m`、`UI/SRPanel.m`、`tests/automatic_progress_test.m`、`tests/source_time_probe_test.m`、`tests/operations_schema_test.py`、`tests/native_build_contract_test.py`、`tests/source_time_probe_contract_test.py`、`tools/diagnose_report.py`；其余 6 个是文档，其中两份本轮计划文档也因本次记录更新而不同。另有 `tests/store_test.m` 未列入旧 manifest，必须重新生成当前 manifest；不能用 `.2` 的旧摘要证明这些字节。建议候选名 `0.2.28+aprobe.3`，schema 保持 14、迁移 SQL 与发送核心不变；本地尚未编译、打包或真机验证。
+
+图片资源就绪、设备迁移证据和完整时间语义是 A 的实质阻塞；消息库派发、视频、B 界面和 C 模块仍不在本轮范围，不能因设备清单完成而提前开放。
 
 以下首批至第十二批保留当时的证据状态；最新 macOS 执行证据以本节末尾的原生验收记录及 OPERATIONS-A-NATIVE-VALIDATION.md 为准，不把旧“待执行”当成当前仍未执行。
 
@@ -178,6 +196,8 @@ v2 范围覆盖提示：上一段关于新群分配、主动重发的延期已�
 2026-10-22 来源时间专项工程准备（文字子集）：新增 SRSourceTimeProbe，由全局 SREntry 复用同一个 receiver，设置页仅提供明确开始/停止和既有诊断导出；默认关闭，每轮 16 样本/120 秒，关闭页面可继续，后台/锁屏停止且不自动重开。采样仅选择文字，不进入图片准备链；保留原 hook 创建整数/首次观察/监听边界和匿名关联顺序，不生成预览、内容、计划、run 或 claim，不调用发送。与捕获、预览和发送/接口实验互斥，账号/配置失效清空样本；普通捕获回调及发送核心保持原路径。报告明确实际 wrap ABI、图片资源和提前过滤回调未覆盖，来源语义认证仍为 false。首轮采样原生回归通过后，另补同步停止通知内重开时的轮次围栏，避免模拟回拨产生相同边界时旧消费栈混入新轮。最新 102 项本地 Python、C 状态/间隔和 arm64/arm64e 98 单元语法检查通过；新增代码的精确快照已单独提交/推送到 `codex/operations-source-time-probe-20261022` 并以 `build_deb=false` 验证，结果见 OPERATIONS-A-NATIVE-VALIDATION.md。不纳入并行类型文件、不改 main/真实暂存区、不升版本或打包；A/B/C/D 的未验收门槛及 v2 新增范围不变。
 
 该批最终原生结果：最新精确提交 `91b310d84129aa42ce2ea292ca5d846f0a5200c0` 的 [39727441563](https://github.com/andyzpl/SyncRelay/actions/runs/39727441563) 为 success；19 个 Objective-C 程序实际编译/链接并各执行三轮（含同步通知重开用例），92 项隔离快照 Python 与两个 C 程序通过。工作区/隔离快照均通过双架构 98 单元语法检查，源码散列一致；并行类型文件、HEAD 和真实暂存区未变。五个打包/上传步骤跳过、产物为 0。文字子集已到可准备阶段包的工程检查点，但完整来源时间矩阵仍缺图片/逐对象 ABI 入口及全部真机证据，A 不标整体验收通过。
+
+2026-10-23 本人延迟关联后续本地检查点：receiver 在现有精确 `GetMsg:LocalID:` 回读成功、账号/群/类型/正文及时间证据复核通过后，将 exact local ID 暂存于本轮进程内关联表；probe 将早期 hook 的匿名 `messageOrdinal` 写入交付文字样本的 `hookMessageOrdinal`，原始 ID 不进入诊断，停止/重开即清空。若早期 hook 缺失、ID/群/账号/类型/正文任一不匹配，或 hook 已被移除，则不建立关联。分析器只接受同一 round/generation、本人 type 1、早期 local scope/getter 可读、交付 after-boundary/严格接受，输出 `source_time_self_local_id_readback_correlated`；带 ordinal 但不完整输出 `source_time_self_local_id_correlation_incomplete`。同轮 `--pair`/`--stop-pair` 的样本前缀比较补入 `hookMessageOrdinal/deliveredAt/deliveryClockRollback/relationship/strictPolicyWouldAccept`。本轮在该检查点后补充 `schemaVersion`，最终全量 Python 179 项通过（分析器 44、probe 契约 9）；Objective-C 用例新增但未实际编译/链接/执行；未提交、推送、触发 CI、构建、安装或迁移。`.2` 不含 `hookMessageOrdinal`，其历史报告不能作为本人延迟关联通过。
 
 2026-10-22 文字来源时间专项阶段包：用户继续后，独立分支 `codex/operations-source-time-device-20261022` 以提交 `c9be95413384e30416abdc356505295a947ac9df` 构建 `0.2.21+timeprobe.1`，不占用并行类型版本线。相对已通过的采样源码仅改隔离版本及包范围说明，不改生产逻辑；[39730283085](https://github.com/andyzpl/SyncRelay/actions/runs/39730283085) 以一次 `build_deb=true` 成功，19 个 Objective-C 程序各三轮、92 项 Python、两个 C 程序和精确快照双架构 98 单元语法检查通过。普通 DEB 已下载，SHA-256、control/载荷、arm64/arm64e、两架构内嵌提交/run/版本与文字采样入口均核验，详见 BUILD-SOURCE-TIME-0.2.21-timeprobe.1.md。不是 RootHide 转换包；与现有插件共用包 ID，安装前核对当前版本和 schema，不直接覆盖未知的 0.2.24 或更新包、不清数据降级。并行类型文件、工作区 main/真实暂存区不变，未安装或取得真机结果。当前进入的仅是文字子集采样节点；图片/逐对象 ABI/提前过滤事件及实际宿主语义门槛不变，A 不标整体验收，B/C/D 与第 12 节新增范围保持原阶段。
 

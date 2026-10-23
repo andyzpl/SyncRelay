@@ -1,8 +1,8 @@
 Package: andyz.syncrelay
 Name: SyncRelay (Development)
-Version: 0.2.27+aprobe.2
+Version: 0.2.28+aprobe.3
 Architecture: iphoneos-arm
-Description: Stage A source-time observation checkpoint, explicit opt-in; delivered text and bounded text/image hook metadata only. Schema 14. No media preparation, probe sending, automatic capture or operations UI. Legacy manual sending remains outside the probe. Device behavior and image readiness are unverified.
+Description: Stage A source-time observation checkpoint, explicit opt-in; delivered text and bounded text/image hook metadata only. Adds read-only schemaVersion and anonymous self local-ID correlation. Schema 14. No media preparation, probe sending, automatic capture or operations UI. Legacy manual sending remains outside the probe. Device behavior and image readiness are unverified.
 Maintainer: andyz
 Author: andyz
 Section: Tweaks

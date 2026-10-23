@@ -17,6 +17,7 @@ int main(void) {
         NSError *error = nil;
         SRStore *store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store && !error);
+        assert(store.schemaVersion == 14);
         assert(![[store operationsEnabledForAccount:@"account" error:&error] boolValue]);
         assert(![store setOperationsEnabled:YES account:@"account" error:NULL]);
         assert(![store setOperationsEnabled:YES account:@"" error:NULL]);
@@ -142,6 +143,7 @@ int main(void) {
         assert(sqlite3_close(legacy) == SQLITE_OK);
         store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store);
+        assert(store.schemaVersion == 14);
         assert(count([store summaryForRun:run error:&error], @"confirmed") == 2000);
         assert([store saveConfiguration:[SRConfiguration emptyDraft] account:@"account" error:&error]);
         store = nil;

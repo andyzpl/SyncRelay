@@ -47,6 +47,23 @@ class NativeBuildContracts(unittest.TestCase):
         self.assertTrue(any(line.strip() == '"$RUNNER_TEMP/library-test"'
                             for line in workflow.splitlines()))
 
+    def test_store_reports_the_current_schema_only_after_validation(self):
+        store = (ROOT / 'Core/SRStore.m').read_text(encoding='utf-8')
+        setup = store.split('__block NSInteger version = 0;', 1)[1].split('id setup =', 1)[1] \
+            .split('if (!setup) return nil;', 1)[0]
+        enforced = store.split('id enforced = [self perform:^id{', 1)[1] \
+            .split('if (!migrated || !enforced) return nil;', 1)[0]
+        self.assertIn('version >= 0 && version <= 14', setup)
+        self.assertLess(setup.index('version >= 0 && version <= 14'),
+                        setup.index('PRAGMA foreign_keys=OFF'))
+        self.assertIn('PRAGMA user_version', enforced)
+        self.assertIn('[row[@"user_version"] integerValue] == 14', enforced)
+        self.assertLess(enforced.index('[row[@"user_version"] integerValue] == 14'),
+                        enforced.index('self.schemaVersion ='))
+        self.assertNotIn('PRAGMA user_version=', enforced)
+        header = (ROOT / 'Core/SRStore.h').read_text(encoding='utf-8')
+        self.assertIn('@property(nonatomic, readonly) NSInteger schemaVersion;', header)
+
     def test_library_task_target_links_store_assets_and_runs(self):
         workflow = (ROOT / '.github/workflows/build.yml').read_text(encoding='utf-8')
         commands = [shlex.split(line.strip()) for line in workflow.splitlines()

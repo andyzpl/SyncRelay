@@ -1,6 +1,7 @@
 """Offline triage of a redacted SyncRelay report. Never imports or executes report data."""
 import argparse
 import json
+import math
 from pathlib import Path
 
 
@@ -20,8 +21,22 @@ def analyze(report):
     capture = report.get('sourceCapture', {})
     if not all(isinstance(value, dict) for value in (draft, receiver, capture)):
         return [{'code': 'invalid_report', 'message': 'Diagnostic sections are not objects.'}]
-    if not report.get('storageReady'):
+    storage_ready = report.get('storageReady')
+    if not storage_ready:
         add('storage_unavailable', 'Storage is unavailable; capture and rules are disabled.')
+    database_schema = report.get('schemaVersion', ...)
+    # Older reports did not include this field. Keep that absence distinct from
+    # an explicitly reported, incompatible version. When storage failed, null
+    # is the expected version value and storage_unavailable already covers it.
+    if storage_ready and database_schema is ...:
+        add('database_schema_unverified',
+            'The report does not include a database schema version; do not use it as schema evidence.')
+    elif storage_ready and (type(database_schema) is not int or database_schema != 14):
+        add('database_schema_invalid',
+            'The database schema is not the expected schema 14; do not migrate, downgrade or delete data from this report.')
+    elif not storage_ready and database_schema is not ... and database_schema is not None:
+        add('database_schema_invalid',
+            'Storage is unavailable but the report claims a database schema; do not migrate, downgrade or delete data from this report.')
     if not draft.get('sourceSelected'):
         add('missing_source', 'Select a source group.')
     if not draft.get('senderCount'):
@@ -114,6 +129,175 @@ def analyze(report):
         add('no_callback_observed', 'Waiting is armed, but neither candidate hook has been observed; this is not a compatibility verdict.')
     if capture.get('state') == 'preview':
         add('preview_ready', 'One source is frozen for preview. Preview alone does not submit a message.')
+    probe = report.get('sourceTimeProbe')
+    if probe is not None:
+        if not isinstance(probe, dict):
+            add('source_time_probe_invalid', 'The source-time probe section is not an object.')
+        elif type(probe.get('schema')) is not int or probe['schema'] != 1:
+            add('source_time_probe_schema_invalid', 'The source-time probe uses an unsupported schema.')
+        else:
+            probe_states = {'off', 'sampling', 'stopped', 'inactive', 'configuration_changed',
+                            'account_invalidated', 'environment_blocked', 'receiver_stopped',
+                            'clock_invalid', 'time_limit', 'sample_limit', 'context_unavailable'}
+            relationships = {'older_than_boundary', 'after_boundary', 'same_second',
+                             'future_or_different_units', 'missing_or_invalid',
+                             'receive_clock_rollback'}
+            getter_encodings = {'i', 'I', 'q', 'Q', 'l', 'L', 'missing', 'incompatible'}
+            scope_values = {'server', 'local', 'none'}
+            active = flag(probe.get('active'))
+            state = probe.get('state')
+            if active is None or not isinstance(state, str) or state not in probe_states:
+                add('source_time_probe_lifecycle_invalid', 'The source-time probe lifecycle fields are malformed.')
+            elif active and state != 'sampling':
+                add('source_time_probe_lifecycle_invalid', 'An active source-time probe is not in the sampling state.')
+            elif not active and state == 'sampling':
+                add('source_time_probe_lifecycle_invalid', 'A non-active source-time probe still reports sampling.')
+            if flag(probe.get('observerOnly')) is not True or flag(probe.get('sendingEnabled')) is not False:
+                add('source_time_probe_scope_invalid',
+                    'The source-time probe is not marked observer-only with sending disabled.')
+            for key in ('sourceTimeSemanticsVerified', 'imageReadinessObserved'):
+                if flag(probe.get(key)) is not False:
+                    add('source_time_probe_capability_invalid',
+                        'A source-time capability is marked verified without the required device evidence.')
+
+            samples = probe.get('samples')
+            hooks = probe.get('hookSamples')
+            if not isinstance(samples, list) or len(samples) > 16:
+                add('source_time_probe_samples_invalid', 'Text samples are missing or exceed the bounded limit.')
+                samples = []
+            if not isinstance(hooks, list) or len(hooks) > 16:
+                add('source_time_probe_hooks_invalid', 'Hook samples are missing or exceed the bounded limit.')
+                hooks = []
+
+            valid_samples = []
+            for sample in samples:
+                valid = isinstance(sample, dict)
+                if valid:
+                    ordinal, message_ordinal = sample.get('ordinal'), sample.get('messageOrdinal')
+                    valid = (type(ordinal) is int and 1 <= ordinal <= 16 and
+                             (message_ordinal is None or (type(message_ordinal) is int and message_ordinal >= 1)) and
+                             (sample.get('hookMessageOrdinal') is None or
+                              (type(sample.get('hookMessageOrdinal')) is int and
+                               1 <= sample['hookMessageOrdinal'] <= 16)) and
+                             type(sample.get('round')) is int and sample['round'] >= 0 and
+                             type(sample.get('receiverGeneration')) is int and sample['receiverGeneration'] >= 0 and
+                             flag(sample.get('selfSource')) is not None and
+                             (sample.get('createdAt') is None or
+                              (type(sample.get('createdAt')) in (int, float) and
+                               math.isfinite(sample['createdAt']))) and
+                             all(type(sample.get(key)) in (int, float) and math.isfinite(sample[key]) and sample[key] > 0
+                                 for key in ('receivedAt', 'listeningSince', 'deliveredAt')) and
+                             flag(sample.get('deliveryClockRollback')) is not None and
+                             sample.get('relationship') in relationships and
+                             flag(sample.get('strictPolicyWouldAccept')) is not None)
+                if valid:
+                    valid_samples.append(sample)
+                else:
+                    add('source_time_probe_samples_invalid', 'A text sample is malformed or outside its fixed schema.')
+
+            valid_hooks = []
+            for hook in hooks:
+                valid = isinstance(hook, dict)
+                if valid:
+                    ordinal, message_ordinal = hook.get('ordinal'), hook.get('messageOrdinal')
+                    valid = (type(ordinal) is int and 1 <= ordinal <= 16 and
+                             (message_ordinal is None or (type(message_ordinal) is int and message_ordinal >= 1)) and
+                             type(hook.get('round')) is int and hook['round'] >= 0 and
+                             type(hook.get('receiverGeneration')) is int and hook['receiverGeneration'] >= 0 and
+                             hook.get('messageType') in (1, 3) and
+                             flag(hook.get('selfSource')) is not None and
+                             hook.get('path') in ('receive', 'outgoing') and
+                             flag(hook.get('serverIDPresent')) is not None and
+                             hook.get('correlationScope') in scope_values and
+                             hook.get('actualGetterEncoding') in getter_encodings and
+                             (hook.get('createdAt') is None or
+                              (type(hook.get('createdAt')) in (int, float) and
+                               math.isfinite(hook['createdAt']))) and
+                             all(type(hook.get(key)) in (int, float) and math.isfinite(hook[key]) and hook[key] > 0
+                                 for key in ('receivedAt', 'listeningSince')))
+                if valid:
+                    valid_hooks.append(hook)
+                else:
+                    add('source_time_probe_hooks_invalid', 'A hook sample is malformed or outside its fixed schema.')
+
+            observed_abi = flag(probe.get('actualWrapABIObserved'))
+            observed_prefilter = flag(probe.get('prefilteredCallbacksObserved'))
+            if observed_abi is None or observed_prefilter is None:
+                add('source_time_probe_capability_invalid',
+                    'The source-time observation flags are missing or malformed.')
+            elif bool(valid_hooks) != observed_abi or bool(valid_hooks) != observed_prefilter:
+                add('source_time_probe_capability_invalid',
+                    'The source-time observation flags do not match the bounded hook samples.')
+
+            if active:
+                add('source_time_sampling_active',
+                    'Sampling is active in this snapshot; this alone does not prove page-switch persistence.')
+            if valid_samples:
+                add('source_time_text_samples_observed',
+                    'Bounded text evidence is present; relationship values are local observations, not host-semantic verification.')
+                if any(sample.get('relationship') == 'older_than_boundary' for sample in valid_samples):
+                    add('source_time_older_than_boundary_observed',
+                        'At least one text sample predates the listening boundary; inspect the strict policy flag rather than treating arrival time as creation time.')
+                if any(sample.get('relationship') == 'after_boundary' for sample in valid_samples):
+                    add('source_time_after_boundary_observed',
+                        'At least one text sample follows the listening boundary; this is evidence, not proof of the host clock unit.')
+                if any(sample.get('relationship') == 'same_second' for sample in valid_samples):
+                    add('source_time_same_second_observed',
+                        'At least one text sample shares the boundary second; the strict policy result remains authoritative for this local run.')
+                if any(sample.get('relationship') == 'future_or_different_units' for sample in valid_samples):
+                    add('source_time_future_or_unit_mismatch_observed',
+                        'A text creation value is ahead of the first callback; do not infer a clock unit or accept the source.')
+                if any(sample.get('relationship') == 'missing_or_invalid' for sample in valid_samples):
+                    add('source_time_missing_created_at_observed',
+                        'A text sample has no valid creation value; do not substitute callback time.')
+                if not active:
+                    add('source_time_samples_retained_after_stop',
+                        'The report retains bounded samples after sampling stopped; this is retention evidence, not a new callback.')
+            matched = set()
+            if valid_hooks:
+                add('source_time_hook_metadata_observed',
+                    'Bounded pre-readiness hook metadata is present; this is not complete ABI or source-time verification.')
+                if any(hook.get('messageType') == 3 for hook in valid_hooks):
+                    add('source_time_image_metadata_observed',
+                        'A type-3 early callback was observed; image resource readiness is still not established.')
+                if any(flag(hook.get('selfSource')) is True and flag(hook.get('serverIDPresent')) is False
+                       for hook in valid_hooks):
+                    add('source_time_self_without_server_id_observed',
+                        'A self-source hook lacked a server ID; a later server-ID transition must be observed separately.')
+                for sample in valid_samples:
+                    ordinal = sample.get('hookMessageOrdinal')
+                    if not (type(ordinal) is int and flag(sample.get('selfSource')) is True and
+                            sample.get('relationship') == 'after_boundary' and
+                            flag(sample.get('strictPolicyWouldAccept')) is True and
+                            sample.get('createdAt') is not None):
+                        continue
+                    for hook in valid_hooks:
+                        if (hook.get('messageOrdinal') == ordinal and hook.get('round') == sample.get('round') and
+                                hook.get('receiverGeneration') == sample.get('receiverGeneration') and
+                                hook.get('messageType') == 1 and flag(hook.get('selfSource')) is True and
+                                hook.get('path') in ('receive', 'outgoing') and
+                                hook.get('correlationScope') == 'local' and
+                                flag(hook.get('serverIDPresent')) is False and
+                                hook.get('actualGetterEncoding') != 'missing' and
+                                hook.get('actualGetterEncoding') != 'incompatible'):
+                            matched.add(ordinal)
+                if matched:
+                    add('source_time_self_local_id_readback_correlated',
+                        'A self-source text delivery was correlated to its earlier local-ID hook by the '
+                        'same in-process ID and anonymous ordinal. The delivery has a valid after-boundary '
+                        'creation time and strict acceptance; this is correlation evidence, not complete '
+                        'host-semantic certification.')
+            delivered_ordinals = {sample.get('hookMessageOrdinal') for sample in valid_samples
+                                  if flag(sample.get('selfSource')) is True and
+                                  type(sample.get('hookMessageOrdinal')) is int}
+            if delivered_ordinals - matched:
+                add('source_time_self_local_id_correlation_incomplete',
+                    'A self-source delivery carried a hook ordinal but no complete matching local-ID '
+                    'hook with the required round, generation, type, getter and boundary evidence.')
+            if valid_hooks and any(hook.get('messageType') == 3 for hook in valid_hooks) and \
+                    flag(probe.get('imageReadinessObserved')) is not True:
+                add('source_time_image_readiness_unobserved',
+                    'Image metadata was observed, but the passive image-readiness evidence is absent.')
     appmsg = receiver.get('appMessageProbe')
     if appmsg is not None:
         failure_states = {'empty_content', 'content_unavailable', 'too_large', 'too_complex',
@@ -413,17 +597,265 @@ def analyze(report):
     return result
 
 
+def compare_source_time_snapshots(before, after):
+    """Compare two bounded snapshots from the same active source-time round."""
+    result = []
+
+    def add(code, message):
+        result.append({'code': code, 'message': message})
+
+    def flag(value):
+        return bool(value) if type(value) in (bool, int) and value in (0, 1) else None
+
+    def snapshot(report):
+        if not isinstance(report, dict) or report.get('reportSchema') != 1:
+            return None, None
+        probe = report.get('sourceTimeProbe')
+        receiver = report.get('receiveCandidate')
+        if not isinstance(probe, dict) or probe.get('schema') != 1 or not isinstance(receiver, dict):
+            return None, None
+        return probe, receiver
+
+    before_probe, before_receiver = snapshot(before)
+    after_probe, after_receiver = snapshot(after)
+    if before_probe is None or after_probe is None:
+        add('source_time_pair_invalid', 'Both snapshots must contain a schema-1 source-time probe.')
+        return result
+    for label, probe in (('before', before_probe), ('after', after_probe)):
+        if flag(probe.get('active')) is not True or probe.get('state') != 'sampling':
+            add('source_time_pair_not_active', f'The {label} snapshot is not an active sampling snapshot.')
+    before_round = before_probe.get('round')
+    after_round = after_probe.get('round')
+    if type(before_round) is not int or before_round < 0 or type(after_round) is not int or after_round < 0:
+        add('source_time_pair_round_invalid',
+            'The sampling round is missing or malformed in one of the snapshots.')
+    elif before_round != after_round:
+        add('source_time_pair_round_changed', 'The snapshots do not belong to the same sampling round.')
+    before_generation = before_receiver.get('receiverGeneration')
+    after_generation = after_receiver.get('receiverGeneration')
+    if type(before_generation) is not int or before_generation < 0 or \
+            type(after_generation) is not int or after_generation < 0:
+        add('source_time_pair_generation_invalid',
+            'The receiver generation is missing or malformed in one of the snapshots.')
+    elif before_generation != after_generation:
+        add('source_time_pair_generation_changed', 'The receiver generation changed between snapshots.')
+    if flag(before_receiver.get('armed')) is not True or flag(after_receiver.get('armed')) is not True:
+        add('source_time_pair_receiver_not_armed', 'The receiver was not armed in both snapshots.')
+    before_counters = before_receiver.get('counters', {})
+    after_counters = after_receiver.get('counters', {})
+    if not isinstance(before_counters, dict):
+        before_counters = {}
+    if not isinstance(after_counters, dict):
+        after_counters = {}
+    before_stops = before_counters.get('receiver_stopped', 0)
+    after_stops = after_counters.get('receiver_stopped', 0)
+    if type(before_stops) is not int or type(after_stops) is not int or after_stops > before_stops:
+        add('source_time_pair_receiver_stopped', 'A receiver stop occurred between the paired snapshots.')
+    if before_probe.get('state') == 'environment_blocked' or after_probe.get('state') == 'environment_blocked':
+        add('source_time_pair_environment_blocked', 'An environment-blocked state appears in the pair.')
+    before_samples = before_probe.get('samples')
+    after_samples = after_probe.get('samples')
+    before_hooks = before_probe.get('hookSamples')
+    after_hooks = after_probe.get('hookSamples')
+    if not all(isinstance(value, list) for value in (before_samples, after_samples, before_hooks, after_hooks)):
+        add('source_time_pair_samples_invalid', 'The paired sample arrays are malformed.')
+    else:
+        if len(after_samples) < len(before_samples) or len(after_hooks) < len(before_hooks):
+            add('source_time_pair_samples_lost', 'A later snapshot contains fewer bounded samples than the earlier one.')
+        # The diagnostics arrays are rebuilt from internal copies. Compare the
+        # bounded evidence fields, not private IDs or dictionary ordering.
+        stable_keys = ('ordinal', 'messageOrdinal', 'hookMessageOrdinal', 'round', 'receiverGeneration',
+                       'selfSource', 'createdAt', 'receivedAt', 'listeningSince', 'deliveredAt',
+                       'deliveryClockRollback', 'relationship', 'strictPolicyWouldAccept')
+        hook_keys = stable_keys + ('messageType', 'path', 'serverIDPresent', 'correlationScope',
+                                   'actualGetterEncoding')
+
+        def stable(rows, keys):
+            return [{key: row.get(key) for key in keys} for row in rows if isinstance(row, dict)]
+
+        if stable(after_samples[:len(before_samples)], stable_keys) != stable(before_samples, stable_keys) or \
+                stable(after_hooks[:len(before_hooks)], hook_keys) != stable(before_hooks, hook_keys):
+            add('source_time_pair_samples_changed', 'The earlier bounded samples were not retained in the later snapshot.')
+    before_capture = before.get('sourceCapture', {}) if isinstance(before, dict) else {}
+    after_capture = after.get('sourceCapture', {}) if isinstance(after, dict) else {}
+    if not isinstance(before_capture, dict) or not isinstance(after_capture, dict) or \
+            before_capture.get('state') != 'idle' or after_capture.get('state') != 'idle':
+        add('source_time_pair_capture_not_idle', 'Manual capture is not idle in both snapshots.')
+    before_image = before.get('imageSource', {}) if isinstance(before, dict) else {}
+    after_image = after.get('imageSource', {}) if isinstance(after, dict) else {}
+    before_candidate = before.get('receiveCandidate', {}) if isinstance(before, dict) else {}
+    after_candidate = after.get('receiveCandidate', {}) if isinstance(after, dict) else {}
+    image_read_counts = (
+        before_image.get('reads') if isinstance(before_image, dict) else None,
+        after_image.get('reads') if isinstance(after_image, dict) else None,
+        before_candidate.get('imageReads') if isinstance(before_candidate, dict) else None,
+        after_candidate.get('imageReads') if isinstance(after_candidate, dict) else None,
+    )
+    if not all(type(value) is int and value >= 0 for value in image_read_counts) or \
+            before_image.get('reads') != after_image.get('reads') or \
+            before_candidate.get('imageReads') != after_candidate.get('imageReads'):
+        add('source_time_pair_image_reads_changed', 'Image-source reads changed during the paired observation.')
+    before_sending = flag(before.get('sendingEnabled'))
+    after_sending = flag(after.get('sendingEnabled'))
+    if before_sending is not False or after_sending is not False:
+        add('source_time_pair_sending_not_disabled', 'Sending must be explicitly disabled in both snapshots.')
+    if not result:
+        add('source_time_page_switch_pair_consistent',
+            'Both snapshots remain active in the same round with no receiver stop, environment block, sample loss, capture, image read, or send activity. This is local lifecycle evidence, not host-semantic certification.')
+    return result
+
+
+def compare_source_time_stop_snapshots(before, after):
+    """Compare an active snapshot with the later stopped snapshot of the same round."""
+    result = []
+
+    def add(code, message):
+        result.append({'code': code, 'message': message})
+
+    def flag(value):
+        return bool(value) if type(value) in (bool, int) and value in (0, 1) else None
+
+    def snapshot(report):
+        if not isinstance(report, dict) or report.get('reportSchema') != 1:
+            return None, None
+        probe = report.get('sourceTimeProbe')
+        receiver = report.get('receiveCandidate')
+        if not isinstance(probe, dict) or probe.get('schema') != 1 or not isinstance(receiver, dict):
+            return None, None
+        return probe, receiver
+
+    before_probe, before_receiver = snapshot(before)
+    after_probe, after_receiver = snapshot(after)
+    if before_probe is None or after_probe is None:
+        add('source_time_stop_pair_invalid', 'Both snapshots must contain a schema-1 source-time probe.')
+        return result
+    if flag(before_probe.get('active')) is not True or before_probe.get('state') != 'sampling':
+        add('source_time_stop_pair_before_not_active', 'The before snapshot is not active sampling.')
+    stopped_states = {'stopped', 'inactive', 'configuration_changed', 'account_invalidated',
+                      'environment_blocked', 'receiver_stopped', 'clock_invalid',
+                      'time_limit', 'sample_limit', 'context_unavailable'}
+    after_state = after_probe.get('state')
+    if flag(after_probe.get('active')) is not False or after_state not in stopped_states:
+        add('source_time_stop_pair_after_not_stopped',
+            'The after snapshot is not a recognized stopped or inactive state.')
+    elif after_state != 'stopped':
+        add('source_time_stop_pair_after_not_manual_stop',
+            'The after snapshot did not end through the explicit manual stop action.')
+    before_round = before_probe.get('round')
+    after_round = after_probe.get('round')
+    if type(before_round) is not int or before_round < 0 or type(after_round) is not int or after_round < 0:
+        add('source_time_stop_pair_round_invalid',
+            'The sampling round is missing or malformed in one of the snapshots.')
+    elif before_round != after_round:
+        add('source_time_stop_pair_round_changed',
+            'The snapshots do not belong to the same sampling round.')
+    before_armed = flag(before_receiver.get('armed'))
+    after_armed = flag(after_receiver.get('armed'))
+    if before_armed is not True:
+        add('source_time_stop_pair_before_receiver_not_armed',
+            'The receiver was not explicitly armed in the active snapshot.')
+    if after_armed is not False:
+        add('source_time_stop_pair_receiver_still_armed',
+            'The receiver is not explicitly disarmed in the stopped snapshot.')
+    before_generation = before_receiver.get('receiverGeneration')
+    after_generation = after_receiver.get('receiverGeneration')
+    if type(before_generation) is not int or before_generation < 0 or \
+            type(after_generation) is not int or after_generation < 0:
+        add('source_time_stop_pair_generation_invalid',
+            'The receiver generation is missing or malformed in one of the snapshots.')
+    elif after_generation <= before_generation:
+        add('source_time_stop_pair_generation_not_advanced',
+            'The receiver generation did not advance after the active snapshot.')
+    if before_probe.get('listeningSince') is not None or after_probe.get('listeningSince') is not None:
+        add('source_time_stop_pair_invalid',
+            'Probe-level listeningSince is not part of the fixed report schema.')
+
+    before_samples = before_probe.get('samples')
+    after_samples = after_probe.get('samples')
+    before_hooks = before_probe.get('hookSamples')
+    after_hooks = after_probe.get('hookSamples')
+    if not all(isinstance(value, list) for value in (before_samples, after_samples, before_hooks, after_hooks)):
+        add('source_time_stop_pair_samples_invalid', 'The paired sample arrays are malformed.')
+    else:
+        if len(after_samples) < len(before_samples) or len(after_hooks) < len(before_hooks):
+            add('source_time_stop_pair_samples_lost',
+                'The stopped snapshot contains fewer bounded samples than the active one.')
+        stable_keys = ('ordinal', 'messageOrdinal', 'hookMessageOrdinal', 'round', 'receiverGeneration',
+                       'selfSource', 'createdAt', 'receivedAt', 'listeningSince', 'deliveredAt',
+                       'deliveryClockRollback', 'relationship', 'strictPolicyWouldAccept')
+        hook_keys = stable_keys + ('messageType', 'path', 'serverIDPresent', 'correlationScope',
+                                   'actualGetterEncoding')
+
+        def stable(rows, keys):
+            return [{key: row.get(key) for key in keys} for row in rows if isinstance(row, dict)]
+
+        if stable(after_samples[:len(before_samples)], stable_keys) != stable(before_samples, stable_keys) or \
+                stable(after_hooks[:len(before_hooks)], hook_keys) != stable(before_hooks, hook_keys):
+            add('source_time_stop_pair_samples_changed',
+                'The stopped snapshot did not retain the earlier bounded samples unchanged.')
+
+    before_capture = before.get('sourceCapture', {}) if isinstance(before, dict) else {}
+    after_capture = after.get('sourceCapture', {}) if isinstance(after, dict) else {}
+    if not isinstance(before_capture, dict) or not isinstance(after_capture, dict) or \
+            before_capture.get('state') != 'idle' or after_capture.get('state') != 'idle':
+        add('source_time_stop_pair_capture_not_idle', 'Manual capture is not idle in both snapshots.')
+    before_image = before.get('imageSource', {}) if isinstance(before, dict) else {}
+    after_image = after.get('imageSource', {}) if isinstance(after, dict) else {}
+    before_candidate = before.get('receiveCandidate', {}) if isinstance(before, dict) else {}
+    after_candidate = after.get('receiveCandidate', {}) if isinstance(after, dict) else {}
+    image_read_counts = (
+        before_image.get('reads') if isinstance(before_image, dict) else None,
+        after_image.get('reads') if isinstance(after_image, dict) else None,
+        before_candidate.get('imageReads') if isinstance(before_candidate, dict) else None,
+        after_candidate.get('imageReads') if isinstance(after_candidate, dict) else None,
+    )
+    if not all(type(value) is int and value >= 0 for value in image_read_counts) or \
+            before_image.get('reads') != after_image.get('reads') or \
+            before_candidate.get('imageReads') != after_candidate.get('imageReads'):
+        add('source_time_stop_pair_image_reads_changed',
+            'Image-source reads changed during the stop observation.')
+    before_sending = flag(before.get('sendingEnabled'))
+    after_sending = flag(after.get('sendingEnabled'))
+    if before_sending is not False or after_sending is not False:
+        add('source_time_stop_pair_sending_not_disabled',
+            'Sending must be explicitly disabled in both snapshots.')
+    if not result:
+        add('source_time_same_round_samples_retained_after_stop',
+            'The stopped snapshot retains the active snapshot\'s bounded samples in the same round, '
+            'with capture idle, image reads unchanged, sending disabled, and the receiver disarmed. '
+            'This is local lifecycle and retention evidence, not host-semantic certification.')
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('report', type=Path)
+    parser.add_argument('report', nargs='?', type=Path,
+                        help='One diagnostic report to analyze')
+    parser.add_argument('--pair', nargs=2, type=Path, metavar=('BEFORE', 'AFTER'),
+                        help='Compare two active snapshots from the same source-time round')
+    parser.add_argument('--stop-pair', nargs=2, type=Path, metavar=('ACTIVE', 'STOPPED'),
+                        help='Compare an active snapshot with the later stopped snapshot of the same round')
     args = parser.parse_args()
-    if args.report.stat().st_size > 2 * 1024 * 1024:
-        parser.error('Report exceeds the 2 MiB diagnostic limit')
-    try:
-        report = json.loads(args.report.read_text(encoding='utf-8-sig'))
-    except (ValueError, UnicodeError) as error:
-        parser.error('Invalid JSON report: ' + type(error).__name__)
-    print(json.dumps(analyze(report), indent=2, ensure_ascii=True))
+    if sum(value is not None for value in (args.report, args.pair, args.stop_pair)) != 1:
+        parser.error('Provide exactly one report, --pair BEFORE AFTER, or --stop-pair ACTIVE STOPPED')
+
+    def load(path):
+        try:
+            if path.stat().st_size > 2 * 1024 * 1024:
+                parser.error('Report exceeds the 2 MiB diagnostic limit')
+            return json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError, UnicodeError) as error:
+            parser.error('Invalid JSON report: ' + type(error).__name__)
+
+    if args.pair:
+        before, after = (load(path) for path in args.pair)
+        findings = compare_source_time_snapshots(before, after)
+    elif args.stop_pair:
+        before, after = (load(path) for path in args.stop_pair)
+        findings = compare_source_time_stop_snapshots(before, after)
+    else:
+        findings = analyze(load(args.report))
+    print(json.dumps(findings, indent=2, ensure_ascii=True))
 
 
 if __name__ == '__main__':

@@ -56,6 +56,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
 @property(nonatomic, strong) NSMutableDictionary *messageOrdinals;
 @property(nonatomic, strong) NSMutableArray *hookSamples;
 @property(nonatomic, strong) NSMutableDictionary *hookOrdinals;
+@property(nonatomic, strong) NSMutableDictionary *correlatedLocalIDs;
 @end
 
 @implementation SRSourceTimeProbe
@@ -73,6 +74,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
         _state = @"off"; _getterEncoding = @"not_observed";
         _samples = [NSMutableArray array]; _messageOrdinals = [NSMutableDictionary dictionary];
         _hookSamples = [NSMutableArray array]; _hookOrdinals = [NSMutableDictionary dictionary];
+        _correlatedLocalIDs = [NSMutableDictionary dictionary];
         __weak typeof(self) weakSelf = self;
         receiver.receivedWithTimeEvidence = ^(NSDictionary *message, NSDictionary *evidence) {
             [weakSelf receiveMessage:message evidence:evidence];
@@ -111,8 +113,9 @@ static NSString *SRProbeGetterEncoding(Class type) {
     @catch (__unused id exception) { return [self fail:error]; }
     if (!isfinite(monotonic) || monotonic < 0 || !isfinite(wall) || wall <= 0 || self.round == NSUIntegerMax) return [self fail:error];
 
-    // Historical callbacks must remain observable. Images are excluded before
-    // the receiver can enter its download/snapshot preparation chain.
+    // Historical callbacks must remain observable without enabling the
+    // receiver's image path. The early hook still sees type 3 before delivery
+    // filtering, so image metadata can be observed without preparing media.
     NSMutableDictionary *textOnly = [frozen mutableCopy]; textOnly[@"types"] = @[@"text"];
     self.starting = YES;
     BOOL armed = NO, valid = NO; NSDictionary *diagnostic = nil;
@@ -135,6 +138,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     self.getterEncoding = encoding; self.state = @"sampling";
     [self.samples removeAllObjects]; [self.messageOrdinals removeAllObjects];
     [self.hookSamples removeAllObjects]; [self.hookOrdinals removeAllObjects];
+    [self.correlatedLocalIDs removeAllObjects];
     __weak typeof(self) weakSelf = self;
     self.receiver.observeTimeHook = ^(NSDictionary *observation) { [weakSelf receiveTimeHook:observation]; };
     self.listening = YES; [self notifyChanged];
@@ -153,6 +157,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     self.receiver.observeTimeHook = nil;
     [self.messageOrdinals removeAllObjects];
     [self.hookOrdinals removeAllObjects];
+    [self.correlatedLocalIDs removeAllObjects];
     if (clearSamples) {
         [self.samples removeAllObjects]; self.account = nil; self.frozenConfiguration = nil;
         [self.hookSamples removeAllObjects];
@@ -223,6 +228,18 @@ static NSString *SRProbeGetterEncoding(Class type) {
     if (!ordinal) { ordinal = @(self.messageOrdinals.count + 1); self.messageOrdinals[messageID] = ordinal; }
     NSNumber *created = SRProbeInteger(evidence[@"createdAt"]) ? evidence[@"createdAt"] : nil;
     double received = [evidence[@"receivedAt"] doubleValue];
+    NSNumber *correlationLocalID = evidence[@"correlationLocalID"];
+    NSNumber *hookOrdinal = nil;
+    if ([correlationLocalID isKindOfClass:NSNumber.class] && correlationLocalID.unsignedLongLongValue) {
+        hookOrdinal = self.correlatedLocalIDs[correlationLocalID];
+        if (!hookOrdinal) {
+            NSNumber *known = self.hookOrdinals[[@"l:" stringByAppendingString:correlationLocalID.stringValue]];
+            if (known) {
+                hookOrdinal = known;
+                self.correlatedLocalIDs[correlationLocalID] = known;
+            }
+        }
+    }
     NSString *relationship = @"missing_or_invalid";
     if (created) {
         if (received < self.listeningSince) relationship = @"receive_clock_rollback";
@@ -236,6 +253,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
         @"createdAt": created ?: (id)NSNull.null, @"receivedAt": evidence[@"receivedAt"],
         @"listeningSince": evidence[@"listeningSince"], @"deliveredAt": @(delivered),
         @"deliveryClockRollback": @(delivered < received), @"relationship": relationship,
+        @"hookMessageOrdinal": hookOrdinal ?: (id)NSNull.null,
         @"strictPolicyWouldAccept": @(created && delivered >= received && SROpsNewMessage(created.doubleValue, self.listeningSince, received))}];
     if (self.samples.count >= SRSampleLimit) [self stopWithState:@"sample_limit" clearSamples:NO];
     else [self notifyChanged];
@@ -268,6 +286,8 @@ static NSString *SRProbeGetterEncoding(Class type) {
         key = [@"l:" stringByAppendingString:local.stringValue];
     NSNumber *ordinal = key ? self.hookOrdinals[key] : nil;
     if (key && !ordinal) { ordinal = @(self.hookOrdinals.count + 1); self.hookOrdinals[key] = ordinal; }
+    if (ordinal && [local isKindOfClass:NSNumber.class] && local.unsignedLongLongValue)
+        self.correlatedLocalIDs[local] = ordinal;
     NSNumber *created = SRProbeInteger(evidence[@"createdAt"]) ? evidence[@"createdAt"] : nil;
     [self.hookSamples addObject:@{@"ordinal": @(self.hookSamples.count + 1), @"messageOrdinal": ordinal ?: (id)NSNull.null,
         @"round": @(round), @"receiverGeneration": @(generation), @"messageType": observation[@"type"],

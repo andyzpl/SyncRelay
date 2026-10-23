@@ -6,6 +6,9 @@ NS_ASSUME_NONNULL_BEGIN
 /* A process-local serialized SQLite repository. Opening never starts a sender. */
 @interface SRStore : NSObject
 @property(nonatomic, strong, readonly) SRImageAssetStore *imageAssets;
+/* Read back after the constructor's migration transaction commits. This is
+ * the current schema, not a record of the pre-open version or migration proof. */
+@property(nonatomic, readonly) NSInteger schemaVersion;
 - (nullable instancetype)initWithPath:(NSString *)path error:(NSError **)error;
 /* Low-level constructor retained for core tests; capture uses the atomic API below. */
 - (nullable NSString *)createPlanForAccount:(NSString *)account

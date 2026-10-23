@@ -689,6 +689,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"settingsEntry"] = self.settingsEntry.diagnostics;
     report[@"settingsFooterRecoveryActive"] = @(self.settingsFooterActive);
     report[@"storageReady"] = @(self.store != nil);
+    report[@"schemaVersion"] = self.store ? @(self.store.schemaVersion) : NSNull.null;
     report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
     report[@"sourceTimeProbe"] = self.sourceTimeProbe.diagnostics ?: @{@"state": @"unavailable"};

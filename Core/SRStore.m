@@ -10,6 +10,7 @@
 @interface SRStore () {
     sqlite3 *_db;
 }
+@property(nonatomic) NSInteger schemaVersion;
 - (nullable id)protectedMediaTokensError:(NSError **)error;
 - (NSString *)mediaAlertPath;
 @end
@@ -183,6 +184,10 @@ static NSArray *SRImagePayloadKeys(void) {
         [self query:@"PRAGMA foreign_keys=ON" values:@[]];
         SRRequire([[self query:@"PRAGMA foreign_keys" values:@[]].firstObject[@"foreign_keys"] boolValue],
                   @"Database foreign key enforcement is unavailable");
+        NSDictionary *row = [self query:@"PRAGMA user_version" values:@[]].firstObject;
+        SRRequire(row[@"user_version"] != nil && [row[@"user_version"] integerValue] == 14,
+                  @"Database schema did not reach the expected version");
+        self.schemaVersion = [row[@"user_version"] integerValue];
         return @YES;
     } transaction:NO error:migrated ? error : NULL];
     if (!migrated || !enforced) return nil;

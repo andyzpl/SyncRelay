@@ -215,6 +215,16 @@ int main(void) {
         SRStore *constraintStore = [[SRStore alloc] initWithPath:constraintPath error:NULL]; CHECK(constraintStore);
         CHECK([constraintStore addRuleToPlan:constraintPlan name:@"three-second" targets:@[@"new@chatroom"] minimum:3 maximum:3 error:NULL]);
 
+        // A refused future schema must never publish a constructor or a version.
+        NSString *futurePath = [directory stringByAppendingPathComponent:@"future-schema.sqlite3"];
+        SRStore *future = [[SRStore alloc] initWithPath:futurePath error:NULL]; CHECK(future);
+        future = nil;
+        CHECK(sqlite3_open(futurePath.fileSystemRepresentation, &db) == SQLITE_OK);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=15", NULL, NULL, NULL) == SQLITE_OK);
+        CHECK(sqlite3_close(db) == SQLITE_OK);
+        future = [[SRStore alloc] initWithPath:futurePath error:NULL]; CHECK(!future);
+        CHECK(future.schemaVersion == 0);
+
         runner = nil; store = nil; transport = nil; restored = nil;
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: automatic submitted progress without delivery claims, no per-target review, paced pending-only resume, restart, exceptions and atomic receipts");
