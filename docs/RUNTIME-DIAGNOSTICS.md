@@ -34,6 +34,7 @@
 | `capture_blocked.reasonCode = 2` | 没有启用文字，当前不支持纯图片采集 | 启用文字后重试 |
 | 等待中，但 `receive_callback` 和 `outgoing_callback` 都为 0 | 本次尚未观察到两个候选入口 | 核对前台状态、复现动作及该版本 hook；不能断定是 wxid 错误 |
 | `receive_wrong_session` / `receive_wrong_direction` | 部分回调没通过会话/方向检查 | 对照具体版本核对接口语义；可能只是其他群的正常消息，不直接放宽过滤 |
+| `receiveCandidate.sessionRejections` | 在会话门禁前按固定原因累计拒绝：`*_non_string`、`*_empty_string`、`*_other_string`；不保留会话 ID | 区分参数形态与其他会话；仍不能仅凭计数放宽来源群校验 |
 | `receive_invalid_sender` | 部分回调没有符合约束的发送者 | 核对 getter 和群消息字段，不改成按昵称猜测 |
 | `receive_no_server_id` / `own_timeout` | 消息尚无可用服务器 ID或本人候选超时 | 核对发送后 ID 更新/精确回读；不改用临时本地 ID 冒充 |
 | `sourceCapture.lastReasonCode = 22` | 规范化候选被所选 wxid 列表拒绝 | 核对选择的来源成员，不能按昵称替代 |
@@ -76,6 +77,8 @@
 捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束。错误码必须结合事件与模块看，不跨模块猜含义。
 
 ## 方向证据子格式 1 / 2
+
+`receiveCandidate.sessionRejections` 是每次 arm 重置的有界脱敏计数，键只来自 `receive_*` 与 `outgoing_*` 两条固定路径及三种固定原因。它在读取任何消息 wrap 字段前记录，用于区分“参数不是字符串”“空字符串”和“其他字符串”；不会导出实际会话值、长度或类名，也不改变原有 `receive_wrong_session` / `outgoing_wrong_session` 拒绝行为。
 
 `receiveCandidate.directionSamples` 最多 12 条，只采本次等待中会话参数等于母群的回调，记录 `path`（固定 receive/outgoing）、宿主原方法返回后的时间、`before` 与 `after`。限额同时限制额外字段读取，超限累计 `directionSamplesDropped`；原方法抛异常时没有 after 样本，已预留名额仍会消耗。每次重新等待清空，停止后可导出最后快照，不跨启动持久化；其余固定事件仍按原规则持久化。
 

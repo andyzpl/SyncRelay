@@ -48,6 +48,20 @@ def analyze(report):
     counters = receiver.get('counters', {})
     if not isinstance(counters, dict):
         counters = {}
+    session_rejections = receiver.get('sessionRejections')
+    if session_rejections is not None:
+        allowed_session_rejections = {
+            'receive_non_string', 'receive_empty_string', 'receive_other_string',
+            'outgoing_non_string', 'outgoing_empty_string', 'outgoing_other_string',
+        }
+        if not isinstance(session_rejections, dict) or any(
+                key not in allowed_session_rejections or type(value) is not int or value < 0
+                for key, value in (session_rejections.items() if isinstance(session_rejections, dict) else ())):
+            add('session_rejections_invalid',
+                'Session rejection details are malformed; use a matching diagnostic build.')
+        elif any(value > 0 for value in session_rejections.values()):
+            add('session_rejection_details',
+                'Session callbacks were rejected with bounded redacted reason counts; do not relax the source-group check.')
     for key, code, message in (
         ('receive_wrong_session', 'session_mismatch', 'Receive callbacks were rejected by the session check; inspect adapter semantics.'),
         ('receive_wrong_direction', 'direction_mismatch', 'From/to checks rejected callbacks; do not guess the sender.'),

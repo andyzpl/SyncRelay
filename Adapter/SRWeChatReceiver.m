@@ -195,6 +195,9 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
 @property(nonatomic, copy) NSString *ownTextState;
 @property(nonatomic) NSUInteger queuedOutgoing;
 @property(nonatomic, strong) NSMutableDictionary *counters;
+/* Fixed-shape, redacted reasons for callbacks rejected before reading wrap
+ * fields. Counts are reset per arm and never retain the session identifier. */
+@property(nonatomic, strong) NSMutableDictionary *sessionRejections;
 @property(nonatomic) NSTimeInterval armedAt;
 @property(nonatomic) NSTimeInterval lastCallbackAt;
 @property(nonatomic, strong) NSMutableArray *directionSamples;
@@ -221,6 +224,7 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
 - (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence;
 - (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence;
 - (void)observeMessageType:(NSNumber *)type;
+- (void)noteSessionRejection:(id)session group:(NSString *)group path:(NSString *)path;
 - (void)observeAppMessageWrap:(id)wrap sender:(NSString *)sender from:(NSString *)from to:(NSString *)to
     timeEvidence:(NSDictionary *)evidence generation:(NSUInteger)generation;
 - (void)pollOutgoing:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
@@ -239,6 +243,12 @@ static NSMutableDictionary *SRTaps(void) {
 }
 static const char *SRReceiveType(const char *type) {
     while (*type && strchr("rnNoORV", *type)) type++; return type;
+}
+static NSString *SRSessionRejectionReason(id session, NSString *group) {
+    if (![session isKindOfClass:NSString.class]) return @"non_string";
+    if (![(NSString *)session length]) return @"empty_string";
+    if (![(NSString *)session isEqualToString:group]) return @"other_string";
+    return nil;
 }
 static BOOL SRReceiveSignature(Method method) {
     if (!method) return NO;
@@ -534,7 +544,8 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         }
         @synchronized(self) {
             self.account = account; self.group = group; self.problem = nil; self.generation++;
-            self.counters = [NSMutableDictionary dictionary]; self.armedAt = [self observationTime]; self.lastCallbackAt = 0;
+            self.counters = [NSMutableDictionary dictionary]; self.sessionRejections = [NSMutableDictionary dictionary];
+            self.armedAt = [self observationTime]; self.lastCallbackAt = 0;
             self.directionSamples = [NSMutableArray array]; self.directionReservations = 0; self.directionDropped = 0;
             self.pendingOutgoing = nil; self.queuedOutgoing = 0; self.ownTextState = @"unavailable";
             self.senderIDs = nil; self.selectedTypes = [NSSet setWithObject:@"text"];
@@ -610,6 +621,16 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         return YES;
     }
 }
+- (void)noteSessionRejection:(id)session group:(NSString *)group path:(NSString *)path {
+    NSString *reason = SRSessionRejectionReason(session, group);
+    if (!reason.length || ![@[@"receive", @"outgoing"] containsObject:path]) return;
+    NSString *key = [path stringByAppendingFormat:@"_%@", reason];
+    @synchronized(self) {
+        if (!self.sessionRejections) self.sessionRejections = [NSMutableDictionary dictionary];
+        NSUInteger count = [self.sessionRejections[key] unsignedIntegerValue];
+        self.sessionRejections[key] = @(count == NSUIntegerMax ? count : count + 1);
+    }
+}
 - (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {
     NSString *account, *group; NSUInteger generation;
     @synchronized(self) {
@@ -617,7 +638,10 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         account = self.account; group = self.group; generation = self.generation;
     }
     [self note:@"receive_callback"];
-    if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) { [self note:@"receive_wrong_session"]; return; }
+    if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) {
+        [self noteSessionRejection:session group:group path:@"receive"];
+        [self note:@"receive_wrong_session"]; return;
+    }
     NSString *from = SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL), *to = SRReadDeclaredString(wrap, @"m_nsToUsr", NULL);
     NSString *sender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", NULL);
     BOOL outgoing = [from isEqual:account] && [to isEqual:group];
@@ -750,7 +774,10 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         account = self.account; group = self.group; generation = self.generation;
     }
     [self note:@"outgoing_callback"];
-    if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) { [self note:@"outgoing_wrong_session"]; return; }
+    if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) {
+        [self noteSessionRejection:session group:group path:@"outgoing"];
+        [self note:@"outgoing_wrong_session"]; return;
+    }
     if (![SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL) isEqual:account] || ![SRReadDeclaredString(wrap, @"m_nsToUsr", NULL) isEqual:group]) {
         [self note:@"outgoing_wrong_direction"]; return;
     }
@@ -940,6 +967,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
             @"ownTextHookAvailable": @(self.outgoingTap != nil), @"ownTextPending": @(self.pendingOutgoing != nil),
             @"ownTextState": self.ownTextState ?: @"idle",
             @"armedAt": @(self.armedAt), @"lastEventAt": @(self.lastCallbackAt), @"counters": [self.counters copy] ?: @{},
+            @"sessionRejections": [self.sessionRejections copy] ?: @{},
             @"directionEvidenceSchema": @2, @"stringReadStrategy": @"declared_runtime", @"directionSampleLimit": @12,
             @"directionSamples": [self.directionSamples copy] ?: @[],
             @"directionSamplesDropped": @(self.directionDropped),

@@ -28,6 +28,17 @@ class ReportTests(unittest.TestCase):
     def test_no_hook_is_not_proof_of_failure(self):
         self.assertIn('no_callback_observed', self.codes(self.base()))
 
+    def test_session_rejection_details_are_fixed_and_redacted(self):
+        report = self.base()
+        report['receiveCandidate'].update(
+            counters={'receive_callback': 1, 'receive_wrong_session': 1},
+            sessionRejections={'receive_other_string': 1})
+        self.assertIn('session_rejection_details', self.codes(report))
+        report['receiveCandidate']['sessionRejections'] = {
+            'receive_other_string': 'private@chatroom'}
+        self.assertIn('session_rejections_invalid', self.codes(report))
+        self.assertNotIn('private@chatroom', str(analyze(report)))
+
     def test_filter_and_id_reasons(self):
         report = self.base()
         report['receiveCandidate']['counters'] = {'receive_callback': 1, 'receive_no_server_id': 1, 'own_timeout': 1}
