@@ -6,8 +6,8 @@
 @property(nonatomic, strong) UILabel *phaseLabel;
 @property(nonatomic, strong) UIButton *actionButton;
 @property(nonatomic, copy) NSDictionary *model;
+@property(nonatomic) CGFloat unitX;
 @property(nonatomic) CGFloat unitY;
-@property(nonatomic) BOOL leftEdge;
 @property(nonatomic) BOOL dragging;
 @property(nonatomic) CGRect keyboardFrame;
 @end
@@ -16,6 +16,7 @@
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
+        _unitX = 1;
         _unitY = 0.35;
         self.backgroundColor = SRSettingsCellBackground(); self.layer.cornerRadius = 27;
         self.layer.shadowColor = UIColor.blackColor.CGColor; self.layer.shadowOpacity = 0.14;
@@ -54,7 +55,7 @@
     CGFloat width = MIN(CGRectGetWidth(available), 176 * scale), height = MIN(CGRectGetHeight(available), 56 * scale);
     if (width < 132 || height < 44) { self.hidden = YES; return; }
     self.hidden = NO;
-    CGFloat x = self.leftEdge ? CGRectGetMinX(available) : CGRectGetMaxX(available) - width;
+    CGFloat x = CGRectGetMinX(available) + (CGRectGetWidth(available) - width) * MAX(0, MIN(1, self.unitX));
     CGFloat y = CGRectGetMinY(available) + (CGRectGetHeight(available) - height) * self.unitY;
     self.frame = CGRectMake(x, y, width, height); self.layer.cornerRadius = height / 2;
     [self setNeedsLayout];
@@ -112,9 +113,11 @@
     frame.origin.x = MAX(CGRectGetMinX(bounds), MIN(frame.origin.x, CGRectGetMaxX(bounds) - frame.size.width));
     frame.origin.y = MAX(CGRectGetMinY(bounds), MIN(frame.origin.y, CGRectGetMaxY(bounds) - frame.size.height)); self.frame = frame;
     if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled || pan.state == UIGestureRecognizerStateFailed) {
-        self.dragging = NO; self.leftEdge = CGRectGetMidX(frame) < CGRectGetMidX(bounds);
-        CGFloat travel = bounds.size.height - frame.size.height;
-        self.unitY = travel > 0 ? MAX(0, MIN(1, (frame.origin.y - bounds.origin.y) / travel)) : 0;
+        self.dragging = NO;
+        CGFloat travelX = bounds.size.width - frame.size.width;
+        CGFloat travelY = bounds.size.height - frame.size.height;
+        self.unitX = travelX > 0 ? MAX(0, MIN(1, (frame.origin.x - bounds.origin.x) / travelX)) : 1;
+        self.unitY = travelY > 0 ? MAX(0, MIN(1, (frame.origin.y - bounds.origin.y) / travelY)) : 0;
         if (UIAccessibilityIsReduceMotionEnabled()) [self place];
         else [UIView animateWithDuration:0.18 animations:^{ [self place]; }];
     }

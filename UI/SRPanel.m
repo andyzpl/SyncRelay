@@ -1147,8 +1147,8 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
 @property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, weak) UINavigationController *presented;
+@property(nonatomic) CGFloat floatingEntryUnitX;
 @property(nonatomic) CGFloat floatingEntryUnitY;
-@property(nonatomic) BOOL floatingEntryLeftEdge;
 @property(nonatomic) BOOL floatingEntryPlacementSet;
 @property(nonatomic) BOOL floatingEntryDragging;
 @end
@@ -1377,9 +1377,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     CGFloat x = CGRectGetMaxX(bounds) - width;
     CGFloat y = CGRectGetMaxY(bounds) - height - 60;
     if (self.floatingEntryPlacementSet) {
-        x = self.floatingEntryLeftEdge ? CGRectGetMinX(bounds) : CGRectGetMaxX(bounds) - width;
-        CGFloat travel = MAX(0, CGRectGetHeight(bounds) - height);
-        y = CGRectGetMinY(bounds) + travel * MAX(0, MIN(1, self.floatingEntryUnitY));
+        CGFloat travelX = MAX(0, CGRectGetWidth(bounds) - width);
+        CGFloat travelY = MAX(0, CGRectGetHeight(bounds) - height);
+        x = CGRectGetMinX(bounds) + travelX * MAX(0, MIN(1, self.floatingEntryUnitX));
+        y = CGRectGetMinY(bounds) + travelY * MAX(0, MIN(1, self.floatingEntryUnitY));
     }
     x = MAX(CGRectGetMinX(bounds), MIN(x, CGRectGetMaxX(bounds) - width));
     y = MAX(CGRectGetMinY(bounds), MIN(y, CGRectGetMaxY(bounds) - height));
@@ -1402,10 +1403,11 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         pan.state == UIGestureRecognizerStateFailed) {
         self.floatingEntryDragging = NO;
         self.floatingEntryPlacementSet = YES;
-        self.floatingEntryLeftEdge = CGRectGetMidX(frame) < CGRectGetMidX(bounds);
-        CGFloat travel = CGRectGetHeight(bounds) - CGRectGetHeight(frame);
-        self.floatingEntryUnitY = travel > 0 ? MAX(0, MIN(1, (CGRectGetMinY(frame) - CGRectGetMinY(bounds)) / travel)) : 0;
-        [self.entryPreferences setFloatingEntryPlacementUnitY:self.floatingEntryUnitY leftEdge:self.floatingEntryLeftEdge];
+        CGFloat travelX = CGRectGetWidth(bounds) - CGRectGetWidth(frame);
+        CGFloat travelY = CGRectGetHeight(bounds) - CGRectGetHeight(frame);
+        self.floatingEntryUnitX = travelX > 0 ? MAX(0, MIN(1, (CGRectGetMinX(frame) - CGRectGetMinX(bounds)) / travelX)) : 1;
+        self.floatingEntryUnitY = travelY > 0 ? MAX(0, MIN(1, (CGRectGetMinY(frame) - CGRectGetMinY(bounds)) / travelY)) : 0;
+        [self.entryPreferences setFloatingEntryPlacementUnitX:self.floatingEntryUnitX unitY:self.floatingEntryUnitY];
         if (UIAccessibilityIsReduceMotionEnabled()) [self placeFloatingEntryButtonInWindow:window];
         else [UIView animateWithDuration:0.18 animations:^{ [self placeFloatingEntryButtonInWindow:window]; }];
     }
@@ -1413,8 +1415,8 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (void)install {
     [self.settingsEntry install:NULL];
     [self refreshVisibleSettings];
+    self.floatingEntryUnitX = self.entryPreferences.floatingEntryUnitX;
     self.floatingEntryUnitY = self.entryPreferences.floatingEntryUnitY;
-    self.floatingEntryLeftEdge = self.entryPreferences.floatingEntryLeftEdge;
     self.floatingEntryPlacementSet = self.entryPreferences.floatingEntryPlacementSet;
     if (!self.entryPreferences.floatingEntryEnabled) {
         [self.button removeFromSuperview]; self.button = nil; return;
@@ -1439,7 +1441,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             button.titleLabel.adjustsFontForContentSizeCategory = YES;
             button.backgroundColor = UIColor.secondarySystemBackgroundColor; button.layer.cornerRadius = 22;
             button.accessibilityLabel = @"打开 SyncRelay 转发";
-            button.accessibilityHint = @"可拖动到屏幕边缘；轻触打开设置";
+            button.accessibilityHint = @"可自由拖动位置；轻触打开设置";
             [button addTarget:self action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
             UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(floatingEntryDragged:)];
             pan.cancelsTouchesInView = YES;
