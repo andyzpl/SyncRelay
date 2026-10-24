@@ -25,6 +25,9 @@ typedef enum {
 bool SROpsVisible(SROperationsState state);
 bool SROpsCaptureAllowed(SROperationsState state);
 bool SROpsDispatchAllowed(SROperationsState state);
+/* Apply only to a persisted running port. Deferred lifecycle work revokes its
+ * dispatch lease even when coalesced notifications end in the foreground. */
+bool SROpsPauseRequired(SROperationsState state, bool configurationReady, bool lifecyclePending);
 /* Stale asynchronous events are rejected; lifecycle events use current token. */
 bool SROpsApply(SROperationsState *state, SROpsEvent event, uint64_t generation);
 /* On process restoration a running task is always manual-resume only. */

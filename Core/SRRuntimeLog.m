@@ -22,6 +22,10 @@ static NSSet *SRLogEvents(void) {
         @"own_conflict", @"own_timeout", @"own_readback", @"account_changed", @"receiver_stopped", @"receiver_arm",
         @"receive_sender_filtered", @"receive_type_filtered", @"image_pending", @"image_ready", @"image_timeout", @"image_conflict", @"image_failed",
         @"source_time_rejected", @"source_time_changed",
+        @"operations_enabled", @"operations_disabled", @"operations_plan_prepared",
+        @"operations_group_started", @"operations_group_resumed", @"operations_group_paused",
+        @"operations_group_cancelled", @"operations_content_archived", @"operations_legacy_recovered",
+        @"operations_command_rejected", @"operations_fault",
         @"text_test_countdown", @"text_test_claimed", @"text_test_submitted", @"text_test_blocked",
         @"image_test_countdown", @"image_test_claimed", @"image_test_submitted", @"image_test_blocked",
         @"small_group_started", @"small_group_paused", @"small_group_submitted", @"small_group_unknown"]]; });

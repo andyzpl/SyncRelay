@@ -17,6 +17,11 @@ int main(void) {
         NSError *error = nil;
         SRStore *store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store && !error);
+        assert(store.schemaVersion == 14);
+        NSDictionary *migration = store.migrationDiagnostics;
+        assert([migration[@"schema"] isEqual:@1] && [migration[@"sourceVersion"] isEqual:@0] &&
+            [migration[@"targetVersion"] isEqual:@14] && [migration[@"performed"] boolValue] &&
+            [migration[@"committed"] boolValue] && ![migration[@"rowCountsComparable"] boolValue]);
         assert(![[store operationsEnabledForAccount:@"account" error:&error] boolValue]);
         assert(![store setOperationsEnabled:YES account:@"account" error:NULL]);
         assert(![store setOperationsEnabled:YES account:@"" error:NULL]);
@@ -142,6 +147,11 @@ int main(void) {
         assert(sqlite3_close(legacy) == SQLITE_OK);
         store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store);
+        assert(store.schemaVersion == 14);
+        migration = store.migrationDiagnostics;
+        assert([migration[@"sourceVersion"] isEqual:@1] && [migration[@"performed"] boolValue] &&
+            [migration[@"committed"] boolValue] && [migration[@"rowCountsComparable"] boolValue] &&
+            [migration[@"legacyRowCountsUnchanged"] boolValue]);
         assert(count([store summaryForRun:run error:&error], @"confirmed") == 2000);
         assert([store saveConfiguration:[SRConfiguration emptyDraft] account:@"account" error:&error]);
         store = nil;

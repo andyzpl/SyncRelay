@@ -24,6 +24,10 @@
 
 先看 `build` 和 `reportSchema`，再看 `draftSummary`、`sourceCapture`、`receiveCandidate.counters`，最后结合 `runtimeLog.events` 时间线。不能仅凭一次回调计数就判断版本兼容或发送成功。
 
+`schemaVersion` 只在 `SRStore` 构造、迁移事务完成且外键复核通过后读回，表示当前 `PRAGMA user_version`。`storageReady=true` 但字段缺失时解析器输出 `database_schema_unverified`；字段为 `null`、非整数或不是 14 时输出 `database_schema_invalid`。`storageReady=false` 时字段应为 `null`，此时只保留 `storage_unavailable`，不重复归因数据库版本。该字段不记录迁移前版本，不证明旧行保留、迁移原子性或回滚行为。
+
+后续包含 `migrationDiagnostics` 的构建会额外导出源/目标 schema、迁移提交状态和固定旧表的脱敏行数前后对照。解析器会独立重算行数，不信任单独的布尔结论；`migration_legacy_row_counts_unchanged` 仅表示一致性提示，不是逐行内容证明。缺失该字段的旧报告继续按原规则处理，不能补写成迁移证据。
+
 | 证据 | 可确定的情况 | 后续动作 |
 | --- | --- | --- |
 | `capture_arm_failed.errorCode = 14` | 缺少来源成员 | 更换母群后重新勾选本人或指定成员并保存 |
@@ -32,11 +36,15 @@
 | `capture_blocked.reasonCode = 2` | 没有启用文字，当前不支持纯图片采集 | 启用文字后重试 |
 | 等待中，但 `receive_callback` 和 `outgoing_callback` 都为 0 | 本次尚未观察到两个候选入口 | 核对前台状态、复现动作及该版本 hook；不能断定是 wxid 错误 |
 | `receive_wrong_session` / `receive_wrong_direction` | 部分回调没通过会话/方向检查 | 对照具体版本核对接口语义；可能只是其他群的正常消息，不直接放宽过滤 |
+| `receiveCandidate.sessionRejections` | 在会话门禁前按固定原因累计拒绝：`*_non_string`、`*_empty_string`、`*_other_string`；不保留会话 ID | 区分参数形态与其他会话；仍不能仅凭计数放宽来源群校验 |
 | `receive_invalid_sender` | 部分回调没有符合约束的发送者 | 核对 getter 和群消息字段，不改成按昵称猜测 |
 | `receive_no_server_id` / `own_timeout` | 消息尚无可用服务器 ID或本人候选超时 | 核对发送后 ID 更新/精确回读；不改用临时本地 ID 冒充 |
 | `sourceCapture.lastReasonCode = 22` | 规范化候选被所选 wxid 列表拒绝 | 核对选择的来源成员，不能按昵称替代 |
 | `sourceCapture.lastReasonCode = 23` | 规范化候选类型不在选中类型中 | 核对类型开关 |
 | `inactive` 出现在等待开始之后 | 应用曾失活，等待按设计停止 | 保持前台并手动重新等待 |
+| `sourceTimeProbe.inactivePending=true` | 只读采样进入短暂前台 inactive 宽限，尚未到 2 秒 | 立即回到微信前台；成对快照不应把该状态当作稳定页面切换通过 |
+| `sourceTimeProbe.state=inactive` | 系统级 inactive 超过宽限或真正进入后台，采样已停止且 receiver 已释放 | 回前台不会自动重开，需明确重新开始并换 round |
+| `sourceTimeProbe.resumedAfterInactive=true` | 本轮至少一次短暂前台 inactive 在 2 秒内恢复，且采样仍 active | 只证明前台恢复，不证明页面切换完成、系统后台行为或完整生命周期通过 |
 | `capture_accepted` / `state = preview` | 冻结了一条匹配源消息 | 用户核对预览，不代表任何目标收到转发 |
 
 ### 单群手动发送观察
@@ -72,6 +80,8 @@
 
 ## 方向证据子格式 1 / 2
 
+`receiveCandidate.sessionRejections` 是每次 arm 重置的有界脱敏计数，键只来自 `receive_*` 与 `outgoing_*` 两条固定路径及三种固定原因。它在读取任何消息 wrap 字段前记录，用于区分“参数不是字符串”“空字符串”和“其他字符串”；不会导出实际会话值、长度或类名，也不改变原有 `receive_wrong_session` / `outgoing_wrong_session` 拒绝行为。
+
 `receiveCandidate.directionSamples` 最多 12 条，只采本次等待中会话参数等于母群的回调，记录 `path`（固定 receive/outgoing）、宿主原方法返回后的时间、`before` 与 `after`。限额同时限制额外字段读取，超限累计 `directionSamplesDropped`；原方法抛异常时没有 after 样本，已预留名额仍会消耗。每次重新等待清空，停止后可导出最后快照，不跨启动持久化；其余固定事件仍按原规则持久化。
 
 每个 before/after 只有白名单数字/布尔字段：
@@ -104,5 +114,7 @@ python tools/diagnose_report.py "诊断文件.json"
 3. 固定事件名和原因码进入回归测试；改变报告字段语义时升级 schema，并同步离线解析器和文档。
 4. 持续覆盖母群变更、来源重选、本人/他人、群及账号隔离、ID 为零/更新/冲突、取消重开、持久日志上限/脱敏、设置入口与导出失败。
 5. 更新只改草稿和诊断，不改写已有计划/执行历史；真实发送仍需另外设计可靠回执和本人回环过滤。
+
+成对来源时间报告（`--pair` / `--stop-pair`）还会校验两份脱敏报告的证据连续性：构建版本、完整提交和 CI run 必须一致；两份运行日志必须各自包含同一当前进程会话的有序序列（历史 `previousLaunch` 行不作为会话证明）；`generatedAt` 必须是有限且小于 `2^53` 的数值，且后一份严格晚于前一份。缺失或不可信元数据输出固定的 `*_build_unverified`、`*_session_unverified` 或 `*_export_time_invalid`；不同构建/进程、倒序日志或倒序导出分别输出 `*_build_changed`、`*_session_changed`、`*_log_rewound` 或 `*_export_order_invalid`。这些门禁用于防止把不同启动或不同包的相同 `round` 拼成一轮，不回显会话值，也不改变单份报告的分析结果。
 
 当前尚需真机验证分享面板、文件保护、日志跨重启、微信实际回调与原生设置视觉。模拟测试和编译通过不能替代这些验收。
