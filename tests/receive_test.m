@@ -505,6 +505,8 @@ static void checkReflectedMessage(void) {
         CHECK(![json containsString:secret]);
     [receiver stop]; received = nil;
 }
+#import "app_message_probe_cases.h"
+
 int main(void) {
     @autoreleasepool {
         ScalarTraps *traps = [[ScalarTraps alloc] init];
@@ -554,6 +556,12 @@ int main(void) {
         ReceiveWrap *image = wrap(); image.m_uiMessageType = 3;
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image];
         [manager AsyncOnAddMsg:@"other@chatroom" MsgWrap:wrap()]; pump();
+        [manager AsyncOnAddMsg:(id)@123 MsgWrap:wrap()];
+        [manager AsyncOnAddMsg:@"" MsgWrap:wrap()]; pump();
+        NSDictionary *sessionRejections = receiver.diagnostics[@"sessionRejections"];
+        CHECK([sessionRejections[@"receive_other_string"] isEqual:@1]);
+        CHECK([sessionRejections[@"receive_non_string"] isEqual:@1]);
+        CHECK([sessionRejections[@"receive_empty_string"] isEqual:@1]);
         CHECK(received.count == 0 && !capture.preview);
         ReceiveWrap *otherSender = wrap(); otherSender.m_nsRealChatUsr = @"wxid_other";
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:otherSender]; pump();
@@ -605,6 +613,7 @@ int main(void) {
         own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
         before = manager.calls;
         [manager AddMsg:@"wrong@chatroom" MsgWrap:own]; pump(); CHECK(!capture.preview);
+        CHECK([receiver.diagnostics[@"sessionRejections"][@"outgoing_other_string"] isEqual:@1]);
         [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); CHECK(!capture.preview);
         CHECK(manager.calls == before + 2);
         own.m_n64MesSvrID = 123456789;
@@ -676,6 +685,7 @@ int main(void) {
         checkReflectedMessage();
         checkImageCapture();
         checkSourceTimeEvidence();
+        checkAppMessageProbe();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }

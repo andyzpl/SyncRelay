@@ -16,6 +16,25 @@ int main(void) {
         NSString *serialized = log.snapshot.description;
         for (NSString *secret in @[@"wxid_secret", @"secret@chatroom", @"private message", @"messageID"])
             CHECK(![serialized containsString:secret]);
+        [log record:@"operations_group_cancelled" facts:@{@"reasonCode": @7, @"targetCount": @20,
+            @"account": @"account-secret", @"runID": @"run-secret"}];
+        event = [log.snapshot[@"events"] lastObject];
+        CHECK([event[@"event"] isEqual:@"operations_group_cancelled"]);
+        CHECK([event[@"facts"] count] == 2 && [event[@"facts"][ @"reasonCode"] isEqual:@7] &&
+            [event[@"facts"][ @"targetCount"] isEqual:@20]);
+        CHECK(![log.snapshot.description containsString:@"account-secret"] &&
+            ![log.snapshot.description containsString:@"run-secret"]);
+        NSArray *operationEvents = @[@"operations_enabled", @"operations_disabled", @"operations_plan_prepared",
+            @"operations_group_started", @"operations_group_resumed", @"operations_group_paused",
+            @"operations_group_cancelled", @"operations_content_archived", @"operations_legacy_recovered",
+            @"operations_command_rejected", @"operations_fault"];
+        for (NSString *operationEvent in operationEvents) [log record:operationEvent facts:@{ @"reasonCode": @2 }];
+        for (NSString *operationEvent in operationEvents) {
+            BOOL found = NO;
+            for (NSDictionary *row in log.snapshot[@"events"])
+                if ([row[@"event"] isEqual:operationEvent]) { found = YES; break; }
+            CHECK(found);
+        }
         for (NSUInteger i = 0; i < 1000; i++) [log record:@"capture_attempt" facts:@{@"ruleCount": @(i)}];
         CHECK([log.snapshot[@"events"] count] == 300);
         CHECK([log.snapshot[@"events"][0][@"facts"][@"ruleCount"] isEqual:@700]);

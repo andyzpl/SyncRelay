@@ -194,8 +194,8 @@ int main(void) {
         CHECK(sqlite3_open(migrationPath.fileSystemRepresentation, &db) == SQLITE_OK);
         sqlite3_stmt *statement = NULL;
         CHECK(sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &statement, NULL) == SQLITE_OK);
-        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 11); sqlite3_finalize(statement);
-        CHECK(sqlite3_exec(db, "PRAGMA user_version=12", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
+        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 14); sqlite3_finalize(statement);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=15", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
         CHECK(![[SRStore alloc] initWithPath:migrationPath error:NULL]);
 
         // A pre-v8 rules table has a CHECK(minimum>=10); rebuilding it must allow the new 3-second floor.
@@ -214,6 +214,16 @@ int main(void) {
         CHECK(sqlite3_close(db) == SQLITE_OK);
         SRStore *constraintStore = [[SRStore alloc] initWithPath:constraintPath error:NULL]; CHECK(constraintStore);
         CHECK([constraintStore addRuleToPlan:constraintPlan name:@"three-second" targets:@[@"new@chatroom"] minimum:3 maximum:3 error:NULL]);
+
+        // A refused future schema must never publish a constructor or a version.
+        NSString *futurePath = [directory stringByAppendingPathComponent:@"future-schema.sqlite3"];
+        SRStore *future = [[SRStore alloc] initWithPath:futurePath error:NULL]; CHECK(future);
+        future = nil;
+        CHECK(sqlite3_open(futurePath.fileSystemRepresentation, &db) == SQLITE_OK);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=15", NULL, NULL, NULL) == SQLITE_OK);
+        CHECK(sqlite3_close(db) == SQLITE_OK);
+        future = [[SRStore alloc] initWithPath:futurePath error:NULL]; CHECK(!future);
+        CHECK(future.schemaVersion == 0);
 
         runner = nil; store = nil; transport = nil; restored = nil;
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
