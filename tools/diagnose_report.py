@@ -5,8 +5,73 @@ import math
 from pathlib import Path
 
 
+def _source_time_flag(value):
+    return bool(value) if type(value) in (bool, int) and value in (0, 1) else None
+
+
+def _source_time_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _source_time_row_valid(row, hook=False):
+    """Validate the exported fixed fields without reading private identifiers."""
+    if not isinstance(row, dict):
+        return False
+    ordinal, message_ordinal = row.get('ordinal'), row.get('messageOrdinal')
+    if not (type(ordinal) is int and 1 <= ordinal <= 16 and
+            (message_ordinal is None or (type(message_ordinal) is int and message_ordinal >= 1)) and
+            type(row.get('round')) is int and row['round'] >= 0 and
+            type(row.get('receiverGeneration')) is int and row['receiverGeneration'] >= 0 and
+            _source_time_flag(row.get('selfSource')) is not None and
+            (row.get('createdAt') is None or _source_time_number(row['createdAt']))):
+        return False
+    times = ('receivedAt', 'listeningSince') + (() if hook else ('deliveredAt',))
+    if not all(_source_time_number(row.get(key)) and row[key] > 0 for key in times):
+        return False
+    if hook:
+        return (type(row.get('messageType')) is int and row['messageType'] in (1, 3) and
+                row.get('path') in ('receive', 'outgoing') and
+                _source_time_flag(row.get('serverIDPresent')) is not None and
+                row.get('correlationScope') in ('server', 'local', 'none') and
+                row.get('actualGetterEncoding') in ('i', 'I', 'q', 'Q', 'l', 'L', 'missing', 'incompatible'))
+    hook_ordinal = row.get('hookMessageOrdinal')
+    return ((hook_ordinal is None or (type(hook_ordinal) is int and 1 <= hook_ordinal <= 16)) and
+            _source_time_flag(row.get('deliveryClockRollback')) is not None and
+            row.get('relationship') in ('older_than_boundary', 'after_boundary', 'same_second',
+                                        'future_or_different_units', 'missing_or_invalid',
+                                        'receive_clock_rollback') and
+            _source_time_flag(row.get('strictPolicyWouldAccept')) is not None)
+
+
+def _source_time_pair_scope_valid(probe):
+    return (_source_time_flag(probe.get('observerOnly')) is True and
+            _source_time_flag(probe.get('sendingEnabled')) is False and
+            all(_source_time_flag(probe.get(key)) is False
+                for key in ('sourceTimeSemanticsVerified', 'imageReadinessObserved')))
+
+
+def _source_time_pair_rows_valid(probes, generation):
+    boundaries = set()
+    for probe in probes:
+        for key, hook in (('samples', False), ('hookSamples', True)):
+            rows = probe.get(key)
+            if not isinstance(rows, list) or len(rows) > 16:
+                return False
+            for ordinal, row in enumerate(rows, 1):
+                if (not _source_time_row_valid(row, hook) or row['ordinal'] != ordinal or
+                        row['round'] != probe.get('round') or row['receiverGeneration'] != generation):
+                    return False
+                boundaries.add(row['listeningSince'])
+    return len(boundaries) <= 1
+
+
 def analyze(report):
-    if not isinstance(report, dict) or report.get('reportSchema') != 1:
+    if not isinstance(report, dict) or type(report.get('reportSchema')) is not int or report['reportSchema'] != 1:
         return [{'code': 'unsupported_schema', 'message': 'Unknown report schema; use a matching diagnostic build.'}]
     result = []
 
@@ -160,11 +225,6 @@ def analyze(report):
             probe_states = {'off', 'sampling', 'stopped', 'inactive', 'configuration_changed',
                             'account_invalidated', 'environment_blocked', 'receiver_stopped',
                             'clock_invalid', 'time_limit', 'sample_limit', 'context_unavailable'}
-            relationships = {'older_than_boundary', 'after_boundary', 'same_second',
-                             'future_or_different_units', 'missing_or_invalid',
-                             'receive_clock_rollback'}
-            getter_encodings = {'i', 'I', 'q', 'Q', 'l', 'L', 'missing', 'incompatible'}
-            scope_values = {'server', 'local', 'none'}
             active = flag(probe.get('active'))
             state = probe.get('state')
             inactive_pending = flag(probe.get('inactivePending'))
@@ -206,51 +266,14 @@ def analyze(report):
 
             valid_samples = []
             for sample in samples:
-                valid = isinstance(sample, dict)
-                if valid:
-                    ordinal, message_ordinal = sample.get('ordinal'), sample.get('messageOrdinal')
-                    valid = (type(ordinal) is int and 1 <= ordinal <= 16 and
-                             (message_ordinal is None or (type(message_ordinal) is int and message_ordinal >= 1)) and
-                             (sample.get('hookMessageOrdinal') is None or
-                              (type(sample.get('hookMessageOrdinal')) is int and
-                               1 <= sample['hookMessageOrdinal'] <= 16)) and
-                             type(sample.get('round')) is int and sample['round'] >= 0 and
-                             type(sample.get('receiverGeneration')) is int and sample['receiverGeneration'] >= 0 and
-                             flag(sample.get('selfSource')) is not None and
-                             (sample.get('createdAt') is None or
-                              (type(sample.get('createdAt')) in (int, float) and
-                               math.isfinite(sample['createdAt']))) and
-                             all(type(sample.get(key)) in (int, float) and math.isfinite(sample[key]) and sample[key] > 0
-                                 for key in ('receivedAt', 'listeningSince', 'deliveredAt')) and
-                             flag(sample.get('deliveryClockRollback')) is not None and
-                             sample.get('relationship') in relationships and
-                             flag(sample.get('strictPolicyWouldAccept')) is not None)
-                if valid:
+                if _source_time_row_valid(sample):
                     valid_samples.append(sample)
                 else:
                     add('source_time_probe_samples_invalid', 'A text sample is malformed or outside its fixed schema.')
 
             valid_hooks = []
             for hook in hooks:
-                valid = isinstance(hook, dict)
-                if valid:
-                    ordinal, message_ordinal = hook.get('ordinal'), hook.get('messageOrdinal')
-                    valid = (type(ordinal) is int and 1 <= ordinal <= 16 and
-                             (message_ordinal is None or (type(message_ordinal) is int and message_ordinal >= 1)) and
-                             type(hook.get('round')) is int and hook['round'] >= 0 and
-                             type(hook.get('receiverGeneration')) is int and hook['receiverGeneration'] >= 0 and
-                             hook.get('messageType') in (1, 3) and
-                             flag(hook.get('selfSource')) is not None and
-                             hook.get('path') in ('receive', 'outgoing') and
-                             flag(hook.get('serverIDPresent')) is not None and
-                             hook.get('correlationScope') in scope_values and
-                             hook.get('actualGetterEncoding') in getter_encodings and
-                             (hook.get('createdAt') is None or
-                              (type(hook.get('createdAt')) in (int, float) and
-                               math.isfinite(hook['createdAt']))) and
-                             all(type(hook.get(key)) in (int, float) and math.isfinite(hook[key]) and hook[key] > 0
-                                 for key in ('receivedAt', 'listeningSince')))
-                if valid:
+                if _source_time_row_valid(hook, hook=True):
                     valid_hooks.append(hook)
                 else:
                     add('source_time_probe_hooks_invalid', 'A hook sample is malformed or outside its fixed schema.')
@@ -705,11 +728,11 @@ def compare_source_time_snapshots(before, after):
         return bool(value) if type(value) in (bool, int) and value in (0, 1) else None
 
     def snapshot(report):
-        if not isinstance(report, dict) or report.get('reportSchema') != 1:
+        if not isinstance(report, dict) or type(report.get('reportSchema')) is not int or report['reportSchema'] != 1:
             return None, None
         probe = report.get('sourceTimeProbe')
         receiver = report.get('receiveCandidate')
-        if not isinstance(probe, dict) or probe.get('schema') != 1 or not isinstance(receiver, dict):
+        if not isinstance(probe, dict) or type(probe.get('schema')) is not int or probe['schema'] != 1 or not isinstance(receiver, dict):
             return None, None
         return probe, receiver
 
@@ -719,6 +742,9 @@ def compare_source_time_snapshots(before, after):
         add('source_time_pair_invalid', 'Both snapshots must contain a schema-1 source-time probe.')
         return result
     result.extend(_source_time_pair_provenance(before, after, 'source_time_pair_'))
+    if not all(_source_time_pair_scope_valid(probe) for probe in (before_probe, after_probe)):
+        add('source_time_pair_scope_invalid',
+            'Both probes must be observer-only with sending disabled and unverified capabilities kept false.')
     for label, probe in (('before', before_probe), ('after', after_probe)):
         if flag(probe.get('active')) is not True or probe.get('state') != 'sampling':
             add('source_time_pair_not_active', f'The {label} snapshot is not an active sampling snapshot.')
@@ -758,8 +784,9 @@ def compare_source_time_snapshots(before, after):
     after_samples = after_probe.get('samples')
     before_hooks = before_probe.get('hookSamples')
     after_hooks = after_probe.get('hookSamples')
-    if not all(isinstance(value, list) for value in (before_samples, after_samples, before_hooks, after_hooks)):
-        add('source_time_pair_samples_invalid', 'The paired sample arrays are malformed.')
+    if not _source_time_pair_rows_valid((before_probe, after_probe), before_generation):
+        add('source_time_pair_samples_invalid',
+            'The paired samples are malformed, exceed the fixed limit, or disagree with the round, original generation, ordinal order or listening boundary.')
     else:
         if len(after_samples) < len(before_samples) or len(after_hooks) < len(before_hooks):
             add('source_time_pair_samples_lost', 'A later snapshot contains fewer bounded samples than the earlier one.')
@@ -772,7 +799,7 @@ def compare_source_time_snapshots(before, after):
                                    'actualGetterEncoding')
 
         def stable(rows, keys):
-            return [{key: row.get(key) for key in keys} for row in rows if isinstance(row, dict)]
+            return [{key: row.get(key) for key in keys} for row in rows]
 
         if stable(after_samples[:len(before_samples)], stable_keys) != stable(before_samples, stable_keys) or \
                 stable(after_hooks[:len(before_hooks)], hook_keys) != stable(before_hooks, hook_keys):
@@ -817,11 +844,11 @@ def compare_source_time_stop_snapshots(before, after):
         return bool(value) if type(value) in (bool, int) and value in (0, 1) else None
 
     def snapshot(report):
-        if not isinstance(report, dict) or report.get('reportSchema') != 1:
+        if not isinstance(report, dict) or type(report.get('reportSchema')) is not int or report['reportSchema'] != 1:
             return None, None
         probe = report.get('sourceTimeProbe')
         receiver = report.get('receiveCandidate')
-        if not isinstance(probe, dict) or probe.get('schema') != 1 or not isinstance(receiver, dict):
+        if not isinstance(probe, dict) or type(probe.get('schema')) is not int or probe['schema'] != 1 or not isinstance(receiver, dict):
             return None, None
         return probe, receiver
 
@@ -831,6 +858,9 @@ def compare_source_time_stop_snapshots(before, after):
         add('source_time_stop_pair_invalid', 'Both snapshots must contain a schema-1 source-time probe.')
         return result
     result.extend(_source_time_pair_provenance(before, after, 'source_time_stop_pair_'))
+    if not all(_source_time_pair_scope_valid(probe) for probe in (before_probe, after_probe)):
+        add('source_time_stop_pair_scope_invalid',
+            'Both probes must be observer-only with sending disabled and unverified capabilities kept false.')
     if flag(before_probe.get('active')) is not True or before_probe.get('state') != 'sampling':
         add('source_time_stop_pair_before_not_active', 'The before snapshot is not active sampling.')
     if 'inactivePending' in before_probe and flag(before_probe.get('inactivePending')) is not False:
@@ -840,7 +870,7 @@ def compare_source_time_stop_snapshots(before, after):
                       'environment_blocked', 'receiver_stopped', 'clock_invalid',
                       'time_limit', 'sample_limit', 'context_unavailable'}
     after_state = after_probe.get('state')
-    if flag(after_probe.get('active')) is not False or after_state not in stopped_states:
+    if flag(after_probe.get('active')) is not False or not isinstance(after_state, str) or after_state not in stopped_states:
         add('source_time_stop_pair_after_not_stopped',
             'The after snapshot is not a recognized stopped or inactive state.')
     elif after_state != 'stopped':
@@ -879,8 +909,11 @@ def compare_source_time_stop_snapshots(before, after):
     after_samples = after_probe.get('samples')
     before_hooks = before_probe.get('hookSamples')
     after_hooks = after_probe.get('hookSamples')
-    if not all(isinstance(value, list) for value in (before_samples, after_samples, before_hooks, after_hooks)):
-        add('source_time_stop_pair_samples_invalid', 'The paired sample arrays are malformed.')
+    # A manual stop advances the receiver, but retained rows still belong to the
+    # generation that owned the active round, not the new stopped generation.
+    if not _source_time_pair_rows_valid((before_probe, after_probe), before_generation):
+        add('source_time_stop_pair_samples_invalid',
+            'The paired samples are malformed, exceed the fixed limit, or disagree with the round, original generation, ordinal order or listening boundary.')
     else:
         if len(after_samples) < len(before_samples) or len(after_hooks) < len(before_hooks):
             add('source_time_stop_pair_samples_lost',
@@ -892,7 +925,7 @@ def compare_source_time_stop_snapshots(before, after):
                                    'actualGetterEncoding')
 
         def stable(rows, keys):
-            return [{key: row.get(key) for key in keys} for row in rows if isinstance(row, dict)]
+            return [{key: row.get(key) for key in keys} for row in rows]
 
         if stable(after_samples[:len(before_samples)], stable_keys) != stable(before_samples, stable_keys) or \
                 stable(after_hooks[:len(before_hooks)], hook_keys) != stable(before_hooks, hook_keys):

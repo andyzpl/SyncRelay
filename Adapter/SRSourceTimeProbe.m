@@ -50,6 +50,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
 @property(nonatomic) NSTimeInterval listeningSince;
 @property(nonatomic) double startedMonotonic;
 @property(nonatomic) BOOL inactivePending;
+@property(nonatomic) NSUInteger inactiveGeneration;
 @property(nonatomic) double inactiveSince;
 @property(nonatomic) BOOL resumedAfterInactive;
 @property(nonatomic, copy) NSString *account;
@@ -159,6 +160,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
 - (void)stopWithState:(NSString *)state clearSamples:(BOOL)clearSamples {
     BOOL stopReceiver = self.listening && [self ownsReceiver];
     self.listening = NO; self.starting = NO; self.state = state;
+    self.inactiveGeneration++;
     self.inactivePending = NO; self.inactiveSince = 0; self.resumedAfterInactive = NO;
     self.receiver.observeTimeHook = nil;
     [self.messageOrdinals removeAllObjects];
@@ -185,21 +187,26 @@ static NSString *SRProbeGetterEncoding(Class type) {
 }
 - (void)noteApplicationInactive {
     if (!NSThread.isMainThread || !self.active || self.inactivePending) return;
+    NSUInteger round = self.round;
+    NSUInteger inactiveGeneration = self.inactiveGeneration;
     double now;
     @try { now = self.monotonicClock(); } @catch (__unused id exception) { return; }
+    if (self.round != round || !self.active || self.inactiveGeneration != inactiveGeneration || self.inactivePending) return;
     if (!isfinite(now) || now < 0) return;
+    self.inactiveGeneration++;
     self.inactiveSince = now;
     self.inactivePending = YES;
 }
 - (void)noteApplicationActive {
     if (!NSThread.isMainThread || !self.inactivePending) return;
     NSUInteger round = self.round;
+    NSUInteger inactiveGeneration = self.inactiveGeneration;
     double inactiveSince = self.inactiveSince;
     double now = NAN;
     BOOL clockRead = NO;
     @try { now = self.monotonicClock(); clockRead = YES; }
     @catch (__unused id exception) { }
-    if (self.round != round || !self.listening || !self.inactivePending) return;
+    if (self.round != round || !self.listening || self.inactiveGeneration != inactiveGeneration || !self.inactivePending) return;
     if (!clockRead || !isfinite(now) || now < inactiveSince) {
         [self stopWithState:@"clock_invalid" clearSamples:NO]; return;
     }
@@ -208,6 +215,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
     if (now - inactiveSince >= SRInactiveGraceLimit) {
         [self stopForReason:SRSourceTimeProbeInactive]; return;
     }
+    self.inactiveGeneration++;
     self.inactivePending = NO; self.inactiveSince = 0; self.resumedAfterInactive = YES;
 }
 - (void)tick {
@@ -220,8 +228,12 @@ static NSString *SRProbeGetterEncoding(Class type) {
     }
     if (!self.listening) return;
     if (self.inactivePending) {
+        NSUInteger inactiveGeneration = self.inactiveGeneration;
         double now;
         @try { now = self.monotonicClock(); } @catch (__unused id exception) { now = NAN; }
+        // A clock callback may stop, restart or replace this inactive interval,
+        // even at the same timestamp. Its stale result cannot change that state.
+        if (self.round != round || !self.listening || self.inactiveGeneration != inactiveGeneration || !self.inactivePending) return;
         if (!isfinite(now) || now < self.inactiveSince) {
             [self stopWithState:@"clock_invalid" clearSamples:NO]; return;
         }

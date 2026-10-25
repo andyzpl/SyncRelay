@@ -372,6 +372,18 @@ class ReportTests(unittest.TestCase):
                 'hookScope': 'selected_source_text_image_before_readiness_filters',
                 'hookSamples': [], 'receiverGeneration': generation}
 
+    def source_time_row(self, hook=False, ordinal=1):
+        row = {'ordinal': ordinal, 'messageOrdinal': ordinal, 'round': 2,
+               'receiverGeneration': 9, 'selfSource': False, 'createdAt': 103,
+               'receivedAt': 104, 'listeningSince': 101.5}
+        if hook:
+            row.update(messageType=1, path='receive', serverIDPresent=True,
+                       correlationScope='server', actualGetterEncoding='I')
+        else:
+            row.update(deliveredAt=105, deliveryClockRollback=False,
+                       relationship='after_boundary', strictPolicyWouldAccept=True)
+        return row
+
     def test_source_time_probe_lifecycle_and_capabilities_are_bounded(self):
         report = self.base()
         report['sourceTimeProbe'] = self.probe()
@@ -458,6 +470,24 @@ class ReportTests(unittest.TestCase):
         codes = self.codes(report)
         self.assertTrue({'source_time_probe_hooks_invalid', 'source_time_probe_capability_invalid'} <= codes)
         self.assertNotIn('private message', str(analyze(report)))
+
+    def test_source_time_corrupt_numbers_and_enum_containers_do_not_raise(self):
+        for hook in (False, True):
+            section = 'hookSamples' if hook else 'samples'
+            invalid_code = 'source_time_probe_hooks_invalid' if hook else 'source_time_probe_samples_invalid'
+            fields = ('createdAt', 'receivedAt', 'listeningSince') + (() if hook else ('deliveredAt',))
+            updates = [{key: value} for key in fields
+                       for value in (10 ** 400, float('inf'), float('nan'), 'private-time')]
+            updates += [{'actualGetterEncoding' if hook else 'relationship': value}
+                        for value in ([], {}, ['private-value'])]
+            for update in updates:
+                with self.subTest(hook=hook, update=update):
+                    report = self.base()
+                    probe = report['sourceTimeProbe'] = self.probe()
+                    probe[section] = [dict(self.source_time_row(hook), **update)]
+                    findings = analyze(report)
+                    self.assertIn(invalid_code, {item['code'] for item in findings})
+                    self.assertNotIn('private-', str(findings))
 
     def test_self_local_id_correlation_requires_exact_anonymous_match(self):
         report = self.base()
@@ -615,6 +645,8 @@ class ReportTests(unittest.TestCase):
         ]
         before['sourceCapture'] = {'state': 'idle'}
         before['imageSource'] = {'reads': 0}
+        before['sendingEnabled'] = False
+        before['receiveCandidate'].update(imageReads=0, receiverGeneration=9)
         after = {key: (value.copy() if isinstance(value, dict) else value) for key, value in before.items()}
         after['sourceTimeProbe'] = {key: (value.copy() if isinstance(value, list) else value)
                                     for key, value in probe.items()}
@@ -844,6 +876,113 @@ class ReportTests(unittest.TestCase):
                 self.assertIn(prefix + 'export_order_invalid', codes)
                 self.assertNotIn(success, codes)
 
+    def test_pairs_require_integer_report_and_probe_schema_versions(self):
+        for stopped in (False, True):
+            compare, prefix, success = self.pair_comparator(stopped)
+            for section in (None, 'sourceTimeProbe'):
+                for value in (True, 1.0):
+                    with self.subTest(stopped=stopped, section=section, value=value):
+                        before, after = self.source_time_pair(stopped)
+                        for report in (before, after):
+                            (report if section is None else report[section])[
+                                'reportSchema' if section is None else 'schema'] = value
+                        findings = compare(before, after)
+                        self.assertIn(prefix + 'invalid', {item['code'] for item in findings})
+                        self.assertNotIn(success, {item['code'] for item in findings})
+                        if section is None:
+                            self.assertEqual({'unsupported_schema'}, self.codes(before))
+
+    def test_pairs_validate_bounded_sample_rows_before_retention(self):
+        for stopped in (False, True):
+            compare, prefix, success = self.pair_comparator(stopped)
+            for hook in (False, True):
+                section = 'hookSamples' if hook else 'samples'
+                row = self.source_time_row(hook)
+                invalid_rows = [None, 1, 'private-sample', {},
+                                dict(row, createdAt=10 ** 400), dict(row, receivedAt=float('nan')),
+                                dict(row, **{'actualGetterEncoding' if hook else 'relationship': []})]
+                if hook:
+                    invalid_rows.append(dict(row, messageType=True))
+                arrays = [[row] for row in invalid_rows]
+                arrays.append([self.source_time_row(hook, ordinal) for ordinal in range(1, 18)])
+                for index, rows in enumerate(arrays):
+                    with self.subTest(stopped=stopped, hook=hook, case=index):
+                        before, after = self.source_time_pair(stopped)
+                        before['sourceTimeProbe'][section] = rows
+                        after['sourceTimeProbe'][section] = rows
+                        findings = compare(before, after)
+                        codes = {item['code'] for item in findings}
+                        self.assertIn(prefix + 'samples_invalid', codes)
+                        self.assertNotIn(success, codes)
+                        self.assertNotIn('private-sample', str(findings))
+
+    def test_pairs_reject_cross_round_generation_ordinal_and_boundary_evidence(self):
+        for stopped in (False, True):
+            compare, prefix, success = self.pair_comparator(stopped)
+            for hook in (False, True):
+                section = 'hookSamples' if hook else 'samples'
+                row = self.source_time_row(hook)
+                arrays = [[dict(row, **update)] for update in
+                          ({'round': 3}, {'receiverGeneration': 10}, {'ordinal': 2})]
+                arrays += [[row, dict(row)],
+                           [row, dict(self.source_time_row(hook, 2), listeningSince=102.5)]]
+                for index, rows in enumerate(arrays):
+                    with self.subTest(stopped=stopped, hook=hook, case=index):
+                        before, after = self.source_time_pair(stopped)
+                        before['sourceTimeProbe'][section] = after['sourceTimeProbe'][section] = rows
+                        codes = {item['code'] for item in compare(before, after)}
+                        self.assertIn(prefix + 'samples_invalid', codes)
+                        self.assertNotIn(success, codes)
+            before, after = self.source_time_pair(stopped)
+            before['sourceTimeProbe']['samples'] = [self.source_time_row()]
+            after['sourceTimeProbe']['samples'] = [self.source_time_row()]
+            after['sourceTimeProbe']['hookSamples'] = [dict(self.source_time_row(True), listeningSince=102.5)]
+            self.assertIn(prefix + 'samples_invalid',
+                          {item['code'] for item in compare(before, after)})
+
+    def test_pairs_reject_unsafe_scope_and_malformed_lifecycle_state(self):
+        updates = ({'observerOnly': False}, {'sendingEnabled': True},
+                   {'observerOnly': 'private-scope'}, {'sourceTimeSemanticsVerified': True},
+                   {'imageReadinessObserved': True}, {'imageReadinessObserved': None})
+        for stopped in (False, True):
+            compare, prefix, success = self.pair_comparator(stopped)
+            for snapshot in (0, 1):
+                for update in updates:
+                    with self.subTest(stopped=stopped, snapshot=snapshot, update=update):
+                        pair = self.source_time_pair(stopped)
+                        pair[snapshot]['sourceTimeProbe'].update(update)
+                        findings = compare(*pair)
+                        codes = {item['code'] for item in findings}
+                        self.assertIn(prefix + 'scope_invalid', codes)
+                        self.assertNotIn(success, codes)
+                        self.assertNotIn('private-scope', str(findings))
+            for state in ([], {}, ['private-state']):
+                with self.subTest(stopped=stopped, state=state):
+                    before, after = self.source_time_pair(stopped)
+                    after['sourceTimeProbe']['state'] = state
+                    findings = compare(before, after)
+                    codes = {item['code'] for item in findings}
+                    self.assertIn(prefix + ('after_not_stopped' if stopped else 'not_active'), codes)
+                    self.assertNotIn(success, codes)
+                    self.assertNotIn('private-state', str(findings))
+
+    def test_pairs_allow_valid_appended_samples_and_preserve_original_generation_on_stop(self):
+        for stopped in (False, True):
+            compare, _, success = self.pair_comparator(stopped)
+            before, after = self.source_time_pair(stopped)
+            for hook in (False, True):
+                section = 'hookSamples' if hook else 'samples'
+                before['sourceTimeProbe'][section] = [self.source_time_row(hook)]
+                after['sourceTimeProbe'][section] = [self.source_time_row(hook), self.source_time_row(hook, 2)]
+            for report in (before, after):
+                report['sourceTimeProbe'].update(observerOnly=1, sendingEnabled=0,
+                    sourceTimeSemanticsVerified=0, imageReadinessObserved=0,
+                    actualWrapABIObserved=True, prefilteredCallbacksObserved=True)
+            self.assertEqual({success}, {item['code'] for item in compare(before, after)})
+            if stopped:
+                self.assertEqual(10, after['receiveCandidate']['receiverGeneration'])
+                self.assertEqual(9, after['sourceTimeProbe']['samples'][0]['receiverGeneration'])
+
     def test_pairs_allow_trimmed_logs_but_not_rewound_sequences(self):
         for stopped in (False, True):
             compare, prefix, success = self.pair_comparator(stopped)
@@ -920,6 +1059,28 @@ class ReportTests(unittest.TestCase):
                     with self.assertRaises(SystemExit) as raised:
                         diagnose_report.main() if not arguments else self.run_cli(*arguments)
                     self.assertEqual(2, raised.exception.code)
+
+    def test_cli_returns_fixed_findings_for_corrupt_source_time_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            before_path, after_path = Path(directory) / 'before.json', Path(directory) / 'after.json'
+            for stopped in (False, True):
+                before, after = self.source_time_pair(stopped)
+                for report in (before, after):
+                    report['sourceTimeProbe']['samples'] = [None]
+                    report['privateField'] = 'private-body-wxid-path'
+                before_path.write_text(json.dumps(before), encoding='utf-8')
+                after_path.write_text(json.dumps(after), encoding='utf-8')
+                findings = self.run_cli('--stop-pair' if stopped else '--pair', before_path, after_path)
+                _, prefix, success = self.pair_comparator(stopped)
+                codes = {item['code'] for item in findings}
+                self.assertIn(prefix + 'samples_invalid', codes)
+                self.assertNotIn(success, codes)
+                self.assertNotIn('private-body-wxid-path', str(findings))
+            before['sourceTimeProbe']['samples'] = [dict(self.source_time_row(), createdAt=10 ** 400)]
+            before_path.write_text(json.dumps(before), encoding='utf-8')
+            findings = self.run_cli(before_path)
+            self.assertIn('source_time_probe_samples_invalid', {item['code'] for item in findings})
+            self.assertNotIn('private-body-wxid-path', str(findings))
 
 
 if __name__ == '__main__':

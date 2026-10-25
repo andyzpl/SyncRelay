@@ -169,6 +169,45 @@ class SourceTimeProbeContracts(unittest.TestCase):
         for call in calls:
             self.assertTrue(call.startswith(' return (BOOL)('))
 
+    def test_inactive_clock_results_recheck_round_and_interval_before_mutation(self):
+        source = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
+        for start, end, active in (
+                ('- (void)noteApplicationInactive {', '- (void)noteApplicationActive {', '!self.active'),
+                ('- (void)noteApplicationActive {', '- (void)tick {', '!self.listening'),
+                ('- (void)tick {', '- (void)receiveMessage:', '!self.listening')):
+            with self.subTest(method=start):
+                method = source.split(start, 1)[1].split(end, 1)[0]
+                clock = method.index('now = self.monotonicClock()')
+                self.assertIn('self.inactiveGeneration != inactiveGeneration', method[clock:])
+                guard = method.index('self.inactiveGeneration != inactiveGeneration', clock)
+                self.assertLess(guard, method.index('!isfinite(now)', clock))
+                self.assertIn('NSUInteger inactiveGeneration = self.inactiveGeneration;', method[:clock])
+                self.assertIn('self.round != round', method[clock:guard])
+                self.assertIn(active, method[clock:guard])
+
+    def test_inactive_interval_identity_changes_on_stop_resume_and_new_inactive(self):
+        source = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
+        for start, end in (
+                ('- (void)stopWithState:', '- (void)stopForReason:'),
+                ('- (void)noteApplicationInactive {', '- (void)noteApplicationActive {'),
+                ('- (void)noteApplicationActive {', '- (void)tick {')):
+            with self.subTest(method=start):
+                method = source.split(start, 1)[1].split(end, 1)[0]
+                self.assertEqual(1, method.count('self.inactiveGeneration++;'))
+        diagnostics = source.split('- (NSDictionary *)diagnostics {', 1)[1]
+        self.assertNotIn('inactiveGeneration', diagnostics)
+
+    def test_native_clock_reentry_regressions_are_called(self):
+        native = (ROOT / 'tests/source_time_probe_test.m').read_text(encoding='utf-8')
+        main = native.split('int main(void)', 1)[1]
+        for name in ('checkInactiveClockReentry', 'checkInactiveClockResume', 'checkInactiveIntervalReplacement'):
+            self.assertIn(f'static void {name}(void)', native)
+            self.assertEqual(1, main.count(f'{name}();'))
+        reentry = native.split('static void checkInactiveClockReentry(void) {', 1)[1].split('static void checkInactiveClockResume', 1)[0]
+        for required in ('entry < 3', 'restart < 2', 'outcome < 3', 'onMonotonicRead = nil',
+                         'receiverGeneration', 'fixture.receiver.observeTimeHook', 'fixture.changes == changes + 1 + restart'):
+            self.assertIn(required, reentry)
+
 
 if __name__ == '__main__':
     unittest.main()

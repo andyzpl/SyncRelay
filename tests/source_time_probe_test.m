@@ -66,6 +66,7 @@
 @property(nonatomic) NSUInteger changes;
 @property(nonatomic, copy) void (^onChange)(void);
 @property(nonatomic, copy) void (^onReceiverAccountRead)(void);
+@property(nonatomic, copy) void (^onMonotonicRead)(void);
 - (instancetype)initWithWrapClass:(Class)type;
 - (BOOL)start;
 - (void)stop;
@@ -99,7 +100,11 @@
                 return weakSelf.current;
             } configurationForAccount:^NSDictionary *(__unused NSString *account) { return weakSelf.configuration; }
             environmentAllowed:^BOOL { return weakSelf.allowed; }
-            monotonicClock:^double { return weakSelf.monotonic; } wallClock:^double { return weakSelf.wall; }
+            monotonicClock:^double {
+                double now = weakSelf.monotonic;
+                if (weakSelf.onMonotonicRead) weakSelf.onMonotonicRead();
+                return now;
+            } wallClock:^double { return weakSelf.wall; }
             legacyReceived:^(__unused NSDictionary *message) { weakSelf.legacyCalls++; }
             changed:^{ CHECK(NSThread.isMainThread); weakSelf.changes++; if (weakSelf.onChange) weakSelf.onChange(); }];
     }
@@ -146,7 +151,7 @@ static void privateReport(TimeProbeFixture *fixture) {
     CHECK([NSJSONSerialization isValidJSONObject:report]);
     NSString *text = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:report options:0 error:NULL] encoding:NSUTF8StringEncoding];
     for (NSString *secret in @[@"wxid_time_private", @"wxid_other_private", @"private_source@chatroom", @"private body", @"private source name",
-        @"private self name", @"9007199254740993", @"private context exception", @"private original exception", @"payload", @"messageID"])
+        @"private self name", @"9007199254740993", @"private context exception", @"private original exception", @"private clock exception", @"payload", @"messageID"])
         CHECK(![text containsString:secret]);
     for (NSString *key in @[@"sourceTimeSemanticsVerified", @"imageReadinessObserved", @"sendingEnabled"])
         CHECK([report[key] isEqual:@NO]);
@@ -431,6 +436,112 @@ static void checkInactiveGrace(void) {
     privateReport(fixture); [fixture stop];
 }
 
+static void checkInactiveClockReentry(void) {
+    for (NSUInteger entry = 0; entry < 3; entry++) {
+        for (NSUInteger restart = 0; restart < 2; restart++) {
+            for (NSUInteger outcome = 0; outcome < 3; outcome++) {
+                TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+                CHECK([fixture start]); fixture.wall = 2001.5; receive(fixture, message(2001));
+                CHECK(count(fixture) == 1);
+                fixture.wall = 2000.5;
+                fixture.monotonic = 20;
+                if (entry != 0) [fixture.probe noteApplicationInactive];
+                fixture.monotonic = outcome == 1 ? NAN : 21;
+                NSUInteger changes = fixture.changes;
+                __weak TimeProbeFixture *weakFixture = fixture;
+                __block NSNumber *generation = nil;
+                __block BOOL fired = NO;
+                fixture.onMonotonicRead = ^{
+                    weakFixture.onMonotonicRead = nil; fired = YES;
+                    [weakFixture.probe stopForReason:SRSourceTimeProbeUserStopped];
+                    weakFixture.monotonic = 21;
+                    // Keep the wall boundary identical: ownership is not a timestamp.
+                    if (restart) CHECK([weakFixture start]);
+                    generation = weakFixture.receiver.diagnostics[@"receiverGeneration"];
+                    if (outcome == 2) @throw @"private clock exception";
+                };
+                if (entry == 0) [fixture.probe noteApplicationInactive];
+                else if (entry == 1) [fixture.probe noteApplicationActive];
+                else [fixture.probe tick];
+                CHECK(fired && fixture.probe.active == (BOOL)restart);
+                NSDictionary *report = fixture.probe.diagnostics;
+                CHECK([report[@"round"] unsignedIntegerValue] == 1 + restart);
+                CHECK([report[@"state"] isEqual:restart ? @"sampling" : @"stopped"]);
+                CHECK(![report[@"inactivePending"] boolValue] && ![report[@"resumedAfterInactive"] boolValue]);
+                CHECK([report[@"samples"] count] == (restart ? 0 : 1));
+                CHECK(fixture.changes == changes + 1 + restart);
+                CHECK([fixture.receiver.diagnostics[@"armed"] boolValue] == (BOOL)restart);
+                CHECK([fixture.receiver.diagnostics[@"receiverGeneration"] isEqual:generation]);
+                CHECK((fixture.receiver.observeTimeHook != nil) == (BOOL)restart);
+                if (restart) {
+                    fixture.wall = 2002.5; receive(fixture, message(2002));
+                    CHECK(count(fixture) == 1 && [report[@"receiverGeneration"] isEqual:last(fixture)[@"receiverGeneration"]]);
+                }
+                CHECK(fixture.legacyCalls == 0); privateReport(fixture); [fixture stop];
+            }
+        }
+    }
+}
+
+static void checkInactiveClockResume(void) {
+    TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+    CHECK([fixture start]); fixture.monotonic = 20; [fixture.probe noteApplicationInactive];
+    fixture.monotonic = 21;
+    __weak TimeProbeFixture *weakFixture = fixture;
+    fixture.onMonotonicRead = ^{
+        weakFixture.onMonotonicRead = nil;
+        [weakFixture.probe noteApplicationActive];
+    };
+    [fixture.probe tick];
+    CHECK(fixture.probe.active && ![fixture.probe.diagnostics[@"inactivePending"] boolValue]);
+    CHECK([fixture.probe.diagnostics[@"resumedAfterInactive"] boolValue]);
+    CHECK([fixture.receiver.diagnostics[@"armed"] boolValue]);
+    fixture.monotonic = 22; [fixture.probe tick]; CHECK(fixture.probe.active);
+    privateReport(fixture); [fixture stop];
+}
+
+static void checkInactiveIntervalReplacement(void) {
+    for (NSUInteger entry = 0; entry < 3; entry++) {
+        for (NSUInteger outcome = 0; outcome < 3; outcome++) {
+            TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+            CHECK([fixture start]); fixture.monotonic = 20;
+            if (entry != 0) [fixture.probe noteApplicationInactive];
+            fixture.monotonic = outcome == 1 ? NAN : 20;
+            __weak TimeProbeFixture *weakFixture = fixture;
+            fixture.onMonotonicRead = ^{
+                weakFixture.onMonotonicRead = nil; weakFixture.monotonic = 20;
+                if (entry == 0) [weakFixture.probe noteApplicationInactive];
+                [weakFixture.probe noteApplicationActive];
+                // A new interval can have exactly the same clock boundary.
+                if (entry != 0) [weakFixture.probe noteApplicationInactive];
+                if (outcome == 2) @throw @"private clock exception";
+            };
+            if (entry == 0) [fixture.probe noteApplicationInactive];
+            else if (entry == 1) [fixture.probe noteApplicationActive];
+            else [fixture.probe tick];
+            CHECK(fixture.probe.active && [fixture.receiver.diagnostics[@"armed"] boolValue]);
+            CHECK([fixture.probe.diagnostics[@"inactivePending"] boolValue] == (entry != 0));
+            CHECK([fixture.probe.diagnostics[@"resumedAfterInactive"] boolValue]);
+            fixture.monotonic = 22; [fixture.probe tick];
+            CHECK(fixture.probe.active == (entry == 0));
+            CHECK([fixture.probe.diagnostics[@"state"] isEqual:entry == 0 ? @"sampling" : @"inactive"]);
+            privateReport(fixture); [fixture stop];
+        }
+    }
+    // The guard must not hide a genuine failure in the still-current interval.
+    for (NSUInteger outcome = 0; outcome < 3; outcome++) {
+        TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+        CHECK([fixture start]); fixture.wall = 2001.5; receive(fixture, message(2001));
+        fixture.monotonic = 20; [fixture.probe noteApplicationInactive];
+        fixture.monotonic = outcome == 0 ? 19 : NAN;
+        if (outcome == 2) fixture.onMonotonicRead = ^{ @throw @"private clock exception"; };
+        [fixture.probe tick]; fixture.onMonotonicRead = nil;
+        CHECK(!fixture.probe.active && ![fixture.receiver.diagnostics[@"armed"] boolValue]);
+        CHECK([fixture.probe.diagnostics[@"state"] isEqual:@"clock_invalid"] && count(fixture) == 1);
+        privateReport(fixture); [fixture stop];
+    }
+}
+
 static void checkCapabilityAndFaults(void) {
     for (Class type in @[TimeProbeWrap.class, FloatingTimeWrap.class]) {
         TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:type];
@@ -523,6 +634,7 @@ int main(void) {
     @autoreleasepool {
         checkObservation(); checkOwnAndGeneration(); checkReadbackCorrelationRejectsMismatch();
         checkBoundsAndInvalidation(); checkInactiveGrace(); checkCapabilityAndFaults(); checkMetadataAndClocks(); checkReentrantRestart(); checkSupplementalHooks();
+        checkInactiveClockReentry(); checkInactiveClockResume(); checkInactiveIntervalReplacement();
         puts("PASS: read-only source-time text probe, original chain, frozen evidence, bounded rounds, identity invalidation, no image preparation and legacy capture routing");
     }
     return 0;

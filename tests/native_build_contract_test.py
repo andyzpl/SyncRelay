@@ -1,10 +1,60 @@
 """Validate native test source manifests locally; this does not link or run ObjC."""
+from collections import Counter
 from pathlib import Path
 import re
 import shlex
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def native_execution_counts(workflow):
+    """Read the fixed CI test script, not arbitrary shell or actual execution evidence."""
+    marker = '      - name: Test production core on macOS\n        run: |\n'
+    if workflow.count(marker) != 1:
+        raise ValueError('expected exactly one native test step')
+    script = workflow.split(marker, 1)[1].split('\n      - ', 1)[0]
+    lines = [line.strip() for line in script.splitlines()]
+    if not lines or lines[0] != 'set -euo pipefail':
+        raise ValueError('native test failures must stop the step')
+    targets, executions = {}, Counter()
+    in_loop = loop_seen = False
+    for line in lines[1:]:
+        if not line or line.startswith('#'):
+            continue
+        if line == "python3 -m unittest discover -s tests -p '*_test.py'":
+            continue
+        if line == 'for pass in 1 2 3; do':
+            if in_loop or loop_seen:
+                raise ValueError('expected one non-nested three-pass loop')
+            in_loop = loop_seen = True
+            continue
+        if line == 'done':
+            if not in_loop:
+                raise ValueError('unmatched native loop end')
+            in_loop = False
+            continue
+        if line.startswith('clang '):
+            command = shlex.split(line)
+            sources = [arg for arg in command if re.fullmatch(r'tests/\w+_test\.[mc]', arg)]
+            output = re.fullmatch(r'\$RUNNER_TEMP/([\w-]+)', command[-1])
+            if (in_loop or loop_seen or command.count('-o') != 1 or command[-2] != '-o'
+                    or len(sources) != 1 or output is None
+                    or any(not re.fullmatch(r'[-\w./=,+]+', arg) for arg in command[:-1])):
+                raise ValueError('unsupported native compile command')
+            target = output.group(1)
+            if target in targets:
+                raise ValueError('duplicate native compile target')
+            targets[target] = sources[0]
+            continue
+        invocation = re.fullmatch(r'"\$RUNNER_TEMP/([\w-]+)"', line)
+        if invocation and invocation.group(1) in targets:
+            executions[invocation.group(1)] += 3 if in_loop else 1
+            continue
+        raise ValueError('unsupported native test script command')
+    if in_loop or not loop_seen:
+        raise ValueError('expected one complete native test loop')
+    return targets, executions
 
 
 def perform_blocks(text):
@@ -113,13 +163,51 @@ class NativeBuildContracts(unittest.TestCase):
             if 'Core/SRStore.m' in command:
                 self.assertIn('Core/SRMediaAlertState.m', command)
 
-    def test_all_native_targets_run_three_passes(self):
+    def assert_native_execution_coverage(self, workflow):
+        targets, executions = native_execution_counts(workflow)
+        sources = [f'tests/{path.name}' for path in (ROOT / 'tests').glob('*_test.[mc]')]
+        self.assertCountEqual(sources, targets.values(), 'every native test must compile once')
+        single_pass = {'tests/pacing_test.c', 'tests/operations_state_test.c'}
+        expected = {target: 1 if source in single_pass else 3
+                    for target, source in targets.items()}
+        self.assertEqual(expected, executions, 'every compiled target must execute its exact pass count')
+
+    def test_every_native_target_compiles_and_has_exact_execution_count(self):
         workflow = (ROOT / '.github/workflows/build.yml').read_text(encoding='utf-8')
-        self.assertIn('for pass in 1 2 3; do', workflow)
-        loop = workflow.split('for pass in 1 2 3; do', 1)[1].split('done', 1)[0]
-        binaries = [line.strip().strip('"').replace('$RUNNER_TEMP/', '')
-                    for line in loop.splitlines() if line.strip()]
-        self.assertTrue({'media-quota-test', 'media-budget-test', 'image-asset-test'} <= set(binaries))
+        self.assert_native_execution_coverage(workflow)
+
+    def test_native_execution_contract_rejects_missing_or_miscounted_execution(self):
+        workflow = (ROOT / '.github/workflows/build.yml').read_text(encoding='utf-8')
+        store = '            "$RUNNER_TEMP/store-test"\n'
+        probe = '            "$RUNNER_TEMP/source-time-probe-test"\n'
+        loop = '          for pass in 1 2 3; do\n'
+        compile_store = next(line + '\n' for line in workflow.splitlines()
+                             if 'tests/store_test.m' in line)
+        missing_store = workflow.replace(store, '', 1)
+        mutations = {
+            'compiled but never executed': missing_store,
+            'commented invocation': workflow.replace(store, store.replace('"$', '# "$'), 1),
+            'moved out of three-pass loop': workflow.replace(probe, '', 1).replace(
+                loop, '          "$RUNNER_TEMP/source-time-probe-test"\n' + loop, 1),
+            'duplicate invocation': workflow.replace(store, store * 2, 1),
+            'shortened loop': workflow.replace('for pass in 1 2 3; do', 'for pass in 1 2; do', 1),
+            'unclosed loop': workflow.replace('          done\n', '', 1),
+            'masked failure': workflow.replace(store, store.rstrip() + ' || true\n', 1),
+            'echo instead of execution': workflow.replace(store, store.replace('"$', 'echo "$'), 1),
+            'early successful exit': workflow.replace(loop, '          exit 0\n' + loop, 1),
+            'uncompiled invocation': workflow.replace(store, store.replace('store-test', 'missing-test'), 1),
+            'missing compilation': workflow.replace(compile_store, '', 1),
+            'duplicate compilation': workflow.replace(compile_store, compile_store * 2, 1),
+            'invocation only in another step': missing_store.replace(
+                '      - name: Install build tools',
+                '      - name: Unrelated step\n        run: |\n' + store
+                + '      - name: Install build tools', 1),
+        }
+        for name, mutated in mutations.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises((AssertionError, ValueError)):
+                    self.assert_native_execution_coverage(mutated)
 
     def test_no_perform_block_captures_the_caller_error_out_parameter(self):
         # A captured NSError ** is autoreleasing storage, so clang rejects it under
