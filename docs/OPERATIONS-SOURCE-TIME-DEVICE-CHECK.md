@@ -2,7 +2,7 @@
 
 **2026-10-25 最新打包状态（当前精确快照，未安装）：** 按授权从当前开发快照建立隔离分支 `codex/a-package-20261025`，提交 `02cf7fb963fb4e34bb2a83a35d68fd1415e2aa87`，运行一次 `build_deb=true` CI `40179290423` / job `121126667336` 并成功。Python **225 项**通过；22 个 Objective-C 目标各执行 3 次，pacing/operations-state 各执行 1 次、media-quota 执行 3 次；普通 `iphoneos-arm` DEB 已由 CI 用 `dpkg-deb` 检查并用 `lipo` 验证 `arm64`/`arm64e`。包 SHA-256 为 `bedb3a3a722dd10dbeed51ee857e4e9eaaf6fecd83666c6ee235df0a9e9692d5`，artifact ID `12592629882`，详情见 [BUILD-0.2.21-apackage.1.md](BUILD-0.2.21-apackage.1.md)。本次没有安装、迁移、清理设备数据或新增真机采样；A 的真实宿主语义仍未整体验收，B/C 继续关闭。
 
-**2026-10-25 最新状态（设备无需操作）：** 隔离分支 `codex/a-probe-clock-invalid-native-20261025-r3` 的提交 `aa01abe451a5bd4254f6e3df829ac4fdb8032f29` 经 CI `40169810412` / job `121098186039`、`build_deb=false` 成功完成；Python 224 项，探针及其字段夹具、inactive 时钟失败边界原生三轮通过。未生成包、未安装、未迁移、未操作设备；现有来源时间/页面信号/被动图片就绪证据不变，也不需要重复切页、空采样或导出报告。A 的开发侧原生模拟门槛已补齐，真实宿主语义仍保持未覆盖，详见 [本地收口记录](OPERATIONS-A-LOCAL-CLOSEOUT.md)。
+**2026-10-25 先前状态（设备无需操作，已被上方打包结果覆盖）：** 隔离分支 `codex/a-probe-clock-invalid-native-20261025-r3` 的提交 `aa01abe451a5bd4254f6e3df829ac4fdb8032f29` 经 CI `40169810412` / job `121098186039`、`build_deb=false` 成功完成；Python 224 项，探针及其字段夹具、inactive 时钟失败边界原生三轮通过。未生成包、未安装、未迁移、未操作设备；现有来源时间/页面信号/被动图片就绪证据不变，也不需要重复切页、空采样或导出报告。A 的开发侧原生模拟门槛已补齐，真实宿主语义仍保持未覆盖，详见 [本地收口记录](OPERATIONS-A-LOCAL-CLOSEOUT.md)。
 
 **2026-10-25 历史原生回归（迁移路径移除前快照，设备无需操作）：** 隔离分支提交 `c35fb7181bc211d2b1d19e1de6c92a9b8bee9609` 在 CI `40147383615` / job `121031524021` 以 `build_deb=false` 完成当时快照的 Python **214 项**、Objective-C 原生目标三轮执行及 C 目标编译/执行；未构建 DEB、未安装或迁移，也未新增真机报告。该结果不能覆盖当前工作区；完整来源时间语义、页面级生命周期和图片资源就绪仍缺证据；`102427`/`102428` 结论不变，不重复页面切换或空采样。
 
