@@ -436,6 +436,21 @@ static void checkInactiveGrace(void) {
     privateReport(fixture); [fixture stop];
 }
 
+static void checkInactiveEntryClockFailures(void) {
+    for (NSUInteger failure = 0; failure < 3; failure++) {
+        TimeProbeFixture *fixture = [[TimeProbeFixture alloc] initWithWrapClass:IntegerTimeWrap.class];
+        CHECK([fixture start]); fixture.wall = 2001.5; receive(fixture, message(2001));
+        CHECK(count(fixture) == 1);
+        fixture.monotonic = failure == 0 ? NAN : (failure == 1 ? -1 : 21);
+        if (failure == 2) fixture.onMonotonicRead = ^{ @throw @"private clock exception"; };
+        [fixture.probe noteApplicationInactive]; fixture.onMonotonicRead = nil;
+        CHECK(!fixture.probe.active && ![fixture.receiver.diagnostics[@"armed"] boolValue]);
+        CHECK([fixture.probe.diagnostics[@"state"] isEqual:@"clock_invalid"]);
+        CHECK(count(fixture) == 1 && fixture.receiver.observeTimeHook == nil);
+        privateReport(fixture); [fixture stop];
+    }
+}
+
 static void checkInactiveClockReentry(void) {
     for (NSUInteger entry = 0; entry < 3; entry++) {
         for (NSUInteger restart = 0; restart < 2; restart++) {
@@ -475,7 +490,9 @@ static void checkInactiveClockReentry(void) {
                 CHECK((fixture.receiver.observeTimeHook != nil) == (BOOL)restart);
                 if (restart) {
                     fixture.wall = 2002.5; receive(fixture, message(2002));
-                    CHECK(count(fixture) == 1 && [report[@"receiverGeneration"] isEqual:last(fixture)[@"receiverGeneration"]]);
+                    CHECK(count(fixture) == 1);
+                    CHECK([last(fixture)[@"receiverGeneration"] isEqual:generation]);
+                    CHECK([last(fixture)[@"round"] isEqual:report[@"round"]]);
                 }
                 CHECK(fixture.legacyCalls == 0); privateReport(fixture); [fixture stop];
             }
@@ -633,7 +650,7 @@ static void checkSupplementalHooks(void) {
 int main(void) {
     @autoreleasepool {
         checkObservation(); checkOwnAndGeneration(); checkReadbackCorrelationRejectsMismatch();
-        checkBoundsAndInvalidation(); checkInactiveGrace(); checkCapabilityAndFaults(); checkMetadataAndClocks(); checkReentrantRestart(); checkSupplementalHooks();
+        checkBoundsAndInvalidation(); checkInactiveGrace(); checkInactiveEntryClockFailures(); checkCapabilityAndFaults(); checkMetadataAndClocks(); checkReentrantRestart(); checkSupplementalHooks();
         checkInactiveClockReentry(); checkInactiveClockResume(); checkInactiveIntervalReplacement();
         puts("PASS: read-only source-time text probe, original chain, frozen evidence, bounded rounds, identity invalidation, no image preparation and legacy capture routing");
     }

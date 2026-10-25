@@ -1,6 +1,6 @@
 # 运营 v2：阶段 A 数据与事务契约
 
-**2026-10-25 最新本地状态：** 只读探针的时钟回调现在绑定采样 round 和 inactive 区间 generation；停止/恢复/新 inactive 使旧结果失效，同一时间戳也不能混作同一区间。Python 全量 222 项、双架构 106 单元语法检查通过；新增原生用例待 macOS 编译/链接/执行，旧 CI `40154276666` 不覆盖本次增量。schema 14 仍只接受新建/当前库重开，不支持旧库升级；无需迁移或设备操作。A 未整体验收、B/C 关闭，详见 [本地收口记录](OPERATIONS-A-LOCAL-CLOSEOUT.md)。
+**2026-10-25 最新状态：** 隔离原生 CI `40164827983`（快照 `004712e`、`build_deb=false`）在探针新增用例首轮失败，原因为测试读取不存在的报告顶层 receiver 代次字段；CI Python 222 项及原生编译链接完成，但三轮执行未完成。修正夹具后，本地进一步修复 inactive 起始时 monotonic clock 异常/非有限/负值会静默漏记宽限的问题：经 round/interval 复核后停止探针并保留样本，补充三类原生故障用例与源码契约。当前探针契约 16 项、完整 Python 224 项、双架构 106 单元语法检查通过；新增 Objective-C 行为尚未原生执行，未追加提交/推送或 CI。无新包、安装、迁移或设备动作；schema 14 与 A 未整体验收、B/C 关闭不变。详见 [本地收口记录](OPERATIONS-A-LOCAL-CLOSEOUT.md)。
 
 **术语边界：** 本文历史章节中的 schema 11→14 是设计演进记录，不是当前产品能力；schema 14 仍保留的 `operations_legacy_adoptions`/`adoptLegacyOperationsRun` 只处理产品层旧运行接回，不能打开或升级旧 schema 文件。
 

@@ -189,10 +189,12 @@ static NSString *SRProbeGetterEncoding(Class type) {
     if (!NSThread.isMainThread || !self.active || self.inactivePending) return;
     NSUInteger round = self.round;
     NSUInteger inactiveGeneration = self.inactiveGeneration;
-    double now;
-    @try { now = self.monotonicClock(); } @catch (__unused id exception) { return; }
+    double now = NAN;
+    @try { now = self.monotonicClock(); } @catch (__unused id exception) { }
     if (self.round != round || !self.active || self.inactiveGeneration != inactiveGeneration || self.inactivePending) return;
-    if (!isfinite(now) || now < 0) return;
+    if (!isfinite(now) || now < 0) {
+        [self stopWithState:@"clock_invalid" clearSamples:NO]; return;
+    }
     self.inactiveGeneration++;
     self.inactiveSince = now;
     self.inactivePending = YES;

@@ -185,6 +185,22 @@ class SourceTimeProbeContracts(unittest.TestCase):
                 self.assertIn('self.round != round', method[clock:guard])
                 self.assertIn(active, method[clock:guard])
 
+    def test_inactive_entry_clock_failure_stops_sampling_without_losing_samples(self):
+        source = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
+        inactive = source.split('- (void)noteApplicationInactive {', 1)[1].split('- (void)noteApplicationActive {', 1)[0]
+        self.assertIn('if (!isfinite(now) || now < 0)', inactive)
+        self.assertIn('stopWithState:@"clock_invalid" clearSamples:NO', inactive)
+        self.assertLess(inactive.index('self.inactiveGeneration != inactiveGeneration'),
+                        inactive.index('if (!isfinite(now) || now < 0)'))
+        native = (ROOT / 'tests/source_time_probe_test.m').read_text(encoding='utf-8')
+        self.assertIn('static void checkInactiveEntryClockFailures(void)', native)
+        failures = native.split('static void checkInactiveEntryClockFailures(void) {', 1)[1].split('static void checkInactiveClockReentry', 1)[0]
+        for required in ('NAN', '-1', '@throw @"private clock exception"',
+                         'state"] isEqual:@"clock_invalid"', 'count(fixture) == 1'):
+            self.assertIn(required, failures)
+        main = native.split('int main(void)', 1)[1]
+        self.assertEqual(1, main.count('checkInactiveEntryClockFailures();'))
+
     def test_inactive_interval_identity_changes_on_stop_resume_and_new_inactive(self):
         source = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
         for start, end in (
@@ -207,6 +223,17 @@ class SourceTimeProbeContracts(unittest.TestCase):
         for required in ('entry < 3', 'restart < 2', 'outcome < 3', 'onMonotonicRead = nil',
                          'receiverGeneration', 'fixture.receiver.observeTimeHook', 'fixture.changes == changes + 1 + restart'):
             self.assertIn(required, reentry)
+
+    def test_reentry_uses_frozen_receiver_generation_not_a_missing_summary_field(self):
+        native = (ROOT / 'tests/source_time_probe_test.m').read_text(encoding='utf-8')
+        reentry = native.split('static void checkInactiveClockReentry(void) {', 1)[1].split('static void checkInactiveClockResume', 1)[0]
+        self.assertNotIn('report[@"receiverGeneration"]', reentry)
+        self.assertIn('generation = weakFixture.receiver.diagnostics[@"receiverGeneration"]', reentry)
+        self.assertIn('[last(fixture)[@"receiverGeneration"] isEqual:generation]', reentry)
+        self.assertIn('[last(fixture)[@"round"] isEqual:report[@"round"]]', reentry)
+        source = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
+        summary = source.split('- (NSDictionary *)diagnostics {', 1)[1]
+        self.assertNotIn('@"receiverGeneration"', summary)
 
 
 if __name__ == '__main__':
