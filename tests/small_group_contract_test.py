@@ -77,6 +77,9 @@ class SmallGroupContracts(unittest.TestCase):
         self.assertIn('window.safeAreaInsets', text)
         self.assertIn('UIAccessibilityIsReduceMotionEnabled()', text)
         self.assertIn('UIPanGestureRecognizer', text)
+        self.assertIn('unitX', text)
+        self.assertIn('travelX', text)
+        self.assertNotIn('self.leftEdge ? CGRectGetMinX(available)', text)
 
     def test_progress_is_separate_from_optional_entry_and_account_gated(self):
         text = self.text('UI/SRPanel.m')
