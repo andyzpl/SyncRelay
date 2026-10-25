@@ -89,7 +89,7 @@ def analyze(report):
     storage_ready = report.get('storageReady', ...)
     if type(storage_ready) is not bool:
         add('storage_readiness_invalid',
-            'Storage readiness is missing or malformed; do not infer database availability or schema.')
+            'Storage readiness must be JSON boolean true/false; do not infer database availability or schema.')
         storage_ready = None
     elif storage_ready is False:
         add('storage_unavailable', 'Storage is unavailable; capture and rules are disabled.')

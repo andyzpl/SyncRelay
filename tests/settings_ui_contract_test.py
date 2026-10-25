@@ -73,6 +73,16 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertIn('cell.accessibilityValue =', panel)
         self.assertNotIn('来源时间只读采样（文字/图片元数据）', panel)
 
+    def test_storage_readiness_exports_a_json_boolean(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        # A comparison or ternary wrapped in @(...) is an Objective-C int and
+        # serializes as 0/1, which the diagnostic contract rejects, so the only
+        # assignment must box literal booleans.
+        assignments = [line.strip() for line in panel.splitlines()
+                       if 'report[@"storageReady"]' in line]
+        self.assertEqual(assignments, ['report[@"storageReady"] = self.store ? @YES : @NO;'])
+        self.assertNotIn('report[@"storageReady"] = @(', panel)
+
     def test_floating_entry_is_draggable_and_persists_placement(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
         entry = panel.split('@implementation SREntry', 1)[1]

@@ -1,6 +1,6 @@
 # 运行诊断与维护流程
 
-**2026-10-25 最新本地状态（未追加 CI/打包/设备动作）：** 离线分析器现在要求 `storageReady` 明确为布尔值；缺失、`null`、数字、字符串或容器值只输出固定的 `storage_readiness_invalid`，不把真值/假值强转为数据库可用性，也不继续解释 `schemaVersion`。新增边界回归后本地完整 Python **225 项**通过；既有隔离 CI `40169810412` 的 **224 项**结果不外推到本次未提交的本地增量。当前 A 阶段不重复页面切换、空采样或同类报告导出；没有新设备报告或宿主语义证据。最新范围见 [本地收口记录](OPERATIONS-A-LOCAL-CLOSEOUT.md)。
+**2026-10-25 最新本地状态（未追加 CI/打包/设备动作）：** 离线分析器要求 `storageReady` 明确为 JSON 布尔值；缺失、`null`、数字、字符串或容器值只输出固定的 `storage_readiness_invalid`，不把真值/假值强转为数据库可用性，也不继续解释 `schemaVersion`。生产端同步修正：`UI/SRPanel.m` 以 `self.store ? @YES : @NO` 装箱，不再用 `@(self.store != nil)`——比较结果在 Objective-C 中是 `int`，`@(...)` 会装箱成数字，`NSJSONSerialization` 因此输出 `0/1`。完整本地 Python **226 项**通过（生产端源码契约为新增 1 项）；既有隔离 CI `40169810412` 的 **224 项**与打包快照 `40179290423` 的 **225 项**都不包含该未提交增量。当前 A 阶段不重复页面切换、空采样或同类报告导出；没有修复后的新设备报告或宿主语义证据。最新范围见 [本地收口记录](OPERATIONS-A-LOCAL-CLOSEOUT.md)。
 
 日期：2026-10-21。顶层诊断格式为 `reportSchema: 1`；0.2.5 的方向子格式为 1，0.2.6 升为 2，以区分字符串读取依据。已收到 0.2.5 实例签名路径拒绝报告，0.2.6 已用实际 runtime 声明读取修正并在 0.2.7 的 8.0.79.35 报告中观察到本人文字进入预览。诊断不启用发送，不改微信消息处理结果，也不等于真实转发成功证明。最新复现步骤见 `DEVICE-CHECK-0.2.7.md`。
 
@@ -26,7 +26,7 @@
 
 先看 `build` 和 `reportSchema`，再看 `draftSummary`、`sourceCapture`、`receiveCandidate.counters`，最后结合 `runtimeLog.events` 时间线。不能仅凭一次回调计数就判断版本兼容或发送成功。
 
-`schemaVersion` 只在 `SRStore` 完成 schema-14 初始化/当前库完整性检查后读回，表示当前 `PRAGMA user_version`。新库从 `user_version=0` 创建并原子设置为 14；旧版本不会被升级。`storageReady` 必须是 JSON 布尔值；缺失或其他类型时解析器输出 `storage_readiness_invalid`，并停止解释数据库可用性及版本。`storageReady=true` 但字段缺失时输出 `database_schema_unverified`；字段为 `null`、非整数或不是 14 时输出 `database_schema_invalid`。`storageReady=false` 时字段应为 `null`，此时只保留 `storage_unavailable`，不重复归因数据库版本。
+`schemaVersion` 只在 `SRStore` 完成 schema-14 初始化/当前库完整性检查后读回，表示当前 `PRAGMA user_version`。新库从 `user_version=0` 创建并原子设置为 14；旧版本不会被升级。`storageReady` 必须是 JSON 布尔值；缺失或其他类型时解析器输出 `storage_readiness_invalid`，并停止解释数据库可用性及版本。生产端必须用 `@YES`/`@NO` 显式装箱：`@(self.store != nil)` 这类比较表达式在 Objective-C 中是 `int`，会被序列化成 `0/1`，从而触发该拒绝（旧包 `102501` 即此情形）。`storageReady=true` 但字段缺失时输出 `database_schema_unverified`；字段为 `null`、非整数或不是 14 时输出 `database_schema_invalid`。`storageReady=false` 时字段应为 `null`，此时只保留 `storage_unavailable`，不重复归因数据库版本。
 
 旧诊断包可能带有 `migrationDiagnostics`；当前分析器只输出 `migration_diagnostics_ignored` 历史提示，不解析其中的源版本、行数或“迁移通过”结论。当前产品不要求、不接受 schema 11 测试库或迁移报告。
 

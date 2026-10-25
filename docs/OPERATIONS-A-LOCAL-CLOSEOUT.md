@@ -1,6 +1,10 @@
 # 阶段 A 本地集中检查收口（2026-10-25）
 
-**2026-10-25 最新打包状态（当前精确快照，未安装）：** 按授权从当前开发快照建立隔离分支 `codex/a-package-20261025`，提交 `02cf7fb963fb4e34bb2a83a35d68fd1415e2aa87`，运行一次 `build_deb=true` CI `40179290423` / job `121126667336` 并成功。Python **225 项**通过；22 个 Objective-C 目标各执行 3 次，pacing/operations-state 各执行 1 次、media-quota 执行 3 次；普通 `iphoneos-arm` DEB 已由 CI 用 `dpkg-deb` 检查并用 `lipo` 验证 `arm64`/`arm64e`。包 SHA-256 为 `bedb3a3a722dd10dbeed51ee857e4e9eaaf6fecd83666c6ee235df0a9e9692d5`，artifact ID `12592629882`，详情见 [BUILD-0.2.21-apackage.1.md](BUILD-0.2.21-apackage.1.md)。本次没有安装、迁移、清理设备数据或新增真机采样；A 的真实宿主语义仍未整体验收，B/C 继续关闭。
+**2026-10-25 隔离工作树本地修复复核（未提交、未推送、未跑 CI、未打包/安装/迁移，未操作设备）：** `UI/SRPanel.m` 的 `storageReady` 改为 `self.store ? @YES : @NO`。原写法 `@(self.store != nil)` 里的比较表达式在 Objective-C 中是 `int`，`@(...)` 因此装箱成 `NSNumber numberWithInt:`，`NSJSONSerialization` 输出 `0/1`，与「`storageReady` 必须是 JSON 布尔」的契约冲突；`102501.json` 的 `storageReady: 1` 就是该装箱路径的产物，不是存储故障。配套修改：`tests/settings_ui_contract_test.py` 新增生产端源码契约（`storageReady` 唯一赋值点必须是显式 `@YES/@NO`，且禁止 `@(` 装箱，新断言对 `HEAD` 旧源码实际失败）；`tests/diagnose_report_test.py` 断言 `storage_readiness_invalid` 的固定文案；`tools/diagnose_report.py` 文案明确要求 JSON 布尔 `true/false`。本轮实跑：完整 Python **226 项通过**、`compileall` 通过、`syntax_check.py` 双架构 **106 单元零诊断**（含 `UI/SRPanel.m`）、`git diff --check` 干净；`102501.json` 经 `diagnose_report.py` 仍得到 `storage_readiness_invalid` 加四个既有边界码。226 比上一轮本地 225 多出的正是本次新增的生产端契约 1 项。修复包尚未构建或安装，源码契约不等于原生或真机证据。
+
+**2026-10-25 设备报告回填（当前最新安装状态）：** 用户已安装本页记录的 `0.2.21` 包（commit `02cf7fb963fb4e34bb2a83a35d68fd1415e2aa87`、CI `40179290423`），并回传 `102501.json`。报告确认 schema 14、存储实际可用、发送/采样关闭、`imageReads=0`；但生产端把 `storageReady` 导出成数字 `1`，离线分析器按契约输出 `storage_readiness_invalid`。这不是数据库故障或迁移缺口，而是诊断 JSON 布尔类型的生产端缺陷。隔离工作树已改为显式 `@YES/@NO` 并补源码契约测试；修复包尚未构建或安装，不要求重复页面切换、采样或同类报告。
+
+**2026-10-25 最新打包状态（快照生成时未安装；随后已安装并回传 `102501`）：** 按授权从当前开发快照建立隔离分支 `codex/a-package-20261025`，提交 `02cf7fb963fb4e34bb2a83a35d68fd1415e2aa87`，运行一次 `build_deb=true` CI `40179290423` / job `121126667336` 并成功。Python **225 项**通过；22 个 Objective-C 目标各执行 3 次，pacing/operations-state 各执行 1 次、media-quota 执行 3 次；普通 `iphoneos-arm` DEB 已由 CI 用 `dpkg-deb` 检查并用 `lipo` 验证 `arm64`/`arm64e`。包 SHA-256 为 `bedb3a3a722dd10dbeed51ee857e4e9eaaf6fecd83666c6ee235df0a9e9692d5`，artifact ID `12592629882`，详情见 [BUILD-0.2.21-apackage.1.md](BUILD-0.2.21-apackage.1.md)。快照生成时没有安装、迁移、清理设备数据或新增真机采样；随后用户安装该包并回传 `102501`，其 `storageReady=1` 类型缺陷见上方回填；A 的真实宿主语义仍未整体验收，B/C 继续关闭。
 
 **2026-10-25 先前原生状态（已被上方打包结果覆盖）：** 按授权在隔离分支 `codex/a-probe-clock-invalid-native-20261025-r3` 提交/推送 `aa01abe451a5bd4254f6e3df829ac4fdb8032f29`（tree `bca12cb7a48ba08fa119725936e61afcc1119b1f`），仅运行一次 `build_deb=false` CI `40169810412` / job `121098186039`。Python **224 项**通过；22 个 Objective-C 目标编译/链接并各执行 3 次（66 次），3 个 C 目标按配置执行 5 次（pacing/operations-state 各 1 次、media-quota 3 次）；25 个目标、71 次配置执行与日志成功标记逐项一致。探针字段夹具修正及 inactive 起始 clock 为 NAN/负值/异常时的 `clock_invalid` 安全停止行为均已原生三轮通过。5 个打包步骤全部跳过、artifact=0；无生产包、安装、迁移或设备动作。主工作区 `main`、HEAD `f652d5e97180a15f43437fd1e449f3b3063e87fc`、真实暂存区及既有修改保持不动；全新 schema 14，A 的真实宿主门槛仍未整体验收，B/C 关闭不变。
 
@@ -45,6 +49,7 @@
 | 新增重入测试误读不存在的报告顶层代次 | 用捕获的 receiver 代次比较样本代次，保留数量并补样本 round 校验；不改变生产报告结构 | 修正后的探针契约 **16 项**、完整 Python **224 项**及双架构语法通过；Objective-C 原生三轮通过 |
 | inactive 起始 clock 失效时没有建立宽限或停止 | 读取结果仍先核对 round / inactive generation，只有仍属当前区间的异常、非有限或负时钟才以 `clock_invalid` 安全停止；已采样内容保留 | NAN、负值、异常三类 Objective-C 故障用例已在 CI 三轮执行通过 |
 | 诊断把非布尔 `storageReady` 当作可用性 | 分析器现在严格接受 JSON 布尔值；缺失、`null`、数字、字符串和容器统一输出 `storage_readiness_invalid`，并停止解释 `schemaVersion` | 新增 Python 边界回归；完整本地 Python **225 项**通过。该 1 项未进入既有 CI，不冒充原生/真机证据 |
+| 诊断把 `storageReady` 导出成数字 `1` 而非 JSON 布尔 | `UI/SRPanel.m` 改为 `self.store ? @YES : @NO`；`@(self.store != nil)` 的比较结果在 Objective-C 中是 `int`，会装箱成 `0/1` 并触发上一条的分析器拒绝 | 新增生产端源码契约（唯一赋值点 + 禁止 `@(` 装箱），该断言对 `HEAD` 旧源码实际失败、对当前源码通过；完整本地 Python **226 项**通过。仍无原生/真机证据，需主负责人另行授权构建与安装 |
 
 共享锁保证的是**同一进程、同一目录路径**的实例，不承诺多进程或不同路径别名的协调。新增原生用例只操作测试临时目录中的自有文件、合成 SQLite 库和稀疏压力文件，不读取微信媒体或操作设备数据。
 
@@ -55,7 +60,7 @@
 | 层级 | 实际结果 | 不代表什么 |
 | --- | --- | --- |
 | 聚焦 Python / SQLite / 源码契约 | 相关模块随当前全量回归通过 | 不执行 Objective-C 文件 I/O 或宿主对象 |
-| 完整 Python | 隔离 CI 快照 **224 项通过**；本地最新实际执行 **225 项通过**，包含本次 `storageReady` 边界回归，不能把本地增量外推为 CI/原生证据 | 源码契约不等于真实微信对象或宿主语义 |
+| 完整 Python | 隔离 CI 快照 **224 项通过**；本地最新实际执行 **226 项通过**，包含 `storageReady` 的分析器边界回归与生产端布尔契约两项本地增量，不能把本地增量外推为 CI/原生证据 | 源码契约不等于真实微信对象或宿主语义 |
 | 离线 CLI | 单份报告、`--pair`、`--stop-pair` 三种真实 Python 子进程调用均对损坏合成数据返回固定诊断码，无 traceback 或私人字段回显 | 没有读取新设备报告，不认证来源语义、页面切换或图片资源就绪 |
 | Python 编译 | 本轮 `py -3 -m compileall -q tools tests` 通过 | 不是 Objective-C 编译 |
 | C 编译和执行 | 本轮实际重跑：缓存 Zig **0.14.1**，`-std=c11 -Wall -Wextra -Werror`；operations-state、pacing、media-quota 三个程序均编译成功，各运行三轮，**9 次执行通过** | 这是 Windows C 程序，不得和 macOS CI 的 C 执行次数混写 |
@@ -78,14 +83,14 @@
 | 协调器身份、generation、手动许可撤销和同步生命周期重入 | `coordinator_safety_contract_test.py`、`operations_state_test.c`、`relay_coordinator_test.m` | C 状态/门禁真实执行通过；Objective-C 端口重入/错误注入已由隔离 CI 三轮执行；没有接入 B UI，不证明宿主真实页面信号 |
 | 只读探针与 receiver 边界 | `source_time_probe_contract_test.py`、`source_time_probe_test.m`、`receive_test.m`；审查轮次、区间代次、16 样本/120 秒、文字过滤和生命周期接线 | 当前探针原生三轮通过；采样仍不捕获/预览/发送/准备图片，宿主来源时间和资源就绪标记仍未认证 |
 | 256 MiB 共享预算、预留、扫描失败、提醒与引用保护 | `media_quota_contract_test.py`、`media_quota_test.c`、`media_budget_test.m` | C 及 Objective-C 跨实例文件保护/原子提醒用例已有实际执行证据；不开放清理界面或新清理动作 |
-| 诊断脱敏、历史字段忽略、成对报告来源 | `diagnose_report_test.py`、`runtime_log_test.m`；审查固定字段、缺失/错误标记、同构建/同进程/递增导出与样本身份判据 | 本地分析器 58 项聚焦及完整 Python 225 项、真实 CLI 损坏数据回归通过；新增 `storageReady` 非布尔拒绝仅有 Python 证据，隔离原生日志导出用例既有证据不变。不新增设备报告，空样本继续判证据不足，不输出原始身份/正文/路径 |
+| 诊断脱敏、历史字段忽略、成对报告来源 | `diagnose_report_test.py`、`runtime_log_test.m`；审查固定字段、缺失/错误标记、同构建/同进程/递增导出与样本身份判据 | 本地分析器 58 项聚焦及完整 Python **226 项**、真实 CLI 损坏数据回归通过；`storageReady` 的非布尔拒绝与生产端显式 `@YES/@NO` 装箱均只有 Python/源码契约证据，隔离原生日志导出用例既有证据不变。不新增设备报告，空样本继续判证据不足，不输出原始身份/正文/路径 |
 | 构建闭包与测试接线 | `native_build_contract_test.py`、Makefile、语法清单和 CI 测试清单 | 本轮逐目标接线与 13 种破坏变体通过；既有 CI 已实际编译/链接/执行原生程序，不冒充生产链接/打包 |
 
 本地记录位于忽略目录 `.build-cache/phase-a-batch-20261025/`：本轮编辑前副本/散列、旧实现失败日志、聚焦和全量测试日志、C 编译执行日志、语法日志/JSON、最终证据 manifest。记录不包含设备报告、凭据或原始媒体。该目录不是需要推送的源码产物。
 
-较早接线复核记录另存于忽略目录 `.build-cache/a-native-evidence-20261025/`：编辑前文件散列、旧护栏漏检复现、11 项聚焦/212 项全量日志及 119 文件的 CI 快照逐文件比较。没有复制设备报告或导出凭据；该目录属于修正前历史，不覆盖当前 224 项 CI / 225 项本地结果。
+较早接线复核记录另存于忽略目录 `.build-cache/a-native-evidence-20261025/`：编辑前文件散列、旧护栏漏检复现、11 项聚焦/212 项全量日志及 119 文件的 CI 快照逐文件比较。没有复制设备报告或导出凭据；该目录属于修正前历史，不覆盖当前 224 项 CI / 226 项本地结果。
 
-较早离线分析器记录位于忽略目录 `.build-cache/a-pair-evidence-20261025/`：编辑前散列与相关文件副本、旧实现漏判/异常复现、预期失败日志、58 项聚焦/219 项全量结果、三种真实 CLI 调用结果及 119 文件的 CI 快照比较。数据均为测试合成，不包含设备报告或凭据；当前以 224 项 CI / 225 项本地结果为准。
+较早离线分析器记录位于忽略目录 `.build-cache/a-pair-evidence-20261025/`：编辑前散列与相关文件副本、旧实现漏判/异常复现、预期失败日志、58 项聚焦/219 项全量结果、三种真实 CLI 调用结果及 119 文件的 CI 快照比较。数据均为测试合成，不包含设备报告或凭据；当前以 224 项 CI / 226 项本地结果为准。
 
 较早探针重入记录位于忽略目录 `.build-cache/a-probe-lifecycle-20261025/`：185 个既有文件的编辑前散列、11 个范围内文件副本、旧源码未通过新增门禁的记录、14 项聚焦/222 项全量日志、双架构语法报告、119 文件 CI 快照比较及本轮增量 patch。没有原生程序执行记录，不复制设备报告或凭据；修正后的原生结果以 CI `40169810412` 为准。
 
