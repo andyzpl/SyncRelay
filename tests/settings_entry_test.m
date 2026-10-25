@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "Core/SREntryPreferences.h"
+#include <math.h>
 #include <assert.h>
 #define CHECK(...) assert((__VA_ARGS__))
 
@@ -245,6 +246,16 @@ static void testPreferences(void) {
     preferences.floatingEntryEnabled = NO; CHECK(changes == 2);
     CHECK(![[[SREntryPreferences alloc] initWithDefaults:[[NSUserDefaults alloc] initWithSuiteName:suite]] floatingEntryEnabled]);
     [defaults setObject:@"invalid" forKey:@"andyz.syncrelay.floatingEntryEnabled"]; CHECK(!preferences.floatingEntryEnabled);
+    CHECK(!preferences.floatingEntryPlacementSet);
+    CHECK(fabs(preferences.floatingEntryUnitY - 0.35) < 0.0001 && !preferences.floatingEntryLeftEdge);
+    [preferences setFloatingEntryPlacementUnitY:0.8 leftEdge:YES]; CHECK(changes == 3);
+    CHECK(preferences.floatingEntryPlacementSet && preferences.floatingEntryLeftEdge);
+    CHECK(fabs(preferences.floatingEntryUnitY - 0.8) < 0.0001);
+    [preferences setFloatingEntryPlacementUnitY:2.0 leftEdge:YES]; CHECK(changes == 4);
+    CHECK(fabs(preferences.floatingEntryUnitY - 1.0) < 0.0001);
+    SREntryPreferences *placed = [[SREntryPreferences alloc] initWithDefaults:[[NSUserDefaults alloc] initWithSuiteName:suite]];
+    CHECK(placed.floatingEntryPlacementSet && placed.floatingEntryLeftEdge);
+    CHECK(fabs(placed.floatingEntryUnitY - 1.0) < 0.0001);
     [NSNotificationCenter.defaultCenter removeObserver:observation]; [defaults removePersistentDomainForName:suite];
 }
 int main(void) {

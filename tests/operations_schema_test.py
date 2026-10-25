@@ -12,6 +12,17 @@ def statements(section):
     return re.findall(r'@"([^"\n]+)"', section)
 
 
+def library_relation_check_sql():
+    parts = statements(STORE)
+    start = parts.index('SELECT 1 WHERE ')
+    sql = ''
+    for part in parts[start:]:
+        sql += part
+        if part.endswith('LIMIT 1'):
+            return sql
+    raise AssertionError('library relation check SQL is incomplete')
+
+
 def schema(db):
     section = STORE.split('NSArray *schema = @[', 1)[1].split('];', 1)[0]
     db.execute('PRAGMA foreign_keys=ON')
@@ -19,17 +30,29 @@ def schema(db):
         db.execute(sql)
 
 
-def additive_migration(db):
-    """Run production DDL/check/version SQL in one SQLite transaction, not ObjC."""
-    section = STORE.split('if (version < 11) {', 1)[1].split('return @YES;', 1)[0]
-    check, version = (sql for sql in statements(section) if sql.startswith('PRAGMA '))
+def open_schema(db):
+    """Mirror the current schema gate without an upgrade path.
+
+    The helper reads the durable version just like ``SRStore``.  Tests that
+    exercise refusal seed a version number in the temporary database; no
+    legacy-version fixture or migration DDL is involved.
+    """
+    version = db.execute('PRAGMA user_version').fetchone()[0]
+    if version not in (0, 14):
+        raise sqlite3.IntegrityError('Unsupported database schema; fresh schema 14 is required')
+    relation_check = library_relation_check_sql()
     db.execute('PRAGMA foreign_keys=ON')
+    if db.in_transaction:
+        db.commit()
     try:
         db.execute('BEGIN IMMEDIATE')
         schema(db)
-        if db.execute(check).fetchall():
-            raise sqlite3.IntegrityError('Migration found broken foreign keys')
-        db.execute(version)
+        if db.execute('PRAGMA foreign_key_check').fetchall():
+            raise sqlite3.IntegrityError('Database schema has broken foreign keys')
+        if db.execute(relation_check).fetchall():
+            raise sqlite3.IntegrityError('Database schema has broken library version relations')
+        if version == 0:
+            db.execute('PRAGMA user_version=14')
         db.commit()
     except sqlite3.Error:
         db.rollback()
@@ -85,17 +108,174 @@ class OperationsSchemaTests(unittest.TestCase):
                 'native_attempt_claims', 'small_group_runs', 'text_experiments',
                 'image_experiments', 'submission_receipts')
 
-    def test_schema_11_guard_version_and_tables_agree(self):
-        self.assertIn('version >= 0 && version <= 11', STORE)
-        self.assertIn('if (version < 11) {', STORE)
-        self.assertEqual(['PRAGMA user_version=11'],
+    def test_schema_14_guard_version_and_tables_agree(self):
+        self.assertIn('version == 0 || version == 14', STORE)
+        self.assertNotIn('migrationDiagnostics', STORE)
+        self.assertIn('self.schemaVersion = [row[@"user_version"] integerValue];', STORE)
+        self.assertIn('broken library version relations', STORE)
+        self.assertGreaterEqual(STORE.count('@"PRAGMA foreign_key_check"'), 1)
+        self.assertEqual(['PRAGMA user_version=14'],
                          [sql for sql in statements(STORE) if sql.startswith('PRAGMA user_version=')])
-        additive_migration(self.db)
-        self.assertEqual(11, self.db.execute('PRAGMA user_version').fetchone()[0])
+        open_schema(self.db)
+        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
         tables = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({'operations_preferences', 'operations_contents',
                          'operations_cancellations', 'operations_legacy_adoptions'} <= tables)
+        self.assertTrue({'library_items', 'library_versions', 'media_assets',
+                         'media_references', 'content_sources'} <= tables)
+        self.assertTrue({'plan_sources', 'library_tasks'} <= tables)
         self.assertEqual(1, self.db.execute('PRAGMA foreign_keys').fetchone()[0])
+
+    def test_unsupported_schema_numbers_are_rejected_without_writing_them(self):
+        # These are gate values only.  They are not legacy fixtures and do not
+        # represent a supported migration source; future versions must refuse
+        # the same way as old/unknown values.
+        for version in (1, 13, 15):
+            with self.subTest(version=version):
+                db = sqlite3.connect(':memory:')
+                try:
+                    schema(db)
+                    db.execute(f'PRAGMA user_version={version}')
+                    db.commit()
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        open_schema(db)
+                    self.assertEqual(version, db.execute('PRAGMA user_version').fetchone()[0])
+                finally:
+                    db.close()
+
+    def test_unsupported_empty_database_is_rejected_before_schema_creation(self):
+        # A file carrying an unsupported marker is not a migration input.  The
+        # gate must run before any CREATE TABLE/trigger statement, for both an
+        # old marker and a future marker.
+        for version in (13, 15):
+            with self.subTest(version=version):
+                db = sqlite3.connect(':memory:')
+                try:
+                    db.execute(f'PRAGMA user_version={version}')
+                    db.commit()
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        open_schema(db)
+                    self.assertEqual(version, db.execute('PRAGMA user_version').fetchone()[0])
+                    self.assertEqual([], db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())
+                finally:
+                    db.close()
+
+    def test_current_schema_foreign_key_failure_rolls_back_the_open_transaction(self):
+        # Simulate a damaged schema-14 file created while foreign keys were
+        # disabled. Opening must reject it before trigger refresh can commit.
+        self.db.commit()
+        self.db.execute('PRAGMA foreign_keys=OFF')
+        self.db.execute("INSERT INTO allocations VALUES('missing-plan','orphan@chatroom','missing-rule',0)")
+        self.db.execute('PRAGMA user_version=14')
+        self.db.commit()
+        self.db.execute('PRAGMA foreign_keys=ON')
+        before = self.db.execute('SELECT * FROM allocations').fetchall()
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            schema(self.db)
+            self.assertTrue(self.db.execute('PRAGMA foreign_key_check').fetchall())
+            raise sqlite3.IntegrityError('Database schema has broken foreign keys')
+        except sqlite3.IntegrityError:
+            self.db.rollback()
+        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(before, self.db.execute('SELECT * FROM allocations').fetchall())
+
+    def test_current_schema_version_relation_failure_rolls_back_the_open_transaction(self):
+        # The current-version pointer is intentionally not a SQLite FK: it is a
+        # composite relation that must also agree on item, account, kind and
+        # highest ordinal. Opening a damaged schema-14 file must reject it.
+        self.db.commit()
+        self.db.execute('PRAGMA foreign_keys=OFF')
+        self.db.execute("INSERT INTO library_items VALUES('item','account','text',1,1,'missing-version')")
+        self.db.execute('PRAGMA user_version=14')
+        self.db.commit()
+        before = self.db.execute('SELECT * FROM library_items').fetchall()
+        self.db.execute('PRAGMA foreign_keys=ON')
+        relation_check = library_relation_check_sql()
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            schema(self.db)
+            self.assertTrue(self.db.execute(relation_check).fetchall())
+            raise sqlite3.IntegrityError('Database schema has broken library version relations')
+        except sqlite3.IntegrityError:
+            self.db.rollback()
+        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(before, self.db.execute('SELECT * FROM library_items').fetchall())
+
+    def test_library_version_relation_check_accepts_current_highest_version(self):
+        self.db.execute("INSERT INTO library_items VALUES('item','account','text',1,2,'version-2')")
+        self.db.execute("INSERT INTO library_versions VALUES('version-1','item','account',1,'text','{}',NULL,1,1)")
+        self.db.execute("INSERT INTO library_versions VALUES('version-2','item','account',2,'text','{}',NULL,2,2)")
+        relation_check = library_relation_check_sql()
+        self.assertEqual([], self.db.execute(relation_check).fetchall())
+
+    def test_library_version_relation_check_rejects_stale_and_mismatched_versions(self):
+        relation_check = library_relation_check_sql()
+        self.db.execute("INSERT INTO library_items VALUES('stale','account','text',1,2,'stale-v1')")
+        self.db.execute("INSERT INTO library_versions VALUES('stale-v1','stale','account',1,'text','{}',NULL,1,1)")
+        self.db.execute("INSERT INTO library_versions VALUES('stale-v2','stale','account',2,'text','{}',NULL,2,2)")
+        self.assertTrue(self.db.execute(relation_check).fetchall())
+
+        self.db.execute("INSERT INTO library_items VALUES('mismatch','account','text',1,1,'mismatch-v1')")
+        self.db.execute("INSERT INTO library_versions VALUES('mismatch-v1','mismatch','other-account',1,'text','{}',NULL,1,1)")
+        self.assertTrue(self.db.execute(relation_check).fetchall())
+
+    def assert_relation_violation(self, statements):
+        """Run one damaged fixture in a fresh schema-14 database."""
+        db = sqlite3.connect(':memory:')
+        try:
+            schema(db)
+            for statement in statements:
+                db.execute(statement)
+            self.assertTrue(db.execute(library_relation_check_sql()).fetchall())
+        finally:
+            db.close()
+
+    def test_library_source_relations_reject_cross_account_links(self):
+        self.assert_relation_violation([
+            "INSERT INTO operations_contents(id,account,source_group,message_id,configuration,envelope,captured_at) "
+            "VALUES('content','account','mother@chatroom','message','{}','{}',1)",
+            "INSERT INTO content_sources(content_id,account,source_kind,library_item_id,library_version_id,recorded_at) "
+            "VALUES('content','other-account','group_sync',NULL,NULL,1)",
+        ])
+        self.assert_relation_violation([
+            "INSERT INTO plans(id,account,source_group,senders,types,snapshot) "
+            "VALUES('plan','account','mother@chatroom','[]','[\"text\"]','{}')",
+            "INSERT INTO plan_sources(plan_id,account,source_kind,library_item_id,library_version_id,target_sha256,recorded_at) "
+            "VALUES('plan','other-account','group_sync',NULL,NULL,'digest',1)",
+        ])
+
+    def test_library_task_relations_reject_cross_account_plan_and_run_links(self):
+        self.assert_relation_violation([
+            "INSERT INTO library_items VALUES('item','account','text',1,1,'version')",
+            "INSERT INTO library_versions VALUES('version','item','account',1,'text','{}',NULL,1,1)",
+            "INSERT INTO plans VALUES('plan','other-account','','[]','[\"text\"]','{}')",
+            "INSERT INTO rules VALUES('rule','plan','library',1,5,10)",
+            "INSERT INTO library_tasks(id,account,confirmation_id,item_id,version_id,plan_id,rule_id,frozen_snapshot,frozen_sha256,media_token,target_sha256,target_count,origin_task_id,created_at) "
+            "VALUES('task','account','confirm','item','version','plan','rule','{}','digest',NULL,'targets',1,NULL,1)",
+        ])
+        self.assert_relation_violation([
+            "INSERT INTO library_items VALUES('item','account','text',1,1,'version')",
+            "INSERT INTO library_versions VALUES('version','item','account',1,'text','{}',NULL,1,1)",
+            "INSERT INTO plans VALUES('plan','account','','[]','[\"text\"]','{}')",
+            "INSERT INTO rules VALUES('rule','plan','library',1,5,10)",
+            "INSERT INTO runs VALUES('run','rule','other-account','running',1,NULL,5,10,'{}')",
+            "INSERT INTO library_tasks(id,account,confirmation_id,item_id,version_id,plan_id,rule_id,run_id,frozen_snapshot,frozen_sha256,media_token,target_sha256,target_count,origin_task_id,created_at,started_at) "
+            "VALUES('task','account','confirm','item','version','plan','rule','run','{}','digest',NULL,'targets',1,NULL,1,1)",
+        ])
+
+    def test_media_reference_and_deletion_relations_reject_cross_account_orphans(self):
+        self.assert_relation_violation([
+            "INSERT INTO library_items VALUES('item','account','text',1,1,'version')",
+            "INSERT INTO library_versions VALUES('version','item','account',1,'text','{}',NULL,1,1)",
+            "INSERT INTO library_deletions(item_id,account,deleted_at) VALUES('item','other-account',2)",
+        ])
+        self.assert_relation_violation([
+            "INSERT INTO media_assets(token,account,scope_kind,scope_sha256,sha256,byte_count,created_at) "
+            "VALUES('token','account','message_library','scope','digest',1,1)",
+            "INSERT INTO media_references(account,token,owner_kind,owner_id,created_at) "
+            "VALUES('other-account','token','plan','missing-plan',1)",
+        ])
 
     def test_one_current_content_per_account(self):
         self.content('one')
@@ -114,6 +294,95 @@ class OperationsSchemaTests(unittest.TestCase):
         self.content('one')
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("UPDATE operations_contents SET plan_id='missing'")
+
+    def test_archive_guard_blocks_active_or_inflight_run(self):
+        self.seed_run()
+        queries = method_sql('- (BOOL)archiveOperationsContent:', '- (NSString *)createPlanForAccount:')
+        guard = next(sql for sql in queries if sql.startswith('SELECT x.id'))
+        for state in ('running', 'paused', 'awaiting_resume', 'completed', 'ended'):
+            with self.subTest(state=state):
+                self.db.execute('UPDATE runs SET state=?', (state,))
+                self.assertTrue(self.db.execute(guard, ('plan',)).fetchall())
+        self.db.execute("UPDATE deliveries SET state='uncertain' WHERE id='first'")
+        self.assertEqual([], self.db.execute(guard, ('plan',)).fetchall())
+        for state in ('running', 'paused', 'awaiting_resume'):
+            with self.subTest(drained_state=state):
+                self.db.execute('UPDATE runs SET state=?', (state,))
+                self.assertTrue(self.db.execute(guard, ('plan',)).fetchall())
+
+    def test_archive_sql_keeps_other_content_and_all_send_ledgers(self):
+        self.seed_ledgers()
+        self.content('already-archived', message='old', archived=200)
+        self.content('current', message='new')
+        before = self.rows(self.legacy_tables())
+        queries = method_sql('- (BOOL)archiveOperationsContent:', '- (NSString *)createPlanForAccount:')
+        lookup = next(sql for sql in queries if sql.startswith('SELECT plan_id'))
+        update = next(sql for sql in queries if sql.startswith('UPDATE operations_contents'))
+        self.assertEqual([(None, 200)], self.db.execute(lookup, ('already-archived', 'account')).fetchall())
+        self.assertEqual([], self.db.execute(lookup, ('current', 'other')).fetchall())
+        self.db.execute(update, (300, 'current'))
+        self.assertEqual([('already-archived', 200), ('current', 300)], self.db.execute(
+            'SELECT id,archived_at FROM operations_contents ORDER BY rowid').fetchall())
+        self.assertEqual(before, self.rows(self.legacy_tables()))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.content('duplicate', message='new')
+
+    def test_recent_content_order_survives_clock_rollback_and_equal_timestamps(self):
+        self.seed_ledgers()
+        self.content('first', message='first-source', archived=1000)
+        self.content('second', message='second-source', archived=100)
+        self.content('current', message='current-source')
+        self.content('other-account', account='other', message='other-source', archived=2000)
+        queries = method_sql('- (NSDictionary *)operationsContentForAccount:',
+                             '- (NSString *)adoptLegacyOperationsRun:')
+        recent = next(sql for sql in queries if 'archived_at IS NOT NULL' in sql)
+        current = next(sql for sql in queries if 'archived_at IS NULL' in sql
+                       and sql.startswith('SELECT * FROM operations_contents'))
+        for first_time, second_time in ((1000, 100), (100, 100)):
+            with self.subTest(first_time=first_time, second_time=second_time):
+                self.db.execute("UPDATE operations_contents SET archived_at=? WHERE id='first'", (first_time,))
+                self.db.execute("UPDATE operations_contents SET archived_at=? WHERE id='second'", (second_time,))
+                tables = self.legacy_tables() + ('operations_contents',)
+                before = self.rows(tables)
+                cursor = self.db.execute(recent, ('account',))
+                row = dict(zip((column[0] for column in cursor.description), cursor.fetchone()))
+                self.assertEqual('second', row['id'])
+                self.assertEqual(second_time, row['archived_at'])
+                self.assertEqual('current', self.db.execute(current, ('account',)).fetchone()[0])
+                self.assertEqual('other-account', self.db.execute(recent, ('other',)).fetchone()[0])
+                self.assertEqual(before, self.rows(tables))
+
+    def test_run_card_order_survives_clock_rollback_and_equal_timestamps(self):
+        self.seed_run()
+        self.db.execute("UPDATE deliveries SET state='uncertain' WHERE state='submitting'")
+        self.db.execute("UPDATE attempts SET state='uncertain',ended_at=2")
+        self.db.execute("UPDATE deliveries SET state='cancelled' WHERE state='pending'")
+        self.db.execute("UPDATE runs SET state='ended',ended_at=2")
+        self.db.execute("INSERT INTO rules VALUES('later-rule','plan','Two',2,5,10)")
+        self.db.execute("INSERT INTO runs VALUES('later-run','later-rule','account','ended',3,4,5,10,'{}')")
+        self.db.execute("INSERT INTO deliveries VALUES('third','later-run','c',0,'cancelled',NULL,NULL,NULL)")
+        cards_sql = method_sql('- (NSArray *)ruleCardsForPlan:', '- (NSArray *)historyForRule:')
+        latest = next(sql for sql in cards_sql if 'AS creationOrder' in sql)
+        history_sql = method_sql('- (NSArray *)historyForRule:', '- (NSArray *)exceptionsForRun:')
+        history = next(sql for sql in history_sql if 'AS creationOrder' in sql)
+
+        def read(sql, values):
+            cursor = self.db.execute(sql, values)
+            return dict(zip((column[0] for column in cursor.description), cursor.fetchone()))
+
+        for old_time, new_time in ((1000, 100), (100, 100)):
+            with self.subTest(old_time=old_time, new_time=new_time):
+                self.db.execute("UPDATE runs SET started_at=? WHERE id='run'", (old_time,))
+                self.db.execute("UPDATE runs SET started_at=? WHERE id='later-run'", (new_time,))
+                before = self.rows(self.legacy_tables())
+                first = read(latest, ('rule',))
+                second = read(latest, ('later-rule',))
+                self.assertGreater(second['creationOrder'], first['creationOrder'])
+                self.assertEqual('later-run', max((first, second), key=lambda row: row['creationOrder'])['id'])
+                self.assertEqual(second, read(history, ('later-rule', 1, 0)))
+                self.assertEqual((old_time, new_time), (first['started_at'], second['started_at']))
+                self.assertEqual((2, 4), (first['ended_at'], second['ended_at']))
+                self.assertEqual(before, self.rows(self.legacy_tables()))
 
     def test_cancel_sql_only_revokes_pending(self):
         self.seed_run()
@@ -146,56 +415,25 @@ class OperationsSchemaTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("INSERT INTO operations_preferences VALUES('bad',2)")
 
-    def test_additive_schema_preserves_history_and_claims(self):
+    def test_current_schema_reopen_is_idempotent_and_preserves_ledgers(self):
         self.seed_ledgers()
-        self.db.execute('DROP TABLE operations_legacy_adoptions')
-        self.db.execute('DROP TABLE operations_cancellations')
-        self.db.execute('DROP TABLE operations_contents')
-        self.db.execute('PRAGMA user_version=9')
-        self.db.commit()
         before = self.rows(self.legacy_tables())
-        additive_migration(self.db)
+        self.db.execute('PRAGMA user_version=14')
+        self.db.commit()
+        open_schema(self.db)
         self.assertEqual(before, self.rows(self.legacy_tables()))
-        self.assertEqual(11, self.db.execute('PRAGMA user_version').fetchone()[0])
-        self.assertEqual('submitting', self.db.execute("SELECT state FROM deliveries WHERE id='first'").fetchone()[0])
+        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
         self.assertEqual([], self.db.execute('PRAGMA foreign_key_check').fetchall())
 
-    def test_schema_10_upgrade_keeps_frozen_content_and_cancellation(self):
+    def test_unsupported_schema_is_rejected_without_repair(self):
         self.seed_ledgers()
-        self.content('content')
-        self.db.execute("UPDATE operations_contents SET plan_id='plan'")
-        self.db.execute("INSERT INTO operations_cancellations VALUES('run',3,NULL)")
-        self.db.execute('DROP TABLE operations_legacy_adoptions')
-        self.db.execute('PRAGMA user_version=10')
-        self.db.commit()
-        tables = self.legacy_tables() + ('operations_contents', 'operations_cancellations')
-        before = self.rows(tables)
-        additive_migration(self.db)
-        self.assertEqual(before, self.rows(tables))
-        self.assertEqual(11, self.db.execute('PRAGMA user_version').fetchone()[0])
-        self.assertEqual([], self.db.execute('SELECT * FROM operations_legacy_adoptions').fetchall())
-        # Reopening/reapplying the additive DDL never resets old rows or preferences.
-        additive_migration(self.db)
-        self.assertEqual(before, self.rows(tables))
-
-    def test_failed_schema_upgrade_rolls_back_tables_and_version(self):
-        self.seed_ledgers()
-        self.db.execute('DROP TABLE operations_legacy_adoptions')
-        self.db.execute('DROP TABLE operations_cancellations')
-        self.db.execute('DROP TABLE operations_contents')
+        before = self.rows(self.legacy_tables())
         self.db.execute('PRAGMA user_version=9')
         self.db.commit()
-        self.db.execute('PRAGMA foreign_keys=OFF')
-        self.db.execute("INSERT INTO allocations VALUES('missing','orphan','rule',0)")
-        self.db.commit()
-        before = self.rows(self.legacy_tables())
         with self.assertRaises(sqlite3.IntegrityError):
-            additive_migration(self.db)
+            open_schema(self.db)
         self.assertEqual(9, self.db.execute('PRAGMA user_version').fetchone()[0])
         self.assertEqual(before, self.rows(self.legacy_tables()))
-        tables = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertFalse({'operations_contents', 'operations_cancellations',
-                          'operations_legacy_adoptions'} & tables)
 
     def test_content_and_plan_link_transaction_rollback(self):
         self.content('content')

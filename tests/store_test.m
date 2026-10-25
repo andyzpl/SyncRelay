@@ -17,6 +17,7 @@ int main(void) {
         NSError *error = nil;
         SRStore *store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store && !error);
+        assert(store.schemaVersion == 14);
         assert(![[store operationsEnabledForAccount:@"account" error:&error] boolValue]);
         assert(![store setOperationsEnabled:YES account:@"account" error:NULL]);
         assert(![store setOperationsEnabled:YES account:@"" error:NULL]);
@@ -135,13 +136,122 @@ int main(void) {
         assert(![store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"unallocated@chatroom" error:NULL]);
         assert([store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"target@chatroom" error:&error]);
         assert(count([store summaryForRun:run error:&error], @"confirmed") == 2000);
-        store = nil;
-        sqlite3 *legacy = NULL;
-        assert(sqlite3_open(path.fileSystemRepresentation, &legacy) == SQLITE_OK);
-        assert(sqlite3_exec(legacy, "DROP TABLE configurations; PRAGMA user_version=1;", NULL, NULL, NULL) == SQLITE_OK);
-        assert(sqlite3_close(legacy) == SQLITE_OK);
-        store = [[SRStore alloc] initWithPath:path error:&error];
-        assert(store);
+
+        /* A schema-14 file with an orphaned foreign-key row must be rejected
+         * before the open-time trigger refresh can commit. */
+        NSString *damagedPath = [directory stringByAppendingPathComponent:@"damaged.sqlite3"];
+        SRStore *damaged = [[SRStore alloc] initWithPath:damagedPath error:&error];
+        assert(damaged);
+        damaged = nil;
+        sqlite3 *damagedDB = NULL;
+        assert(sqlite3_open(damagedPath.fileSystemRepresentation, &damagedDB) == SQLITE_OK);
+        assert(sqlite3_exec(damagedDB, "PRAGMA foreign_keys=OFF; INSERT INTO allocations(plan_id,target,rule_id,position) VALUES('missing-plan','orphan@chatroom','missing-rule',0); PRAGMA user_version=14;", NULL, NULL, NULL) == SQLITE_OK);
+        assert(sqlite3_close(damagedDB) == SQLITE_OK);
+        damaged = [[SRStore alloc] initWithPath:damagedPath error:&error];
+        assert(!damaged && error);
+        assert([NSFileManager.defaultManager removeItemAtPath:damagedPath error:nil]);
+        NSString *damagedMediaPath = [damagedPath stringByAppendingString:@".media"];
+        if ([NSFileManager.defaultManager fileExistsAtPath:damagedMediaPath])
+            assert([NSFileManager.defaultManager removeItemAtPath:damagedMediaPath error:nil]);
+        /* A current-version pointer is a composite relation (item, account,
+         * kind and highest ordinal), so foreign_key_check alone cannot catch
+         * an orphaned pointer. Opening the schema-14 file must reject it. */
+        NSString *damagedVersionPath = [directory stringByAppendingPathComponent:@"damaged-version.sqlite3"];
+        SRStore *damagedVersion = [[SRStore alloc] initWithPath:damagedVersionPath error:&error];
+        assert(damagedVersion);
+        damagedVersion = nil;
+        sqlite3 *damagedVersionDB = NULL;
+        assert(sqlite3_open(damagedVersionPath.fileSystemRepresentation, &damagedVersionDB) == SQLITE_OK);
+        assert(sqlite3_exec(damagedVersionDB, "PRAGMA foreign_keys=OFF; INSERT INTO library_items(id,account,kind,created_at,updated_at,current_version_id) VALUES('item','account','text',1,1,'missing-version'); PRAGMA user_version=14;", NULL, NULL, NULL) == SQLITE_OK);
+        assert(sqlite3_close(damagedVersionDB) == SQLITE_OK);
+        damagedVersion = [[SRStore alloc] initWithPath:damagedVersionPath error:&error];
+        assert(!damagedVersion && error);
+        assert([NSFileManager.defaultManager removeItemAtPath:damagedVersionPath error:nil]);
+        NSString *damagedVersionMediaPath = [damagedVersionPath stringByAppendingString:@".media"];
+        if ([NSFileManager.defaultManager fileExistsAtPath:damagedVersionMediaPath])
+            assert([NSFileManager.defaultManager removeItemAtPath:damagedVersionMediaPath error:nil]);
+        /* Foreign keys do not encode account ownership. A content source
+         * carrying another account must still make a schema-14 open fail
+         * before any trigger refresh or media cleanup can commit. */
+        NSString *damagedSourcePath = [directory stringByAppendingPathComponent:@"damaged-source.sqlite3"];
+        SRStore *damagedSource = [[SRStore alloc] initWithPath:damagedSourcePath error:&error];
+        assert(damagedSource);
+        damagedSource = nil;
+        sqlite3 *damagedSourceDB = NULL;
+        assert(sqlite3_open(damagedSourcePath.fileSystemRepresentation, &damagedSourceDB) == SQLITE_OK);
+        const char *crossAccountSource =
+            "PRAGMA foreign_keys=OFF;"
+            "INSERT INTO operations_contents(id,account,source_group,message_id,configuration,envelope,captured_at) "
+            "VALUES('content','account','mother@chatroom','message','{}','{}',1);"
+            "INSERT INTO content_sources(content_id,account,source_kind,library_item_id,library_version_id,recorded_at) "
+            "VALUES('content','other-account','group_sync',NULL,NULL,1);"
+            "PRAGMA user_version=14;";
+        assert(sqlite3_exec(damagedSourceDB, crossAccountSource, NULL, NULL, NULL) == SQLITE_OK);
+        assert(sqlite3_close(damagedSourceDB) == SQLITE_OK);
+        damagedSource = [[SRStore alloc] initWithPath:damagedSourcePath error:&error];
+        assert(!damagedSource && error);
+        assert([NSFileManager.defaultManager removeItemAtPath:damagedSourcePath error:nil]);
+        NSString *damagedSourceMediaPath = [damagedSourcePath stringByAppendingString:@".media"];
+        if ([NSFileManager.defaultManager fileExistsAtPath:damagedSourceMediaPath])
+            assert([NSFileManager.defaultManager removeItemAtPath:damagedSourceMediaPath error:nil]);
+        /* Media references are account-scoped too; a foreign-key check cannot
+         * detect a reference that points at another account's asset. */
+        NSString *damagedMediaRefPath = [directory stringByAppendingPathComponent:@"damaged-media-ref.sqlite3"];
+        SRStore *damagedMediaRef = [[SRStore alloc] initWithPath:damagedMediaRefPath error:&error];
+        assert(damagedMediaRef);
+        damagedMediaRef = nil;
+        sqlite3 *damagedMediaRefDB = NULL;
+        assert(sqlite3_open(damagedMediaRefPath.fileSystemRepresentation, &damagedMediaRefDB) == SQLITE_OK);
+        const char *crossAccountMediaReference =
+            "PRAGMA foreign_keys=OFF;"
+            "INSERT INTO media_assets(token,account,scope_kind,scope_sha256,sha256,byte_count,created_at) "
+            "VALUES('token','account','message_library','scope','digest',1,1);"
+            "INSERT INTO media_references(account,token,owner_kind,owner_id,created_at) "
+            "VALUES('other-account','token','plan','missing-plan',1);"
+            "PRAGMA user_version=14;";
+        assert(sqlite3_exec(damagedMediaRefDB, crossAccountMediaReference, NULL, NULL, NULL) == SQLITE_OK);
+        assert(sqlite3_close(damagedMediaRefDB) == SQLITE_OK);
+        damagedMediaRef = [[SRStore alloc] initWithPath:damagedMediaRefPath error:&error];
+        assert(!damagedMediaRef && error);
+        assert([NSFileManager.defaultManager removeItemAtPath:damagedMediaRefPath error:nil]);
+        NSString *damagedMediaRefMediaPath = [damagedMediaRefPath stringByAppendingString:@".media"];
+        if ([NSFileManager.defaultManager fileExistsAtPath:damagedMediaRefMediaPath])
+            assert([NSFileManager.defaultManager removeItemAtPath:damagedMediaRefMediaPath error:nil]);
+        /* This product only accepts a fresh schema-0 file or the current
+         * schema-14 file. Unsupported markers are gate values, not migration
+         * fixtures; use empty databases so the test cannot imply schema-11
+         * compatibility or require an old data set. */
+        for (NSNumber *unsupportedNumber in @[@1, @13, @15]) {
+            int unsupportedVersion = unsupportedNumber.intValue;
+            NSString *unsupportedPath = [directory stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"unsupported-%d.sqlite3", unsupportedVersion]];
+            sqlite3 *unsupportedDB = NULL;
+            assert(sqlite3_open(unsupportedPath.fileSystemRepresentation, &unsupportedDB) == SQLITE_OK);
+            assert(sqlite3_exec(unsupportedDB, [[NSString stringWithFormat:@"PRAGMA user_version=%d", unsupportedVersion] UTF8String], NULL, NULL, NULL) == SQLITE_OK);
+            assert(sqlite3_close(unsupportedDB) == SQLITE_OK);
+            error = nil;
+            assert(![[SRStore alloc] initWithPath:unsupportedPath error:&error] && error);
+            /* Reopen the rejected file and prove the gate ran before schema
+             * creation; no table, WAL side effect or media directory is needed. */
+            assert(sqlite3_open(unsupportedPath.fileSystemRepresentation, &unsupportedDB) == SQLITE_OK);
+            sqlite3_stmt *versionCheck = NULL;
+            assert(sqlite3_prepare_v2(unsupportedDB, "PRAGMA user_version", -1, &versionCheck, NULL) == SQLITE_OK);
+            assert(sqlite3_step(versionCheck) == SQLITE_ROW);
+            assert(sqlite3_column_int(versionCheck, 0) == unsupportedVersion);
+            assert(sqlite3_finalize(versionCheck) == SQLITE_OK);
+            sqlite3_stmt *tableCount = NULL;
+            assert(sqlite3_prepare_v2(unsupportedDB,
+                "SELECT count(*) FROM sqlite_master WHERE type='table'", -1, &tableCount, NULL) == SQLITE_OK);
+            assert(sqlite3_step(tableCount) == SQLITE_ROW);
+            assert(sqlite3_column_int(tableCount, 0) == 0);
+            assert(sqlite3_finalize(tableCount) == SQLITE_OK);
+            assert(sqlite3_close(unsupportedDB) == SQLITE_OK);
+            assert(![NSFileManager.defaultManager fileExistsAtPath:[unsupportedPath stringByAppendingString:@"-wal"]]);
+            assert(![NSFileManager.defaultManager fileExistsAtPath:[unsupportedPath stringByAppendingString:@"-shm"]]);
+            assert([NSFileManager.defaultManager removeItemAtPath:unsupportedPath error:nil]);
+            NSString *unsupportedMediaPath = [unsupportedPath stringByAppendingString:@".media"];
+            assert(![NSFileManager.defaultManager fileExistsAtPath:unsupportedMediaPath]);
+        }
         assert(count([store summaryForRun:run error:&error], @"confirmed") == 2000);
         assert([store saveConfiguration:[SRConfiguration emptyDraft] account:@"account" error:&error]);
         store = nil;

@@ -172,48 +172,24 @@ int main(void) {
         CHECK([store exceptionsForRun:atomic account:@"account" limit:50 offset:0 error:NULL].count == 2);
         CHECK(sqlite3_close(db) == SQLITE_OK);
 
-        // The additive schema-5 upgrade preserves plans, old claims and interrupted targets.
-        NSString *migrationPath = [directory stringByAppendingPathComponent:@"legacy.sqlite3"];
-        SRStore *legacy = [[SRStore alloc] initWithPath:migrationPath error:NULL]; CHECK(legacy);
-        NSArray *legacyRules = [legacy rulesForPlan:plan(legacy, @"legacy-plan") error:NULL];
-        NSString *legacyRun = [legacy startRule:legacyRules[0][@"id"] replay:NO error:NULL]; CHECK(legacyRun);
-        CHECK([legacy claimNextForRun:legacyRun error:NULL]);
-        NSMutableDictionary *saved = [SRConfiguration emptyDraft]; saved[@"maximum"] = @30;
-        CHECK([legacy saveConfiguration:saved account:@"account" error:NULL]); legacy = nil;
-        CHECK(sqlite3_open(migrationPath.fileSystemRepresentation, &db) == SQLITE_OK);
-        CHECK(sqlite3_exec(db, "DROP TABLE submission_receipts; PRAGMA user_version=5; INSERT INTO text_experiments VALUES('account','mother@chatroom','legacy-text','one@chatroom',1); INSERT INTO image_experiments VALUES('account','mother@chatroom','legacy-image','two@chatroom',1);", NULL, NULL, NULL) == SQLITE_OK);
+        // Unsupported schemas are not upgrade inputs; a fresh install starts at 0.
+        NSString *unsupportedPath = [directory stringByAppendingPathComponent:@"unsupported-schema.sqlite3"];
+        SRStore *unsupportedSeed = [[SRStore alloc] initWithPath:unsupportedPath error:NULL]; CHECK(unsupportedSeed);
+        unsupportedSeed = nil;
+        CHECK(sqlite3_open(unsupportedPath.fileSystemRepresentation, &db) == SQLITE_OK);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=13", NULL, NULL, NULL) == SQLITE_OK);
         CHECK(sqlite3_close(db) == SQLITE_OK);
-        legacy = [[SRStore alloc] initWithPath:migrationPath error:NULL]; CHECK(legacy && [legacy recoverInterruptedRuns:NULL]);
-        CHECK([[legacy configurationForAccount:@"account" error:NULL][@"maximum"] isEqual:@30]);
-        CHECK([[legacy textExperimentSummaryForAccount:@"account" error:NULL][@"claimed"] boolValue]);
-        CHECK([[legacy imageExperimentSummaryForAccount:@"account" error:NULL][@"claimed"] boolValue]);
-        CHECK(count(legacy, legacyRun, @"uncertain") == 1 && count(legacy, legacyRun, @"pending") == 2);
-        CHECK([legacy resumeRun:legacyRun error:NULL]);
-        CHECK([legacy claimNextForRun:legacyRun error:NULL][@"position"] != nil);
-        legacy = nil;
-        CHECK(sqlite3_open(migrationPath.fileSystemRepresentation, &db) == SQLITE_OK);
-        sqlite3_stmt *statement = NULL;
-        CHECK(sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &statement, NULL) == SQLITE_OK);
-        CHECK(sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int(statement, 0) == 11); sqlite3_finalize(statement);
-        CHECK(sqlite3_exec(db, "PRAGMA user_version=12", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
-        CHECK(![[SRStore alloc] initWithPath:migrationPath error:NULL]);
+        CHECK(![[SRStore alloc] initWithPath:unsupportedPath error:NULL]);
 
-        // A pre-v8 rules table has a CHECK(minimum>=10); rebuilding it must allow the new 3-second floor.
-        NSString *constraintPath = [directory stringByAppendingPathComponent:@"legacy-interval.sqlite3"];
-        SRStore *constraintSeed = [[SRStore alloc] initWithPath:constraintPath error:NULL]; CHECK(constraintSeed);
-        NSString *constraintPlan = plan(constraintSeed, @"legacy-interval");
-        constraintSeed = nil;
-        CHECK(sqlite3_open(constraintPath.fileSystemRepresentation, &db) == SQLITE_OK);
-        CHECK(sqlite3_exec(db,
-            "PRAGMA foreign_keys=OFF;"
-            "UPDATE rules SET minimum=10,maximum=20;"
-            "CREATE TABLE rules_legacy(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), name TEXT NOT NULL, position INTEGER NOT NULL, minimum REAL NOT NULL CHECK(minimum>=10), maximum REAL NOT NULL CHECK(maximum>=minimum), UNIQUE(plan_id,position));"
-            "INSERT INTO rules_legacy SELECT id,plan_id,name,position,minimum,maximum FROM rules;"
-            "DROP TABLE rules; ALTER TABLE rules_legacy RENAME TO rules; PRAGMA user_version=7;",
-            NULL, NULL, NULL) == SQLITE_OK);
+        // A refused future schema must never publish a constructor or a version.
+        NSString *futurePath = [directory stringByAppendingPathComponent:@"future-schema.sqlite3"];
+        SRStore *future = [[SRStore alloc] initWithPath:futurePath error:NULL]; CHECK(future);
+        future = nil;
+        CHECK(sqlite3_open(futurePath.fileSystemRepresentation, &db) == SQLITE_OK);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=15", NULL, NULL, NULL) == SQLITE_OK);
         CHECK(sqlite3_close(db) == SQLITE_OK);
-        SRStore *constraintStore = [[SRStore alloc] initWithPath:constraintPath error:NULL]; CHECK(constraintStore);
-        CHECK([constraintStore addRuleToPlan:constraintPlan name:@"three-second" targets:@[@"new@chatroom"] minimum:3 maximum:3 error:NULL]);
+        future = [[SRStore alloc] initWithPath:futurePath error:NULL]; CHECK(!future);
+        CHECK(future.schemaVersion == 0);
 
         runner = nil; store = nil; transport = nil; restored = nil;
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);

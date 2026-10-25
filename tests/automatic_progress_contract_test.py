@@ -19,8 +19,9 @@ class AutomaticProgressContractTests(unittest.TestCase):
         self.assertIn('INSERT INTO submission_receipts', store)
         self.assertIn('submitted_at REAL NOT NULL', store)
         self.assertNotIn('DELETE FROM submission_receipts', store)
-        # Schema v8 rebuilds only the legacy rules table to lower the local pacing floor.
-        self.assertIn('ALTER TABLE rules_interval_v8 RENAME TO rules', store)
+        # The current product has no legacy rules-table rebuild or upgrade path.
+        self.assertNotIn('ALTER TABLE rules_interval_v8 RENAME TO rules', store)
+        self.assertIn('version == 0 || version == 14', store)
 
     def test_claims_only_unattempted_targets(self):
         store = (ROOT / 'Core/SRStore.m').read_text(encoding='utf-8')
