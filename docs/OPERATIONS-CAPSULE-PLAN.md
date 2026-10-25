@@ -1,5 +1,7 @@
 # 运营胶囊与系统联动开发计划
 
+**2026-10-25 最新打包状态（当前精确快照，未安装）：** 按授权从当前开发快照建立隔离分支 `codex/a-package-20261025`，提交 `02cf7fb963fb4e34bb2a83a35d68fd1415e2aa87`，运行一次 `build_deb=true` CI `40179290423` / job `121126667336` 并成功。Python **225 项**通过；22 个 Objective-C 目标各执行 3 次，pacing/operations-state 各执行 1 次、media-quota 执行 3 次；普通 `iphoneos-arm` DEB 已由 CI 用 `dpkg-deb` 检查并用 `lipo` 验证 `arm64`/`arm64e`。包 SHA-256 为 `bedb3a3a722dd10dbeed51ee857e4e9eaaf6fecd83666c6ee235df0a9e9692d5`，artifact ID `12592629882`，详情见 [BUILD-0.2.21-apackage.1.md](BUILD-0.2.21-apackage.1.md)。本次没有安装、迁移、清理设备数据或新增真机采样；A 的真实宿主语义仍未整体验收，B/C 继续关闭。
+
 **2026-10-25 最新状态：** 按授权在隔离分支 `codex/a-probe-clock-invalid-native-20261025-r3` 提交/推送 `aa01abe451a5bd4254f6e3df829ac4fdb8032f29`（tree `bca12cb7a48ba08fa119725936e61afcc1119b1f`），运行一次 `build_deb=false` CI `40169810412` / job `121098186039` 并成功。Python **224 项**通过；22 个 Objective-C 目标编译/链接并各执行 3 次（66 次），3 个 C 目标按配置执行 5 次（pacing/operations-state 各 1 次、media-quota 3 次）；25 个目标、71 次配置执行与日志成功标记逐项一致。探针新增的字段夹具修正和 inactive 时钟失败安全停止行为均已原生通过。5 个打包步骤全跳过、artifact=0；主工作区 main/HEAD `f652d5e`、真实暂存区及既有修改未动；无生产包、安装、迁移或设备动作。全新 schema 14、A 仍未整体验收、B/C 关闭不变，详见 [本地收口记录](OPERATIONS-A-LOCAL-CLOSEOUT.md)。
 
 **2026-10-25 历史原生回归（迁移路径移除前快照）：** 隔离分支 `codex/operations-a-local-closeout-native-20261025` 的提交 `c35fb7181bc211d2b1d19e1de6c92a9b8bee9609` 由 CI `40147383615` / job `121031524021` 以 `build_deb=false` 完成当时快照的 Python **214 项**、Objective-C 原生目标三轮执行和 C 目标编译/执行；DEB、安装、迁移及设备操作均未发生。该历史结果不覆盖移除旧库升级路径后的源码；其原生缺口已由 `d02de94` / CI `40154276666` 补齐，不再要求相同回归授权，A 未整体验收，B/C 保持关闭。

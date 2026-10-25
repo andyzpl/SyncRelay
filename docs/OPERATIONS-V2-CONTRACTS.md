@@ -1,5 +1,7 @@
 # 运营 v2：阶段 A 数据与事务契约
 
+**2026-10-25 最新打包状态（当前精确快照，未安装）：** 按授权从当前开发快照建立隔离分支 `codex/a-package-20261025`，提交 `02cf7fb963fb4e34bb2a83a35d68fd1415e2aa87`，运行一次 `build_deb=true` CI `40179290423` / job `121126667336` 并成功。Python **225 项**通过；22 个 Objective-C 目标各执行 3 次，pacing/operations-state 各执行 1 次、media-quota 执行 3 次；普通 `iphoneos-arm` DEB 已由 CI 用 `dpkg-deb` 检查并用 `lipo` 验证 `arm64`/`arm64e`。包 SHA-256 为 `bedb3a3a722dd10dbeed51ee857e4e9eaaf6fecd83666c6ee235df0a9e9692d5`，artifact ID `12592629882`，详情见 [BUILD-0.2.21-apackage.1.md](BUILD-0.2.21-apackage.1.md)。本次没有安装、迁移、清理设备数据或新增真机采样；A 的真实宿主语义仍未整体验收，B/C 继续关闭。
+
 **2026-10-25 最新状态：** 隔离分支 `codex/a-probe-clock-invalid-native-20261025-r3` 的提交 `aa01abe451a5bd4254f6e3df829ac4fdb8032f29`（tree `bca12cb7a48ba08fa119725936e61afcc1119b1f`）经 CI `40169810412` / job `121098186039`、`build_deb=false` 成功完成。Python **224 项**通过，22 个 Objective-C 目标各执行 3 次，3 个 C 目标按既有配置执行 5 次；25 个目标的 71 次配置执行全部匹配成功标记。探针字段夹具和 inactive 起始时钟无效时 `clock_invalid` 安全停止两项增量均已原生通过；打包步骤全跳过、artifact=0，无包、安装、迁移或设备动作。主工作区不动；schema 14 与 A 未整体验收、B/C 关闭不变。详见 [本地收口记录](OPERATIONS-A-LOCAL-CLOSEOUT.md)。
 
 **术语边界：** 本文历史章节中的 schema 11→14 是设计演进记录，不是当前产品能力；schema 14 仍保留的 `operations_legacy_adoptions`/`adoptLegacyOperationsRun` 只处理产品层旧运行接回，不能打开或升级旧 schema 文件。
