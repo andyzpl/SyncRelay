@@ -160,6 +160,11 @@ static NSMutableDictionary *draft(void) {
     value[@"rules"] = @[@{@"id": @"rule", @"name": @"First", @"targets": @[@{@"id": @"target@chatroom", @"name": @"Target"}]}];
     return value;
 }
+static NSMutableDictionary *draftForSender(NSString *sender) {
+    NSMutableDictionary *value = draft();
+    value[@"senders"] = @[@{@"id": sender, @"name": @"Selected sender"}];
+    return value;
+}
 @interface SRWeChatReceiver (ImageFixture)
 - (void)pollImage:(id)pending generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
 - (void)pollOutgoing:(id)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
@@ -294,7 +299,10 @@ static void checkImageCapture(void) {
         if (mode == 4) ((ReceiveWrap *)value).m_n64MesSvrID++;
         if (mode == 5) [weak stop];
         if (mode == 6) {
-            [weak stop]; CHECK([weak armForAccount:account sourceGroup:@"mother@chatroom" error:NULL]);
+            // The re-armed round selects text only, like the previous low-level
+            // arm, so the in-flight image can never be captured by the new round.
+            NSMutableDictionary *textOnly = draftForSender(@"wxid_sender"); textOnly[@"types"] = @[@"text"];
+            [weak stop]; CHECK([weak armForAccount:account configuration:textOnly error:NULL]);
             *error = [NSError errorWithDomain:@"fixture" code:2 userInfo:nil]; return nil;
         }
         return imagePayload();
@@ -303,8 +311,9 @@ static void checkImageCapture(void) {
     NSMutableDictionary *configuration = draft(); configuration[@"types"] = @[@"image"];
     ReceiveManager *manager = [[ReceiveManager alloc] init];
     CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
-    // Unknown host message types are observed for diagnostics but never
-    // treated as capturable media. Keep the probe's uint32 boundary exact.
+    // Unknown host message types are rejected before the current-round probe;
+    // only an allow-listed type may enter observedMessageTypes. Keep the
+    // uint32 boundary exact without treating unsupported types as evidence.
     NSArray *unverifiedTypes = @[@34, @42, @43, @47, @49];
     for (NSNumber *messageType in unverifiedTypes) {
         ReceiveWrap *unknown = wrap(); unknown.m_uiMessageType = messageType.unsignedIntValue;
@@ -315,20 +324,16 @@ static void checkImageCapture(void) {
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:maxType]; pump();
     NSArray *probeRows = receiver.diagnostics[@"messageTypeProbe"][@"rows"];
     NSArray *probeSequence = receiver.diagnostics[@"messageTypeProbe"][@"sequence"];
-    CHECK(probeRows.count == unverifiedTypes.count + 1);
-    for (NSUInteger i = 0; i < unverifiedTypes.count; i++) {
-        CHECK([probeRows[i][@"type"] unsignedLongLongValue] == [unverifiedTypes[i] unsignedLongLongValue]);
-        CHECK([probeRows[i][@"count"] unsignedIntegerValue] == 1);
-        NSNumber *type = unverifiedTypes[i];
-        if ([type isEqual:@34] || [type isEqual:@42] || [type isEqual:@47] || [type isEqual:@49])
-            CHECK([probeRows[i][@"observedRoute"] isEqual:[NSString stringWithFormat:@"receiveMessageWrapWithType%@", type]]);
-        else CHECK(!probeRows[i][@"observedRoute"]); // 43 has no static route evidence.
-    }
-    CHECK([probeRows.lastObject[@"type"] unsignedLongLongValue] == UINT32_MAX &&
-        [probeRows.lastObject[@"count"] unsignedIntegerValue] == 1 && !probeRows.lastObject[@"observedRoute"]);
-    CHECK(probeSequence.count == unverifiedTypes.count + 1 &&
-        [probeSequence.lastObject unsignedLongLongValue] == UINT32_MAX);
+    CHECK(!probeRows.count && !probeSequence.count);
     CHECK(!received.count && [receiver.diagnostics[@"counters"][@"receive_type_filtered"] unsignedIntegerValue] == unverifiedTypes.count + 1);
+    // An account change before the final hand-off must stop the candidate
+    // without recording a stale message type for the previous account.
+    account = @"wxid_changed";
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
+    NSArray *rowsAfterAccountChange = receiver.diagnostics[@"messageTypeProbe"][@"rows"];
+    CHECK(![receiver.diagnostics[@"armed"] boolValue] && rowsAfterAccountChange.count == 0);
+    account = @"wxid_account";
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
     ReceiveWrap *text = wrap(); [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:text];
     ReceiveWrap *unselected = wrap(); unselected.m_uiMessageType = 3; unselected.m_nsRealChatUsr = @"wxid_other";
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:unselected]; pump();
@@ -339,6 +344,10 @@ static void checkImageCapture(void) {
     image.m_uiMessageType = 3; image.m_n64MesSvrID = 11;
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
     CHECK(reads == 1 && received.count == 1 && [received[0][@"type"] isEqual:@"image"]);
+    probeRows = receiver.diagnostics[@"messageTypeProbe"][@"rows"];
+    probeSequence = receiver.diagnostics[@"messageTypeProbe"][@"sequence"];
+    CHECK(probeRows.count == 1 && [probeRows[0][@"type"] unsignedLongLongValue] == 3 &&
+        [probeRows[0][@"count"] unsignedIntegerValue] == 1 && probeSequence.count == 1);
     CHECK([receiver.diagnostics[@"imageState"] isEqual:@"snapshot_ready"]); [receiver stop];
     // No source is offered until the actual raster becomes ready.
     mode = 1; CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
@@ -399,7 +408,14 @@ static void checkDirectionEvidence(void) {
         return [name isEqual:@"CMessageMgr"] ? DirectionManager.class : ([name isEqual:@"CMessageWrap"] ? ReceiveWrap.class : Nil);
     } currentAccount:^NSString *{ return @"wxid_account"; } received:^(__unused NSDictionary *message) { accepted++; }];
     DirectionManager *manager = [[DirectionManager alloc] init];
+    // The low-level arm intentionally has no sender filter. It must remain
+    // armed for diagnostics, but fail closed instead of accepting arbitrary
+    // callbacks during the configuration hand-off window.
     CHECK([receiver armForAccount:@"wxid_account" sourceGroup:@"mother@chatroom" error:NULL]);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
+    CHECK(!accepted && [receiver.diagnostics[@"counters"][@"receive_sender_filtered"] isEqual:@1]);
+    [receiver stop];
+    CHECK([receiver armForAccount:@"wxid_account" configuration:draftForSender(@"wxid_account") error:NULL]);
     [manager AddMsg:@"other@chatroom" MsgWrap:wrap()];
     CHECK([receiver.diagnostics[@"directionSamples"] count] == 0);
     ReceiveWrap *own = wrap(); own.m_nsFromUsr = @"wxid_account"; own.m_nsToUsr = @"mother@chatroom";
@@ -452,7 +468,7 @@ static void checkDirectionEvidence(void) {
         @"private diagnostic body", @"private getter exception", @"9007199254740993"])
         CHECK(![json containsString:secret]);
     [receiver stop];
-    CHECK([receiver armForAccount:@"wxid_account" sourceGroup:@"mother@chatroom" error:NULL]);
+    CHECK([receiver armForAccount:@"wxid_account" configuration:draftForSender(@"wxid_account") error:NULL]);
     CHECK([receiver.diagnostics[@"directionSamples"] count] == 0 && [receiver.diagnostics[@"directionSamplesDropped"] isEqual:@0]);
     CHECK([diagnostic[@"directionSamples"] count] > 0);
     [manager AddMsg:@"mother@chatroom" MsgWrap:empty];
@@ -460,7 +476,7 @@ static void checkDirectionEvidence(void) {
     __weak SRWeChatReceiver *weakReceiver = receiver;
     manager.duringOriginal = ^{
         [weakReceiver stop];
-        CHECK([weakReceiver armForAccount:@"wxid_account" sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([weakReceiver armForAccount:@"wxid_account" configuration:draftForSender(@"wxid_account") error:NULL]);
     };
     [manager AddMsg:@"mother@chatroom" MsgWrap:empty];
     CHECK([receiver.diagnostics[@"directionSamples"] count] == 0);
@@ -480,7 +496,7 @@ static void checkReflectedMessage(void) {
     own.m_nsRealChatUsr = nil; own.m_nsContent = @"reflected private body";
     own.m_n64MesSvrID = 9007199254740993ULL; own.m_uiMesLocalID = 42;
     CHECK(!SRReadString(own, @"m_nsFromUsr") && !SRReadString(own, @"m_nsContent"));
-    CHECK([receiver armForAccount:@"wxid_account" sourceGroup:@"mother@chatroom" error:NULL]);
+    CHECK([receiver armForAccount:@"wxid_account" configuration:draftForSender(@"wxid_account") error:NULL]);
     [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); pump();
     CHECK(received.count == 1 && [received[0][@"sender"] isEqual:@"wxid_account"]);
     CHECK([received[0][@"messageID"] isEqual:@"svr:9007199254740993"]);
@@ -491,7 +507,7 @@ static void checkReflectedMessage(void) {
     CHECK([facts[@"fromIsAccount"] boolValue] && [facts[@"toIsSource"] boolValue]);
     CHECK([receiver.diagnostics[@"stringReadStrategy"] isEqual:@"declared_runtime"]);
     [receiver stop];
-    CHECK([receiver armForAccount:@"wxid_account" sourceGroup:@"mother@chatroom" error:NULL]);
+    CHECK([receiver armForAccount:@"wxid_account" configuration:draft() error:NULL]);
     own.m_nsFromUsr = @"mother@chatroom"; own.m_nsToUsr = @"wxid_account"; own.m_nsRealChatUsr = @"wxid_sender";
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:own]; pump();
     CHECK(received.count == 2 && [received[1][@"sender"] isEqual:@"wxid_sender"]);
@@ -505,6 +521,92 @@ static void checkReflectedMessage(void) {
         CHECK(![json containsString:secret]);
     [receiver stop]; received = nil;
 }
+#import "app_message_probe_cases.h"
+
+/* The outgoing path has its own census rules: an own type-1 callback that
+ * passes the account, the selected sender, the live generation, the time
+ * evidence and the selected text type is recorded, while type 49 stays out of
+ * the census and remains a read-only probe only. */
+static void checkOutgoingTypeCensus(void) {
+    __block NSString *account = @"wxid_account";
+    __block NSUInteger delivered = 0;
+    SRWeChatReceiver *receiver = [[SRWeChatReceiver alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
+        return [name isEqual:@"CMessageMgr"] ? ReceiveManager.class : ([name isEqual:@"CMessageWrap"] ? ReceiveWrap.class : Nil);
+    } currentAccount:^NSString *{ CHECK(NSThread.isMainThread); return account; }
+        received:^(__unused NSDictionary *message) { delivered++; }];
+    ReceiveManager *manager = [ReceiveManager new];
+    NSMutableDictionary *configuration = draft();
+    /* An own callback is identified by the account itself, so the sender filter
+     * has to contain the account and the selected types have to contain text. */
+    configuration[@"senders"] = @[@{@"id": account, @"name": @"Self"}];
+    configuration[@"types"] = @[@"text"];
+    NSString *link = @"<msg><appmsg appid=\"private-appid\"><title><![CDATA[private title]]></title>"
+        "<url>https://example.invalid/private-link?a=1&amp;b=2</url><type>5</type></appmsg></msg>";
+
+    /* An own type-1 callback with a valid server ID and the text type selected
+     * is recorded in the type census of the live round. */
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    ReceiveWrap *own = [[ReceiveWrap alloc] init];
+    own.m_nsFromUsr = account; own.m_nsToUsr = @"mother@chatroom"; own.m_nsRealChatUsr = nil;
+    own.m_uiMessageType = 1; own.m_n64MesSvrID = 9007199254740993ULL; own.m_uiMesLocalID = 42;
+    own.m_nsContent = @"own outgoing census text";
+    [manager AddMsg:@"mother@chatroom" MsgWrap:own];
+    NSArray *rows = receiver.diagnostics[@"messageTypeProbe"][@"rows"];
+    NSArray *sequence = receiver.diagnostics[@"messageTypeProbe"][@"sequence"];
+    CHECK(rows.count == 1 && [rows[0][@"type"] unsignedLongLongValue] == 1 &&
+        [rows[0][@"count"] unsignedIntegerValue] == 1);
+    CHECK(sequence.count == 1 && [sequence[0] unsignedLongLongValue] == 1);
+    /* The own-text settle runs later on the main queue, so the census is read
+     * before it and the round is closed right after. */
+    [receiver stop]; pump();
+
+    /* An own type-49 callback is observable by the read-only XML probe, but it
+     * never enters the type census and never becomes a source candidate. */
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    AppMessageBodyWrap *own49 = [[AppMessageBodyWrap alloc] init];
+    own49.m_nsFromUsr = account; own49.m_nsToUsr = @"mother@chatroom"; own49.m_nsRealChatUsr = nil;
+    own49.m_uiMessageType = 49; own49.m_n64MesSvrID = 9007199254740995ULL; own49.m_uiMesLocalID = 43;
+    own49.m_nsContent = link;
+    [manager AddMsg:@"mother@chatroom" MsgWrap:own49]; pump();
+    CHECK(own49.bodyReads == 1);
+    NSArray *samples = appSamples(receiver);
+    CHECK(samples.count == 1 && [samples[0][@"state"] isEqual:@"parsed"] && [samples[0][@"subtype"] isEqual:@5]);
+    rows = receiver.diagnostics[@"messageTypeProbe"][@"rows"];
+    sequence = receiver.diagnostics[@"messageTypeProbe"][@"sequence"];
+    CHECK(!rows.count && !sequence.count);
+    CHECK(![receiver.diagnostics[@"ownTextPending"] boolValue]);
+    CHECK([receiver.diagnostics[@"ownTextState"] isEqual:@"waiting"]);
+    CHECK([receiver.diagnostics[@"counters"][@"receive_type_filtered"] unsignedIntegerValue] == 1);
+    CHECK(manager.lookupGroup == nil);
+    CHECK(![receiver.diagnostics[@"sendingEnabled"] boolValue]);
+    CHECK(delivered == 0);
+    [receiver stop]; pump();
+
+    /* The same own type-49 callback without a server ID is still only a
+     * read-only probe: no pending readback, no source candidate and no send. */
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    AppMessageBodyWrap *own49NoID = [[AppMessageBodyWrap alloc] init];
+    own49NoID.m_nsFromUsr = account; own49NoID.m_nsToUsr = @"mother@chatroom"; own49NoID.m_nsRealChatUsr = nil;
+    own49NoID.m_uiMessageType = 49; own49NoID.m_n64MesSvrID = 0; own49NoID.m_uiMesLocalID = 44;
+    own49NoID.m_nsContent = link;
+    [manager AddMsg:@"mother@chatroom" MsgWrap:own49NoID]; pump();
+    CHECK(own49NoID.bodyReads == 1);
+    samples = appSamples(receiver);
+    CHECK(samples.count == 1 && [samples[0][@"state"] isEqual:@"parsed"] && [samples[0][@"subtype"] isEqual:@5]);
+    rows = receiver.diagnostics[@"messageTypeProbe"][@"rows"];
+    sequence = receiver.diagnostics[@"messageTypeProbe"][@"sequence"];
+    CHECK(!rows.count && !sequence.count);
+    CHECK(![receiver.diagnostics[@"ownTextPending"] boolValue]);
+    CHECK([receiver.diagnostics[@"ownTextState"] isEqual:@"waiting"]);
+    CHECK([receiver.diagnostics[@"counters"][@"receive_type_filtered"] unsignedIntegerValue] == 1);
+    CHECK(manager.lookupGroup == nil);
+    CHECK([receiver.diagnostics[@"counters"][@"source_candidate"] unsignedIntegerValue] == 0);
+    CHECK(![receiver.diagnostics[@"sendingEnabled"] boolValue]);
+    CHECK(delivered == 0);
+    [receiver stop];
+    puts("PASS: outgoing type-1 census entry, type-49 probe isolation and no-server-ID probe without pending, source candidate or send");
+}
+
 int main(void) {
     @autoreleasepool {
         ScalarTraps *traps = [[ScalarTraps alloc] init];
@@ -540,9 +642,13 @@ int main(void) {
         } currentAccount:^NSString *{ return current; } received:^(__unused NSDictionary *message) { abort(); }];
         CHECK(![missingWrap armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
         CHECK([capture armForAccount:current configuration:draft() error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        // Select text only, exactly like the previous low-level arm: the type-3
+        // fixture below must stay type-filtered, because a queued image would
+        // hold the pending-image guard and block the later text hand-off.
+        NSMutableDictionary *textOnly = draft(); textOnly[@"types"] = @[@"text"];
+        CHECK([receiver armForAccount:current configuration:textOnly error:NULL]);
         CHECK(![receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
-        CHECK(![makeReceiver(@"8.0.76", ReceiveManager.class) armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([makeReceiver(@"8.0.76", ReceiveManager.class) armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
         for (NSString *key in @[@"m_nsFromUsr", @"m_nsToUsr", @"m_nsRealChatUsr"]) {
             ReceiveWrap *bad = wrap(); [bad setValue:@"wrong@chatroom" forKey:key];
             [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:bad];
@@ -554,17 +660,25 @@ int main(void) {
         ReceiveWrap *image = wrap(); image.m_uiMessageType = 3;
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image];
         [manager AsyncOnAddMsg:@"other@chatroom" MsgWrap:wrap()]; pump();
+        [manager AsyncOnAddMsg:(id)@123 MsgWrap:wrap()];
+        [manager AsyncOnAddMsg:@"" MsgWrap:wrap()]; pump();
+        NSDictionary *sessionRejections = receiver.diagnostics[@"sessionRejections"];
+        CHECK([sessionRejections[@"receive_other_string"] isEqual:@1]);
+        CHECK([sessionRejections[@"receive_non_string"] isEqual:@1]);
+        CHECK([sessionRejections[@"receive_empty_string"] isEqual:@1]);
         CHECK(received.count == 0 && !capture.preview);
         ReceiveWrap *otherSender = wrap(); otherSender.m_nsRealChatUsr = @"wxid_other";
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:otherSender]; pump();
-        CHECK(received.count == 1 && !capture.preview);
+        CHECK(received.count == 0 && !capture.preview);
         ReceiveWrap *original = wrap(); NSUInteger before = manager.calls;
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:original]; original.m_nsContent = @"mutated"; pump();
-        CHECK(manager.calls == before + 1 && received.count == 2);
+        CHECK(manager.calls == before + 1 && received.count == 1);
         CHECK([capture.preview[@"payload"][@"text"] isEqual:@"original message"]);
         CHECK([capture.preview[@"messageID"] isEqual:@"svr:9007199254740993"]);
         CHECK([capture.status[@"state"] isEqual:@"preview"] && ![receiver.diagnostics[@"armed"] boolValue]);
-        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump(); CHECK(received.count == 2);
+        // The successful capture stopped the receiver, so a later callback must
+        // not be delivered and the received count must not grow.
+        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump(); CHECK(received.count == 1);
         CHECK([store plansForAccount:current limit:50 offset:0 error:NULL].count == 0);
         CHECK(![capture confirmForCurrentAccount:@"wxid_other" error:NULL]);
         NSString *plan = [capture confirmForCurrentAccount:current error:NULL]; CHECK(plan);
@@ -576,35 +690,36 @@ int main(void) {
 
         // Stopped/re-armed captures must not consume a callback queued by an older generation.
         CHECK([capture armForAccount:current configuration:draft() error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([receiver armForAccount:current configuration:draft() error:NULL]);
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()];
         [receiver stop]; [capture cancel];
         CHECK([capture armForAccount:current configuration:draft() error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]); pump();
-        CHECK(!capture.preview && received.count == 2);
+        CHECK([receiver armForAccount:current configuration:draft() error:NULL]); pump();
+        CHECK(!capture.preview && received.count == 1);
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; current = @"wxid_switched"; pump();
-        CHECK(!capture.preview && received.count == 2 && ![receiver.diagnostics[@"armed"] boolValue]);
+        CHECK(!capture.preview && received.count == 1 && ![receiver.diagnostics[@"armed"] boolValue]);
         [capture cancel]; current = @"wxid_account";
         SRWeChatReceiver *replacement = makeReceiver(@"8.0.76", ReceiveManager.class); weakReceiver = replacement;
-        CHECK([replacement armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([replacement armForAccount:current configuration:draft() error:NULL]);
         before = manager.calls; [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
-        CHECK(manager.calls == before + 1 && received.count == 3); [replacement stop];
+        CHECK(manager.calls == before + 1 && received.count == 2); [replacement stop];
         SRWeChatReceiver *inherited = makeReceiver(@"8.0.79", InheritedReceiveManager.class); weakReceiver = inherited;
-        CHECK([inherited armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([inherited armForAccount:current configuration:draft() error:NULL]);
         InheritedReceiveManager *subclass = [[InheritedReceiveManager alloc] init];
         [subclass AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
-        CHECK(subclass.calls == 1 && received.count == 4); [inherited stop];
-        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump(); CHECK(received.count == 4);
+        CHECK(subclass.calls == 1 && received.count == 3); [inherited stop];
+        [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump(); CHECK(received.count == 3);
         // Own messages use the same selected-wxid filter and freeze only with a server ID.
         NSMutableDictionary *ownDraft = draft();
         ownDraft[@"senders"] = @[@{@"id": current, @"name": @"Me"}];
         weakReceiver = receiver;
         CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([receiver armForAccount:current configuration:ownDraft error:NULL]);
         ReceiveWrap *own = wrap(); own.m_nsFromUsr = current; own.m_nsToUsr = @"mother@chatroom";
         own.m_nsRealChatUsr = nil; own.m_n64MesSvrID = 0;
         before = manager.calls;
         [manager AddMsg:@"wrong@chatroom" MsgWrap:own]; pump(); CHECK(!capture.preview);
+        CHECK([receiver.diagnostics[@"sessionRejections"][@"outgoing_other_string"] isEqual:@1]);
         [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); CHECK(!capture.preview);
         CHECK(manager.calls == before + 2);
         own.m_n64MesSvrID = 123456789;
@@ -613,7 +728,7 @@ int main(void) {
         CHECK([capture.preview[@"messageID"] isEqual:@"svr:123456789"]);
         [capture cancel];
         CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([receiver armForAccount:current configuration:ownDraft error:NULL]);
         ReceiveWrap *synced = wrap(); synced.m_nsRealChatUsr = current;
         [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:synced]; pump();
         CHECK([capture.preview[@"sender"] isEqual:current]);
@@ -621,12 +736,12 @@ int main(void) {
         [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); CHECK([capture.preview isEqual:firstOwn]);
         [capture cancel];
         CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([receiver armForAccount:current configuration:ownDraft error:NULL]);
         own.m_n64MesSvrID = 0;
         [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump();
         [receiver stop]; [capture cancel];
         CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([receiver armForAccount:current configuration:ownDraft error:NULL]);
         own.m_n64MesSvrID = 777;
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.2, false); CHECK(!capture.preview);
         own.m_n64MesSvrID = 0;
@@ -636,7 +751,7 @@ int main(void) {
         CHECK(!capture.preview && ![receiver.diagnostics[@"armed"] boolValue]);
         [capture cancel]; current = @"wxid_account";
         CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([receiver armForAccount:current configuration:ownDraft error:NULL]);
         own.m_n64MesSvrID = 0;
         ReceiveWrap *stored = wrap(); stored.m_nsFromUsr = current; stored.m_nsToUsr = @"mother@chatroom";
         stored.m_nsRealChatUsr = nil; stored.m_n64MesSvrID = 9007199254740995ULL;
@@ -648,7 +763,7 @@ int main(void) {
         // Wrong local ID or changed body cannot be accepted via exact-ID readback.
         [capture cancel];
         CHECK([capture armForAccount:current configuration:ownDraft error:NULL]);
-        CHECK([receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        CHECK([receiver armForAccount:current configuration:ownDraft error:NULL]);
         stored.m_uiMesLocalID = 99;
         [manager AddMsg:@"mother@chatroom" MsgWrap:own]; pump(); CHECK(!capture.preview);
         stored.m_uiMesLocalID = 42; stored.m_nsContent = @"different text";
@@ -676,6 +791,8 @@ int main(void) {
         checkReflectedMessage();
         checkImageCapture();
         checkSourceTimeEvidence();
+        checkAppMessageProbe();
+        checkOutgoingTypeCensus();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }

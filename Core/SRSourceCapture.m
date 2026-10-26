@@ -9,6 +9,10 @@
 @property(nonatomic, copy) NSDictionary *configuration;
 @property(nonatomic, copy, nullable) NSDictionary *captured;
 @property(nonatomic) BOOL waiting;
+/* Monotonic round token. It is bumped on every successful arm so that
+ * diagnostics and any in-flight offer belong to exactly one capture round and a
+ * re-arm cannot be confused with the previous round. */
+@property(nonatomic) NSUInteger generation;
 @property(nonatomic) NSUInteger offered;
 @property(nonatomic) NSUInteger rejected;
 @property(nonatomic) NSInteger lastReason;
@@ -38,18 +42,22 @@
             return NO;
         }
         self.account = account; self.configuration = frozen; self.waiting = YES;
-        self.offered = 0; self.rejected = 0; self.lastReason = 0;
+        self.offered = 0; self.rejected = 0; self.lastReason = 0; self.generation++;
         return YES;
     }
 }
 - (BOOL)offerEnvelope:(NSDictionary *)envelope {
     @synchronized(self) {
+        // Only a live, currently-waiting round may record diagnostics. A late
+        // callback after cancel/confirm-failure/stop, or a stray envelope from a
+        // previous round, must not increment the current round's counters or
+        // overwrite lastReason; the next arm resets them explicitly.
+        if (!self.waiting) return NO;
         NSDictionary *snapshot = [SRSourceMessage frozenJSON:envelope];
         self.offered++;
-        if (!self.waiting || ![SRSourceMessage matchesEnvelope:snapshot configuration:self.configuration account:self.account]) {
+        if (![SRSourceMessage matchesEnvelope:snapshot configuration:self.configuration account:self.account]) {
             NSInteger reason = 24;
-            if (!self.waiting) reason = 10;
-            else if (![snapshot[@"sender"] isKindOfClass:NSString.class] || ![snapshot[@"type"] isKindOfClass:NSString.class]) reason = 24;
+            if (![snapshot[@"sender"] isKindOfClass:NSString.class] || ![snapshot[@"type"] isKindOfClass:NSString.class]) reason = 24;
             else if (![snapshot[@"account"] isEqual:self.account]) reason = 20;
             else if (![snapshot[@"group"] isEqual:self.configuration[@"sourceGroup"][@"id"]]) reason = 21;
             else if (![[self.configuration[@"senders"] valueForKey:@"id"] containsObject:snapshot[@"sender"]]) reason = 22;
@@ -87,6 +95,7 @@
 - (NSDictionary *)diagnostics {
     @synchronized(self) {
         return @{@"state": self.captured ? @"preview" : (self.waiting ? @"waiting" : @"idle"),
+            @"generation": @(self.generation),
             @"offered": @(self.offered), @"rejected": @(self.rejected), @"lastReasonCode": @(self.lastReason)};
     }
 }

@@ -64,11 +64,16 @@ int main(void) {
         CHECK([NSFileManager.defaultManager createSymbolicLinkAtPath:file withDestinationPath:outside error:NULL]);
         CHECK(![assets dataForPayload:payload source:message error:NULL]);
         [assets discardPayload:payload]; CHECK([NSFileManager.defaultManager fileExistsAtPath:outside]);
-        // A sparse unrelated file exercises the quota without allocating 256 MiB.
-        NSString *full = [directory stringByAppendingPathComponent:@"quota"];
+        // A sparse relay snapshot exercises the shared byte budget without
+        // allocating 256 MiB; files outside the relay media set are not counted.
+        NSString *full = [directory stringByAppendingPathComponent:@"quota.srimage"];
         int fd = open(full.fileSystemRepresentation, O_CREAT | O_WRONLY, 0600); CHECK(fd >= 0);
         CHECK(!ftruncate(fd, 256 * 1024 * 1024)); close(fd);
-        CHECK(![assets saveData:data source:message error:NULL]); CHECK([NSFileManager.defaultManager removeItemAtPath:full error:NULL]);
+        NSError *quotaError = nil;
+        CHECK(![assets saveData:data source:message error:&quotaError]);
+        CHECK(quotaError.code == SRImageAssetErrorQuotaExceeded);
+        CHECK([quotaError.userInfo[SRImageAssetShortfallBytesKey] unsignedLongLongValue] == data.length);
+        CHECK([NSFileManager.defaultManager removeItemAtPath:full error:NULL]);
         NSString *link = [root stringByAppendingPathComponent:@"linked-images"];
         CHECK([NSFileManager.defaultManager createSymbolicLinkAtPath:link withDestinationPath:directory error:NULL]);
         CHECK(![[[SRImageAssetStore alloc] initWithDirectory:link] saveData:data source:message error:NULL]);

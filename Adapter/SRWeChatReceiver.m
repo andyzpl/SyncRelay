@@ -9,6 +9,146 @@
 #include <stdint.h>
 #include <string.h>
 
+static const NSUInteger SRAppMessageByteLimit = 128 * 1024;
+static const NSUInteger SRAppMessageSampleLimit = 16;
+
+/* Read only structural evidence. No title, URL, attachment ID or raw XML is
+ * retained in the result, and a parsed subtype is never a relay payload. */
+@interface SRAppMessageXMLProbe : NSObject <NSXMLParserDelegate>
+@property(nonatomic, strong) NSMutableArray<NSString *> *path;
+@property(nonatomic, strong) NSMutableSet<NSString *> *seen;
+@property(nonatomic, strong) NSMutableDictionary *presence;
+@property(nonatomic, strong) NSMutableString *typeText;
+@property(nonatomic, copy) NSString *field;
+@property(nonatomic, copy) NSString *failure;
+@property(nonatomic) NSUInteger appDepth;
+@property(nonatomic) NSUInteger elements;
++ (NSDictionary *)summaryForContent:(NSString *)content sender:(NSString *)sender;
+@end
+
+@implementation SRAppMessageXMLProbe
+- (void)reject:(NSString *)state parser:(NSXMLParser *)parser {
+    if (!self.failure) self.failure = state;
+    [parser abortParsing];
+}
+- (void)parser:(NSXMLParser *)parser didStartElement:(NSString *)element
+    namespaceURI:(__unused NSString *)namespaceURI qualifiedName:(__unused NSString *)qualifiedName
+    attributes:(NSDictionary<NSString *, NSString *> *)attributes {
+    if (++self.elements > 1024 || self.path.count >= 32) { [self reject:@"too_complex" parser:parser]; return; }
+    if (self.field) { [self reject:@"unsupported_structure" parser:parser]; return; }
+    for (NSString *key in attributes)
+        if ([key isEqual:@"xmlns"] || [key hasPrefix:@"xmlns:"]) { [self reject:@"unsupported_structure" parser:parser]; return; }
+    if (!self.path.count && ![@[@"msg", @"appmsg"] containsObject:element]) {
+        [self reject:@"unsupported_structure" parser:parser]; return;
+    }
+    [self.path addObject:element];
+    if ([element isEqual:@"appmsg"]) {
+        if (self.appDepth || (self.path.count != 1 &&
+            !(self.path.count == 2 && [self.path[0] isEqual:@"msg"]))) {
+            [self reject:@"unsupported_structure" parser:parser]; return;
+        }
+        self.appDepth = self.path.count;
+    }
+    BOOL direct = self.appDepth && self.path.count == self.appDepth + 1 &&
+        [self.path[self.appDepth - 1] isEqual:@"appmsg"];
+    BOOL attachment = self.appDepth && self.path.count == self.appDepth + 2 &&
+        [self.path[self.appDepth - 1] isEqual:@"appmsg"] && [self.path[self.appDepth] isEqual:@"appattach"];
+    NSString *field = nil;
+    if (direct) field = @{@"type": @"type", @"title": @"hasTitle", @"url": @"hasURL", @"appattach": @"hasAttachment"}[element];
+    if (attachment) field = @{@"attachid": @"hasAttachmentID", @"fileext": @"hasFileExtension", @"totallen": @"hasTotalLength"}[element];
+    if (!field) return;
+    if ([self.seen containsObject:field]) { [self reject:@"ambiguous_fields" parser:parser]; return; }
+    [self.seen addObject:field];
+    if ([field isEqual:@"hasAttachment"]) self.presence[field] = @YES;
+    else self.field = field;
+}
+- (void)parser:(NSXMLParser *)parser foundCharacters:(NSString *)text {
+    if ([self.field isEqual:@"type"]) {
+        if (text.length > 32 - self.typeText.length) { [self reject:@"invalid_subtype" parser:parser]; return; }
+        [self.typeText appendString:text];
+    } else if (self.field && [text rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet.invertedSet].location != NSNotFound) {
+        self.presence[self.field] = @YES;
+    }
+}
+- (void)parser:(NSXMLParser *)parser foundCDATA:(NSData *)data {
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!text) { [self reject:@"invalid_xml" parser:parser]; return; }
+    [self parser:parser foundCharacters:text];
+}
+- (void)parser:(__unused NSXMLParser *)parser didEndElement:(__unused NSString *)element
+    namespaceURI:(__unused NSString *)namespaceURI qualifiedName:(__unused NSString *)qualifiedName {
+    self.field = nil; if (self.path.count) [self.path removeLastObject];
+}
+- (NSData *)parser:(NSXMLParser *)parser resolveExternalEntityName:(__unused NSString *)name systemID:(__unused NSString *)systemID {
+    [self reject:@"unsafe_xml" parser:parser]; return nil;
+}
+- (void)parser:(__unused NSXMLParser *)parser parseErrorOccurred:(__unused NSError *)error {
+    // Treat every error callback as failure independently of the parse return.
+    if (!self.failure) self.failure = @"invalid_xml";
+}
++ (NSDictionary *)summaryForContent:(NSString *)content sender:(NSString *)sender {
+    if (!content.length) return @{@"state": @"empty_content"};
+    if (content.length > SRAppMessageByteLimit) return @{@"state": @"too_large"};
+    // NULs could make a UTF-8 buffer look like UTF-16 to an auto-detecting parser.
+    if ([content rangeOfCharacterFromSet:[NSCharacterSet characterSetWithRange:NSMakeRange(0, 1)]].location != NSNotFound)
+        return @{@"state": @"unsafe_xml"};
+    NSString *xml = [content stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if ([xml hasPrefix:@"\uFEFF"]) xml = [[xml substringFromIndex:1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (![xml hasPrefix:@"<"]) {
+        NSRange newline = [xml rangeOfString:@"\n"];
+        if (newline.location == NSNotFound || newline.location > 256) return @{@"state": @"unsupported_structure"};
+        NSString *prefix = [xml substringToIndex:newline.location];
+        if ([prefix hasSuffix:@"\r"]) prefix = [prefix substringToIndex:prefix.length - 1];
+        if (![prefix isEqual:[sender stringByAppendingString:@":"]]) return @{@"state": @"sender_prefix_mismatch"};
+        xml = [[xml substringFromIndex:newline.location + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    }
+    if ([xml hasPrefix:@"\uFEFF"]) xml = [[xml substringFromIndex:1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if ([xml hasPrefix:@"<?xml"]) {
+        NSRange end = [xml rangeOfString:@"?>" options:0 range:NSMakeRange(0, MIN(xml.length, (NSUInteger)256))];
+        if (end.location == NSNotFound) return @{@"state": @"invalid_xml"};
+        NSString *declaration = [xml substringToIndex:end.location + end.length];
+        NSRegularExpression *encoding = [NSRegularExpression regularExpressionWithPattern:@"\\bencoding\\s*=\\s*(['\"])([^'\"]+)\\1"
+            options:NSRegularExpressionCaseInsensitive error:NULL];
+        NSArray<NSTextCheckingResult *> *matches = [encoding matchesInString:declaration options:0 range:NSMakeRange(0, declaration.length)];
+        if (matches.count > 1) return @{@"state": @"invalid_xml"};
+        if (matches.count && [[declaration substringWithRange:[matches[0] rangeAtIndex:2]] caseInsensitiveCompare:@"UTF-8"] != NSOrderedSame)
+            return @{@"state": @"unsafe_xml"};
+        if (!matches.count && [declaration rangeOfString:@"encoding" options:NSCaseInsensitiveSearch].location != NSNotFound)
+            return @{@"state": @"invalid_xml"};
+    }
+    // Reject DTDs before Foundation sees them, including internal/parameter entities.
+    if ([xml rangeOfString:@"<!DOCTYPE" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [xml rangeOfString:@"<!ENTITY" options:NSCaseInsensitiveSearch].location != NSNotFound)
+        return @{@"state": @"unsafe_xml"};
+    NSData *data = [xml dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return @{@"state": @"invalid_xml"};
+    if (data.length > SRAppMessageByteLimit) return @{@"state": @"too_large"};
+    SRAppMessageXMLProbe *probe = [SRAppMessageXMLProbe new];
+    probe.path = [NSMutableArray array]; probe.seen = [NSMutableSet set];
+    probe.typeText = [NSMutableString string]; probe.presence = [NSMutableDictionary dictionary];
+    NSXMLParser *parser = [[NSXMLParser alloc] initWithData:data]; parser.delegate = probe;
+    parser.shouldResolveExternalEntities = NO;
+    parser.externalEntityResolvingPolicy = NSXMLParserResolveExternalEntitiesNever;
+    BOOL parsed = [parser parse];
+    if (!parsed || probe.failure) return @{@"state": probe.failure ?: @"invalid_xml"};
+    if (!probe.appDepth) return @{@"state": @"unsupported_structure"};
+    NSString *type = [probe.typeText stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!type.length || type.length > 10) return @{@"state": @"invalid_subtype"};
+    unsigned long long value = 0;
+    for (NSUInteger index = 0; index < type.length; index++) {
+        unichar digit = [type characterAtIndex:index];
+        if (digit < '0' || digit > '9') return @{@"state": @"invalid_subtype"};
+        value = value * 10 + digit - '0';
+        if (value > UINT32_MAX) return @{@"state": @"invalid_subtype"};
+    }
+    NSMutableDictionary *result = [@{@"state": @"parsed", @"subtype": @(value),
+        @"kindHint": value == 5 ? @"link" : (value == 6 ? @"file" : @"other")} mutableCopy];
+    for (NSString *key in @[@"hasTitle", @"hasURL", @"hasAttachment", @"hasAttachmentID", @"hasFileExtension", @"hasTotalLength"])
+        result[key] = @([probe.presence[key] boolValue]);
+    return [result copy];
+}
+@end
+
 @class SRReceiveTap;
 @interface SRPendingOwnText : NSObject
 @property(nonatomic, strong) id wrap;
@@ -55,6 +195,9 @@
 @property(nonatomic, copy) NSString *ownTextState;
 @property(nonatomic) NSUInteger queuedOutgoing;
 @property(nonatomic, strong) NSMutableDictionary *counters;
+/* Fixed-shape, redacted reasons for callbacks rejected before reading wrap
+ * fields. Counts are reset per arm and never retain the session identifier. */
+@property(nonatomic, strong) NSMutableDictionary *sessionRejections;
 @property(nonatomic) NSTimeInterval armedAt;
 @property(nonatomic) NSTimeInterval lastCallbackAt;
 @property(nonatomic, strong) NSMutableArray *directionSamples;
@@ -66,6 +209,9 @@
  * unsupported type capturable or relayable. */
 @property(nonatomic, strong) NSMutableDictionary *observedMessageTypes;
 @property(nonatomic, strong) NSMutableArray *observedMessageTypeSequence;
+@property(nonatomic, strong) NSMutableArray *appMessageSamples;
+@property(nonatomic) NSUInteger appMessageReservations;
+@property(nonatomic) NSUInteger appMessageDropped;
 @property(nonatomic, strong) SRPendingImage *pendingImage;
 @property(nonatomic, copy) NSString *imageState;
 @property(nonatomic) NSUInteger imageReads;
@@ -77,7 +223,11 @@
 - (NSDictionary *)beginTimeEvidenceForSession:(id)session wrap:(id)wrap;
 - (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence;
 - (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence;
-- (void)observeMessageType:(NSNumber *)type;
+- (void)observeMessageType:(NSNumber *)type generation:(NSUInteger)generation;
+- (BOOL)currentAccountMatches:(NSString *)account;
+- (void)noteSessionRejection:(id)session group:(NSString *)group path:(NSString *)path;
+- (void)observeAppMessageWrap:(id)wrap sender:(NSString *)sender from:(NSString *)from to:(NSString *)to
+    timeEvidence:(NSDictionary *)evidence generation:(NSUInteger)generation;
 - (void)pollOutgoing:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining;
 @end
 
@@ -94,6 +244,12 @@ static NSMutableDictionary *SRTaps(void) {
 }
 static const char *SRReceiveType(const char *type) {
     while (*type && strchr("rnNoORV", *type)) type++; return type;
+}
+static NSString *SRSessionRejectionReason(id session, NSString *group) {
+    if (![session isKindOfClass:NSString.class]) return @"non_string";
+    if (![(NSString *)session length]) return @"empty_string";
+    if (![(NSString *)session isEqualToString:group]) return @"other_string";
+    return nil;
 }
 static BOOL SRReceiveSignature(Method method) {
     if (!method) return NO;
@@ -213,6 +369,71 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
     return @{@"schema": @1, @"generation": @(generation), @"createdAt": created ?: (id)NSNull.null,
         @"receivedAt": @(received), @"listeningSince": @(since)};
 }
+- (NSDictionary *)beginTimeHookForSession:(id)session wrap:(id)wrap evidence:(NSDictionary *)evidence {
+    NSString *account, *group; NSSet *senders;
+    NSUInteger generation;
+    @synchronized(self) {
+        if (!self.armed || !self.observeTimeHook || ![session isEqual:self.group] || !evidence ||
+            [evidence[@"generation"] unsignedIntegerValue] != self.generation) return nil;
+        account = self.account; group = self.group; senders = self.senderIDs; generation = self.generation;
+    }
+    // Host getters run outside our lock; they may reenter the original chain.
+    NSString *from = SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL);
+    NSString *to = SRReadDeclaredString(wrap, @"m_nsToUsr", NULL);
+    NSString *sender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", NULL);
+    BOOL own = [from isEqual:account] && [to isEqual:group];
+    if (own) {
+        if (sender.length && ![sender isEqual:account]) return nil;
+        sender = account;
+    } else if (![from isEqual:group] || ![to isEqual:account]) return nil;
+    if (!sender.length || ![senders containsObject:sender]) return nil;
+    NSNumber *type = SRReadDeclaredUnsignedInteger(wrap, @"m_uiMessageType");
+    if (![@[@1, @3] containsObject:type]) return nil;
+    @synchronized(self) {
+        if (!self.armed || !self.observeTimeHook || self.generation != generation) return nil;
+        // Reserve before queueing: hook bursts cannot allocate an unbounded
+        // main-queue backlog. Raw identifiers stay inside this process only.
+        NSUInteger reserved = [self.counters[@"time_hook_reserved"] unsignedIntegerValue];
+        if (reserved >= 16) return nil;
+        self.counters[@"time_hook_reserved"] = @(reserved + 1);
+    }
+    Class actual = object_getClass(wrap);
+    Method method = actual ? class_getInstanceMethod(actual, NSSelectorFromString(@"m_uiCreateTime")) : NULL;
+    NSString *encoding = method ? @"incompatible" : @"missing";
+    if (method && SRReceiveTimeGetter(actual)) {
+        NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+        if (!strcmp(SRReceiveType([signature getArgumentTypeAtIndex:0]), "@") &&
+            !strcmp(SRReceiveType([signature getArgumentTypeAtIndex:1]), ":"))
+            encoding = [NSString stringWithUTF8String:SRReceiveType(signature.methodReturnType)];
+    }
+    NSNumber *server = SRReadDeclaredUnsignedInteger(wrap, @"m_n64MesSvrID");
+    NSNumber *local = SRReadDeclaredUnsignedInteger(wrap, @"m_uiMesLocalID");
+    return @{@"account": account, @"sender": sender, @"type": type, @"selfSource": @(own),
+        @"serverID": server ?: @0, @"localID": local ?: @0, @"evidence": evidence,
+        @"actualGetterEncoding": encoding};
+}
+- (void)finishTimeHook:(NSDictionary *)observation path:(NSString *)path {
+    if (!observation) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SRWeChatReceiver *receiver = weakSelf;
+        if (!receiver) return;
+        @try {
+            @synchronized(receiver) {
+                if (!receiver.armed || !receiver.observeTimeHook ||
+                    [observation[@"evidence"][@"generation"] unsignedIntegerValue] != receiver.generation) return;
+            }
+            if (![receiver.currentAccount() isEqual:observation[@"account"]]) return;
+            void (^consume)(NSDictionary *) = nil;
+            @synchronized(receiver) {
+                if (!receiver.armed || [observation[@"evidence"][@"generation"] unsignedIntegerValue] != receiver.generation) return;
+                consume = [receiver.observeTimeHook copy];
+            }
+            NSMutableDictionary *sample = [observation mutableCopy]; sample[@"path"] = path;
+            if (consume) consume(sample);
+        } @catch (__unused id exception) { /* Observation must not alter the host chain. */ }
+    });
+}
 - (BOOL)acceptsTimeEvidence:(NSDictionary *)evidence wrap:(id)wrap generation:(NSUInteger)generation {
     BOOL strict;
     @synchronized(self) {
@@ -230,6 +451,10 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         [self note:@"source_time_changed"]; return NO;
     }
     return YES;
+}
+- (BOOL)currentAccountMatches:(NSString *)account {
+    @try { return account.length && [self.currentAccount() isEqual:account]; }
+    @catch (__unused id exception) { return NO; }
 }
 - (void)deliverMessage:(NSDictionary *)message timeEvidence:(NSDictionary *)evidence {
     if (self.receivedWithTimeEvidence) self.receivedWithTimeEvidence(message, evidence);
@@ -306,11 +531,14 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
                 SRWeChatReceiver *listener = installed.listener;
                 SRDirectionObservation *observation = nil;
                 NSDictionary *evidence = nil;
+                NSDictionary *timeHook = nil;
                 @try {
                     evidence = [listener beginTimeEvidenceForSession:session wrap:wrap];
+                    timeHook = [listener beginTimeHookForSession:session wrap:wrap evidence:evidence];
                     observation = [listener beginDirectionForSession:session wrap:wrap];
                 } @catch (__unused id exception) { }
                 ((void (*)(id, SEL, id, id))installed.original)(object, selector, session, wrap);
+                @try { if (installed.listener == listener) [listener finishTimeHook:timeHook path:@"receive"]; } @catch (__unused id exception) { }
                 // Never let optional observation exceptions change WeChat's receive behavior.
                 @try { [installed.listener finishDirection:observation path:@"receive" wrap:wrap]; } @catch (__unused id exception) { }
                 @try { if (installed.listener == listener) [listener observeSession:session wrap:wrap timeEvidence:evidence]; } @catch (__unused id exception) { }
@@ -321,12 +549,14 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         }
         @synchronized(self) {
             self.account = account; self.group = group; self.problem = nil; self.generation++;
-            self.counters = [NSMutableDictionary dictionary]; self.armedAt = [self observationTime]; self.lastCallbackAt = 0;
+            self.counters = [NSMutableDictionary dictionary]; self.sessionRejections = [NSMutableDictionary dictionary];
+            self.armedAt = [self observationTime]; self.lastCallbackAt = 0;
             self.directionSamples = [NSMutableArray array]; self.directionReservations = 0; self.directionDropped = 0;
             self.pendingOutgoing = nil; self.queuedOutgoing = 0; self.ownTextState = @"unavailable";
             self.senderIDs = nil; self.selectedTypes = [NSSet setWithObject:@"text"];
             self.observedMessageTypes = [NSMutableDictionary dictionary];
             self.observedMessageTypeSequence = [NSMutableArray array];
+            self.appMessageSamples = [NSMutableArray array]; self.appMessageReservations = 0; self.appMessageDropped = 0;
             self.pendingImage = nil; self.imageState = @"disabled"; self.imageReads = 0; self.queuedImages = 0;
             self.imagePreparationCode = 0;
             self.newMessagesOnly = NO;
@@ -345,11 +575,14 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
                     SRWeChatReceiver *listener = installed.listener;
                     SRDirectionObservation *observation = nil;
                     NSDictionary *evidence = nil;
+                    NSDictionary *timeHook = nil;
                     @try {
                         evidence = [listener beginTimeEvidenceForSession:session wrap:wrap];
+                        timeHook = [listener beginTimeHookForSession:session wrap:wrap evidence:evidence];
                         observation = [listener beginDirectionForSession:session wrap:wrap];
                     } @catch (__unused id exception) { }
                     ((void (*)(id, SEL, id, id))installed.original)(object, outgoingSelector, session, wrap);
+                    @try { if (installed.listener == listener) [listener finishTimeHook:timeHook path:@"outgoing"]; } @catch (__unused id exception) { }
                     @try { [installed.listener finishDirection:observation path:@"outgoing" wrap:wrap]; } @catch (__unused id exception) { }
                     @try { if (installed.listener == listener) [listener observeOutgoingManager:object session:session wrap:wrap timeEvidence:evidence]; } @catch (__unused id exception) { }
                 });
@@ -385,12 +618,36 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
     }
     return YES;
 }
-- (BOOL)allowsSender:(NSString *)sender type:(NSNumber *)type {
+- (BOOL)allowsSenderIdentity:(NSString *)sender {
     @synchronized(self) {
-        if (self.senderIDs && ![self.senderIDs containsObject:sender]) { [self note:@"receive_sender_filtered"]; return NO; }
+        // An unset or empty sender filter must fail closed. It must never permit
+        // an arbitrary sender merely because the filter was not yet configured
+        // (the window between the low-level arm and the configuration step, or a
+        // legacy arm with no sender list). `nil.count` is 0, so this also covers
+        // the unconfigured state.
+        if (self.senderIDs.count == 0 || ![self.senderIDs containsObject:sender]) { [self note:@"receive_sender_filtered"]; return NO; }
+        return YES;
+    }
+}
+- (BOOL)allowsSender:(NSString *)sender type:(NSNumber *)type {
+    // The sender identity and the relay type are two different gates. The
+    // identity gate decides whether the callback belongs to the live round; the
+    // relay type gate decides what may be captured, previewed and delivered.
+    if (![self allowsSenderIdentity:sender]) return NO;
+    @synchronized(self) {
         NSString *name = [type isEqual:@1] ? @"text" : ([type isEqual:@3] ? @"image" : @"unsupported");
         if (![self.selectedTypes containsObject:name]) { [self note:@"receive_type_filtered"]; return NO; }
         return YES;
+    }
+}
+- (void)noteSessionRejection:(id)session group:(NSString *)group path:(NSString *)path {
+    NSString *reason = SRSessionRejectionReason(session, group);
+    if (!reason.length || ![@[@"receive", @"outgoing"] containsObject:path]) return;
+    NSString *key = [path stringByAppendingFormat:@"_%@", reason];
+    @synchronized(self) {
+        if (!self.sessionRejections) self.sessionRejections = [NSMutableDictionary dictionary];
+        NSUInteger count = [self.sessionRejections[key] unsignedIntegerValue];
+        self.sessionRejections[key] = @(count == NSUIntegerMax ? count : count + 1);
     }
 }
 - (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {
@@ -400,7 +657,10 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         account = self.account; group = self.group; generation = self.generation;
     }
     [self note:@"receive_callback"];
-    if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) { [self note:@"receive_wrong_session"]; return; }
+    if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) {
+        [self noteSessionRejection:session group:group path:@"receive"];
+        [self note:@"receive_wrong_session"]; return;
+    }
     NSString *from = SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL), *to = SRReadDeclaredString(wrap, @"m_nsToUsr", NULL);
     NSString *sender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", NULL);
     BOOL outgoing = [from isEqual:account] && [to isEqual:group];
@@ -414,10 +674,34 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         [sender rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) { [self note:@"receive_invalid_sender"]; return; }
     NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
     NSNumber *serverID = SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL);
-    [self observeMessageType:type];
-    if (![self allowsSender:sender type:type]) return;
+    // Identity gates come first: the sender filter, the time evidence and the
+    // account decide whether this callback belongs to the live round at all, so
+    // a stale generation, a wrong account, a wrong source group or a failed
+    // time evidence can never reach any observation. On this incoming path the
+    // server ID is one more hard gate, applied right after the sender filter,
+    // so both the relay and the type census need it. The relay type filter is
+    // a capture gate and is applied afterwards, because a message type that
+    // can never be relayed may still be observed by the read-only type-49
+    // XML probe. Only callbacks that pass the whole gate are recorded for the
+    // host survey.
+    BOOL probeAllowed;
+    @synchronized(self) {
+        probeAllowed = self.armed && self.generation == generation && self.senderIDs.count > 0 && [self.senderIDs containsObject:sender];
+    }
+    if (![self allowsSenderIdentity:sender]) return;
     if (!serverID.unsignedLongLongValue) { [self note:@"receive_no_server_id"]; return; }
     if (![self acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
+    // The queued delivery path rechecks the account too, but the diagnostic
+    // probe must not record a callback that has already crossed an account
+    // boundary before that final hand-off.
+    if (![self currentAccountMatches:account]) { [self note:@"account_changed"]; [self stop]; return; }
+    // The type-49 probe is read-only diagnostics: type 49 never becomes a source
+    // message, so it fails the relay type filter below, but observing it is
+    // exactly what this probe exists for.
+    if (probeAllowed && [type isEqual:@49]) [self observeAppMessageWrap:wrap sender:sender from:from to:to timeEvidence:evidence generation:generation];
+    // The sender was already accepted above; only the relay type gate remains.
+    if (![self allowsSender:sender type:type]) return;
+    if (probeAllowed) [self observeMessageType:type generation:generation];
     if ([type isEqual:@3]) {
         NSDictionary *identity = @{@"account": account, @"group": group, @"sender": sender,
             @"messageID": [@"svr:" stringByAppendingString:serverID.stringValue], @"type": @"image", @"generatedByRelay": @NO};
@@ -466,9 +750,13 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         }
     });
 }
-- (void)observeMessageType:(NSNumber *)type {
+- (void)observeMessageType:(NSNumber *)type generation:(NSUInteger)generation {
     if (![type isKindOfClass:NSNumber.class] || type.unsignedLongLongValue > UINT32_MAX) return;
     @synchronized(self) {
+        // Only record for the live capture round. A re-arm or stop must not let a
+        // stale callback append to the current diagnostic, even if it slipped past
+        // the earlier generation check in observeSession:.
+        if (!self.armed || self.generation != generation) return;
         if (!self.observedMessageTypes) self.observedMessageTypes = [NSMutableDictionary dictionary];
         if (!self.observedMessageTypeSequence) self.observedMessageTypeSequence = [NSMutableArray array];
         /* Keep diagnostics bounded even if a host emits malformed values. */
@@ -481,6 +769,47 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         if (self.observedMessageTypeSequence.count < 64) [self.observedMessageTypeSequence addObject:type];
     }
 }
+- (void)observeAppMessageWrap:(id)wrap sender:(NSString *)sender from:(NSString *)from to:(NSString *)to
+    timeEvidence:(NSDictionary *)evidence generation:(NSUInteger)generation {
+    NSString *account, *group;
+    @synchronized(self) {
+        // The numeric probe remains body-free for unselected senders and legacy arms.
+        if (!self.armed || self.observeTimeHook || self.generation != generation || ![self.senderIDs containsObject:sender]) return;
+        if (self.appMessageReservations >= SRAppMessageSampleLimit) {
+            if (self.appMessageDropped < NSUIntegerMax) self.appMessageDropped++;
+            return;
+        }
+        self.appMessageReservations++; account = self.account; group = self.group;
+    }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SRWeChatReceiver *receiver = weakSelf; if (!receiver) return;
+        @synchronized(receiver) { if (!receiver.armed || receiver.generation != generation) return; }
+        @try {
+            if (![receiver.currentAccount() isEqual:account]) return;
+            BOOL (^identityMatches)(void) = ^BOOL {
+                if (![SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL) isEqual:from] ||
+                    ![SRReadDeclaredString(wrap, @"m_nsToUsr", NULL) isEqual:to] ||
+                    ![SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL) isEqual:@49]) return NO;
+                NSString *currentSender = SRReadDeclaredString(wrap, @"m_nsRealChatUsr", NULL);
+                if (!currentSender.length && [from isEqual:account] && [to isEqual:group]) currentSender = account;
+                return [currentSender isEqual:sender];
+            };
+            if (!identityMatches() || ![receiver acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
+            @synchronized(receiver) { if (!receiver.armed || receiver.generation != generation) return; }
+            SRStringReadState state;
+            NSString *content = SRReadDeclaredString(wrap, @"m_nsContent", &state);
+            NSDictionary *sample = content ? [SRAppMessageXMLProbe summaryForContent:content sender:sender] :
+                @{@"state": @"content_unavailable", @"getterState": @(state)};
+            if (![receiver.currentAccount() isEqual:account] || !identityMatches() ||
+                ![receiver acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
+            @synchronized(receiver) {
+                if (!receiver.armed || receiver.generation != generation) return;
+                [receiver.appMessageSamples addObject:sample];
+            }
+        } @catch (__unused id exception) { /* Optional diagnostics cannot stop capture or alter the host chain. */ }
+    });
+}
 - (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {
     NSString *account, *group; NSUInteger generation;
     @synchronized(self) {
@@ -488,13 +817,35 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         account = self.account; group = self.group; generation = self.generation;
     }
     [self note:@"outgoing_callback"];
-    if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) { [self note:@"outgoing_wrong_session"]; return; }
+    if (![session isKindOfClass:NSString.class] || ![session isEqual:group]) {
+        [self noteSessionRejection:session group:group path:@"outgoing"];
+        [self note:@"outgoing_wrong_session"]; return;
+    }
     if (![SRReadDeclaredString(wrap, @"m_nsFromUsr", NULL) isEqual:account] || ![SRReadDeclaredString(wrap, @"m_nsToUsr", NULL) isEqual:group]) {
         [self note:@"outgoing_wrong_direction"]; return;
     }
     NSNumber *type = SRReadUnsignedInteger(wrap, @"m_uiMessageType", NULL);
-    if (![self allowsSender:account type:type]) return;
+    BOOL probeAllowed;
+    @synchronized(self) {
+        probeAllowed = self.armed && self.generation == generation && self.senderIDs.count > 0 && [self.senderIDs containsObject:account];
+    }
+    // Identity gates first, relay type gate afterwards: an own type-49 message
+    // can still be observed by the read-only XML probe even though type 49 is
+    // never relayable and never becomes a source message. The server ID is not
+    // a uniform identity gate: it is a hard gate on the incoming relay and
+    // census path, while on the outgoing path it is only the settlement gate.
+    // An own type-1 callback is therefore recorded in the type census without
+    // a server ID, but it still needs one before it may become a source
+    // candidate, and an own type-49 callback stays a read-only observation
+    // with no pending readback, no source candidate and no send request even
+    // when it carries a server ID.
+    if (![self allowsSenderIdentity:account]) return;
     if (![self acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
+    if (![self currentAccountMatches:account]) { [self note:@"account_changed"]; [self stop]; return; }
+    if (probeAllowed && [type isEqual:@49]) [self observeAppMessageWrap:wrap sender:account from:account to:group timeEvidence:evidence generation:generation];
+    // The sender was already accepted above; only the relay type gate remains.
+    if (![self allowsSender:account type:type]) return;
+    if (probeAllowed) [self observeMessageType:type generation:generation];
     NSString *text = [type isEqual:@1] ? [SRReadDeclaredString(wrap, @"m_nsContent", NULL) copy] : nil;
     if ([type isEqual:@1] && !text.length) return;
     SRPendingOwnText *pending = [[SRPendingOwnText alloc] init];
@@ -546,6 +897,16 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
                 if (![self acceptsTimeEvidence:pending.timeEvidence wrap:stored generation:generation]) {
                     self.pendingOutgoing = nil; self.ownTextState = @"conflict"; [self note:@"own_conflict"]; return;
                 }
+                // Keep the exact local ID in-process so the source-time probe can
+                // correlate this settled readback with its earlier anonymous hook.
+                // It is never written to diagnostics.
+                NSMutableDictionary *correlated = [pending.timeEvidence mutableCopy];
+                @synchronized(self) {
+                    if (self.armed && self.generation == generation && self.observeTimeHook &&
+                        self.counters[@"time_hook_reserved"])
+                        correlated[@"correlationLocalID"] = pending.localID;
+                }
+                pending.timeEvidence = correlated;
                 wrap = stored;
             }
         }
@@ -664,14 +1025,20 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
             @"ownTextHookAvailable": @(self.outgoingTap != nil), @"ownTextPending": @(self.pendingOutgoing != nil),
             @"ownTextState": self.ownTextState ?: @"idle",
             @"armedAt": @(self.armedAt), @"lastEventAt": @(self.lastCallbackAt), @"counters": [self.counters copy] ?: @{},
+            @"sessionRejections": [self.sessionRejections copy] ?: @{},
             @"directionEvidenceSchema": @2, @"stringReadStrategy": @"declared_runtime", @"directionSampleLimit": @12,
             @"directionSamples": [self.directionSamples copy] ?: @[],
             @"directionSamplesDropped": @(self.directionDropped),
             @"messageTypeProbe": SRMessageTypeProbeSnapshot(self.observedMessageTypes ?: @{}, [self.observedMessageTypeSequence copy] ?: @[]),
+            @"appMessageProbe": @{@"schema": @1, @"observerOnly": @YES, @"relayable": @NO, @"deviceVerified": @NO,
+                @"limit": @(SRAppMessageSampleLimit), @"byteLimit": @(SRAppMessageByteLimit),
+                @"attempts": @(self.appMessageReservations), @"dropped": @(self.appMessageDropped),
+                @"samples": [self.appMessageSamples copy] ?: @[]},
             @"textOnlyCandidate": @(![self.selectedTypes containsObject:@"image"]), @"imageCaptureSchema": @1, @"imageState": self.imageState ?: @"idle",
             @"imagePending": @(self.pendingImage != nil), @"imageReads": @(self.imageReads), @"imageWaitLimit": @30,
             @"imagePreparationCode": @(self.imagePreparationCode),
             @"sourceTimeEvidenceSchema": @1, @"newMessagesOnly": @(self.newMessagesOnly),
+            @"receiverGeneration": @(self.generation),
             @"creationTimeGetterABICompatible": @(SRReceiveTimeGetter(wrap)), @"sourceTimeSemanticsVerified": @NO,
             @"senderFilterCount": @(self.senderIDs.count), @"sendingEnabled": @NO, @"problem": self.problem ?: @"", @"methods": methods};
     }

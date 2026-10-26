@@ -78,6 +78,22 @@ int main(void) {
         NSArray *rules = [store rulesForPlan:plan error:NULL]; CHECK(rules.count == 2);
         CHECK([store allocatedTargetsForPlan:plan error:NULL].count == 2001);
 
+        // A new arm starts a new diagnostic round. Cancellation must also
+        // fence late offers instead of incrementing the next round's counts.
+        NSUInteger firstGeneration = [capture.diagnostics[@"generation"] unsignedIntegerValue];
+        CHECK([capture armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        NSDictionary *reset = capture.diagnostics;
+        CHECK([reset[@"generation"] unsignedIntegerValue] > firstGeneration &&
+            [reset[@"offered"] isEqual:@0] && [reset[@"rejected"] isEqual:@0] &&
+            [reset[@"lastReasonCode"] isEqual:@0]);
+        NSMutableDictionary *wrongRound = message(@"wrong-round");
+        wrongRound[@"sender"] = @"wxid_other";
+        CHECK(![capture offerEnvelope:wrongRound]);
+        NSUInteger rejected = [capture.diagnostics[@"rejected"] unsignedIntegerValue];
+        [capture cancel];
+        CHECK(![capture offerEnvelope:message(@"late-after-cancel")]);
+        CHECK([capture.diagnostics[@"rejected"] unsignedIntegerValue] == rejected);
+
         // Forced insertion failure must roll back both the source claim and its plan.
         sqlite3 *fault = NULL; CHECK(sqlite3_open(path.fileSystemRepresentation, &fault) == SQLITE_OK);
         CHECK(sqlite3_exec(fault, "CREATE TRIGGER fail_alloc BEFORE INSERT ON allocations BEGIN SELECT RAISE(ABORT,'test fault'); END", NULL, NULL, NULL) == SQLITE_OK);
