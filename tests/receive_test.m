@@ -153,13 +153,23 @@ static ReceiveWrap *wrap(void) {
     value.m_uiMessageType = 1; value.m_n64MesSvrID = 9007199254740993ULL; value.m_uiMesLocalID = 42; return value;
 }
 static void pump(void) { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, false); }
+/* Test helper drafts are text-only on purpose. The production emptyDraft()
+ * offers both types, and a configuration that selects image is a capability
+ * opt-in: -armForAccount:configuration:error: rejects it unless the receiver
+ * has prepareImage/discardImage. The text-focused fixtures below have no image
+ * blocks, so they must not inherit that selection silently. Image scenarios
+ * (checkImageCapture, the image branch of checkSourceTimeEvidence) override
+ * `types` explicitly. */
 static NSMutableDictionary *draft(void) {
     NSMutableDictionary *value = [SRConfiguration emptyDraft];
+    value[@"types"] = @[@"text"];
     value[@"sourceGroup"] = @{@"id": @"mother@chatroom", @"name": @"Mother"};
     value[@"senders"] = @[@{@"id": @"wxid_sender", @"name": @"Same name"}];
     value[@"rules"] = @[@{@"id": @"rule", @"name": @"First", @"targets": @[@{@"id": @"target@chatroom", @"name": @"Target"}]}];
     return value;
 }
+/* Inherits the text-only selection from draft(); a sender variant never widens
+ * or narrows the selected types unless the scenario says so explicitly. */
 static NSMutableDictionary *draftForSender(NSString *sender) {
     NSMutableDictionary *value = draft();
     value[@"senders"] = @[@{@"id": sender, @"name": @"Selected sender"}];
@@ -607,6 +617,48 @@ static void checkOutgoingTypeCensus(void) {
     puts("PASS: outgoing type-1 census entry, type-49 probe isolation and no-server-ID probe without pending, source candidate or send");
 }
 
+/* Selecting image without the preparation blocks is a capability violation,
+ * not a tap-ownership conflict: the configuration arm has to reject it before
+ * any capture entry is installed. A dedicated manager class keeps this case
+ * independent of the receive tap used by the fixtures in main(). */
+static void checkImageCapabilityGate(void) {
+    __block NSString *account = @"wxid_account";
+    __block NSUInteger received = 0;
+    SRWeChatReceiver *(^makeReceiver)(void) = ^SRWeChatReceiver *{
+        return [[SRWeChatReceiver alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
+            return [name isEqual:@"CMessageMgr"] ? InheritedReceiveManager.class
+                : ([name isEqual:@"CMessageWrap"] ? ReceiveWrap.class : Nil);
+        } currentAccount:^NSString *{ CHECK(NSThread.isMainThread); return account; }
+            received:^(__unused NSDictionary *message) { received++; }];
+    };
+    InheritedReceiveManager *manager = [InheritedReceiveManager new];
+    SRWeChatReceiver *receiver = makeReceiver();
+    NSMutableDictionary *imageOnly = draft(); imageOnly[@"types"] = @[@"image"];
+    NSError *error = nil;
+    CHECK(![receiver armForAccount:account configuration:imageOnly error:&error]);
+    // The rejection must name the missing image capability, so a version, ABI
+    // or ownership failure can never make this assertion pass by accident.
+    CHECK([error.domain isEqual:@"SyncRelay.Receiver"]);
+    CHECK([error.localizedDescription containsString:@"Image snapshot preparation is unavailable"]);
+    CHECK(![receiver.diagnostics[@"armed"] boolValue]);
+    // The rejected round installed no capture entry and consumed no callback.
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
+    CHECK(!received && ![receiver.diagnostics[@"armed"] boolValue]);
+    // The same receiver still runs a legal text-only round ...
+    NSMutableDictionary *textOnly = draft();
+    CHECK([receiver armForAccount:account configuration:textOnly error:NULL]);
+    CHECK([receiver.diagnostics[@"armed"] boolValue]);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
+    CHECK(received == 1);
+    // ... and stopping it releases the shared entry for the next owner.
+    [receiver stop];
+    CHECK(![receiver.diagnostics[@"armed"] boolValue]);
+    SRWeChatReceiver *next = makeReceiver();
+    CHECK([next armForAccount:account configuration:textOnly error:NULL]);
+    [next stop]; next = nil; receiver = nil; manager = nil;
+    puts("PASS: image configuration without capability blocks is rejected before arming, and a text-only round still arms, delivers and releases the entry");
+}
+
 int main(void) {
     @autoreleasepool {
         ScalarTraps *traps = [[ScalarTraps alloc] init];
@@ -804,6 +856,7 @@ int main(void) {
         checkSourceTimeEvidence();
         checkAppMessageProbe();
         checkOutgoingTypeCensus();
+        checkImageCapabilityGate();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }
