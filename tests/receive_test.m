@@ -648,7 +648,18 @@ int main(void) {
         NSMutableDictionary *textOnly = draft(); textOnly[@"types"] = @[@"text"];
         CHECK([receiver armForAccount:current configuration:textOnly error:NULL]);
         CHECK(![receiver armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
-        CHECK([makeReceiver(@"8.0.76", ReceiveManager.class) armForAccount:current sourceGroup:@"mother@chatroom" error:NULL]);
+        // The 8.0.79 receiver above still owns ReceiveManager's shared tap, so a
+        // second receiver must be rejected by the single-owner mutex. A named
+        // competitor proves the failure is the ownership guard (not a version or
+        // ABI rejection that would also return NO), and that the original owner
+        // keeps the capture while the competitor never becomes armed.
+        SRWeChatReceiver *competitor = makeReceiver(@"8.0.76", ReceiveManager.class);
+        NSError *ownershipError = nil;
+        CHECK(![competitor armForAccount:current sourceGroup:@"mother@chatroom" error:&ownershipError]);
+        CHECK([ownershipError.domain isEqual:@"SyncRelay.Receiver"]);
+        CHECK([ownershipError.localizedDescription containsString:@"Another receiver owns this capture entry"]);
+        CHECK([receiver.diagnostics[@"armed"] boolValue]);
+        CHECK(![competitor.diagnostics[@"armed"] boolValue]);
         for (NSString *key in @[@"m_nsFromUsr", @"m_nsToUsr", @"m_nsRealChatUsr"]) {
             ReceiveWrap *bad = wrap(); [bad setValue:@"wrong@chatroom" forKey:key];
             [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:bad];
