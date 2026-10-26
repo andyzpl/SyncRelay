@@ -43,6 +43,7 @@
 | `receive_no_server_id` / `own_timeout` | 消息尚无可用服务器 ID或本人候选超时 | 核对发送后 ID 更新/精确回读；不改用临时本地 ID 冒充 |
 | `sourceCapture.lastReasonCode = 22` | 规范化候选被所选 wxid 列表拒绝 | 核对选择的来源成员，不能按昵称替代 |
 | `sourceCapture.lastReasonCode = 23` | 规范化候选类型不在选中类型中 | 核对类型开关 |
+| `sourceCapture.lastReasonCode = 25` / `capture_rejected.reasonCode = 25` | 证据自证为另一接收轮次，与已绑定轮次冲突 | 重新开始一次等待并重新绑定轮次；不放宽轮次比较 |
 | `inactive` 出现在等待开始之后 | 应用曾失活，等待按设计停止 | 保持前台并手动重新等待 |
 | `sourceTimeProbe.inactivePending=true` | 只读采样进入短暂前台 inactive 宽限，尚未到 2 秒 | 立即回到微信前台；成对快照不应把该状态当作稳定页面切换通过 |
 | `sourceTimeProbe.state=inactive` | 系统级 inactive 超过宽限或真正进入后台，采样已停止且 receiver 已释放 | 回前台不会自动重开，需明确重新开始并换 round |
@@ -78,7 +79,7 @@
 - 0.2.13 的 `serviceEvidenceSchema=2` 增加 `route`（direct_instance/forwarding_proxy/rejected）与固定 `forwarding` 契约结果。分类 3 若完整转发契约通过，不再当成必然错误实例；顶层 missing_method 仅表示没有直接声明，不能代替转发签名判断。转发字段、整数 ABI 匹配和真机步骤见 `DEVICE-CHECK-0.2.13.md`。解析器兼容格式 1/2，输出固定的 wrapper_details_required、forwarding_unverified、forwarding_validated 等 text_service 代码；验证通过不是调用或送达证明。
 - `singleTextExperimentHistory` 是账号汇总，不是本轮源消息的逐条状态；旧 claimed 不能证明最近一次阻断消耗了新占位。保留旧占位，不因这次未调用而删除历史。
 
-捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束。错误码必须结合事件与模块看，不跨模块猜含义。
+捕获前置码另有：11 账号不可读、12 草稿无效、13 未选母群、2 已有等待或预览。捕获拒绝码：10 未在等待、20 账号不匹配、21 母群不匹配、22 发送者未选、23 类型未选、24 消息结构/来源标记/载荷不符合约束、25 证据轮次与已绑定轮次冲突。错误码必须结合事件与模块看，不跨模块猜含义。
 
 ## 方向证据子格式 1 / 2
 

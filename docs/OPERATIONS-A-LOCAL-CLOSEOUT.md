@@ -1,5 +1,84 @@
 # 阶段 A 本地集中检查收口（2026-10-25）
 
+**2026-10-27 阶段 A 正式收口：实现完成 + 有限真实宿主证据（本轮只做文档收口、文档提交与修复分支推送，不合并 `main`）：** 本段是阶段 A 当前最新口径，取代下方各历史段落中的阶段状态描述；下方历史段落原文全部保留，不改写、不删除、不重排。**A = 实现完成 + 有限真实宿主证据；B/C 保持关闭。不得写"阶段 A 整体验收完成"。**
+
+**代码与构建身份**（本机可复算的部分已复算，见本段末"复算来源"）：代码提交 `f920f39b042e49815e8b14b760b2a65b383ee73a`（父提交 `b296cc1119c79d19859134762449ca3a52997001`），分支 `codex/operations-a-receive-gating-fix-20261026`。macOS 原生 CI run `40357931611` 结论 success：**261 项 Python 契约通过**（日志行 `Ran 261 tests in 3.852s` + `OK`）、**25 条 clang 编译/链接命令全部成功**（测试步骤逐行核对，含 2 条 `-std=c11` 的 C 测试与 23 条 `-fobjc-arc -fblocks` 的 Objective-C 测试编译+链接命令）、**三轮原生测试完成且时间捕获 PASS 每轮出现**（`PASS: ordinary capture carries first-observation evidence, freezes its own time once and refuses a previous receiver round` 在日志中出现 3 次；全日志 127 条 PASS 行 = 42 个循环标记 × 3 轮 + 1 条单次标记）。该 run 以 `build_deb=false` 触发，**本次没有 DEB artifact**（打包步骤按门控 skipped）。
+
+**真机证据**：真机报告代称 `102702`。该报告 `build.commit` = `f920f39b042e49815e8b14b760b2a65b383ee73a`、`build.ciRun` = `40360494942`、`build.plugin` = `0.2.21`——即该报告自证来自打包 run `40360494942` 的产物，**不是** `build_deb=false` 的 run `40357931611`。**这两条 run 不可混用**：run `40357931611` 只提供 macOS 原生测试证据，run `40360494942` 提供实际安装到设备上的包与该报告的身份字段。报告 `102702` 中普通捕获成功（`sourceCapture` = `{generation:2, state:preview, offered:1, rejected:0, lastReasonCode:0}`），两轮捕获均被接受并冻结，未出现 25（轮次冲突）。
+
+**真机页面三行时间与报告的对应关系**（页面「锁定的一条源消息」区，与报告 `102702` 当前 launch 的事件链逐项对应）：
+
+| 页面行 | 取值 | 与报告 `102702` 的对应 |
+| --- | --- | --- |
+| 插件首次观察时间 | `receivedAt` = `1793034158.768` | `receive_callback` 事件时间 `1793034158.767657`（同一秒） |
+| 抓取完成时间 | `previewFrozenAt` = `1793034158.826` | `capture_accepted` 事件时间 `1793034158.8259401`（同一秒） |
+| 宿主来源时间原始值（未验证） | `createdAt` = `1793034157` | 宿主 `m_uiCreateTime` 原始值 |
+
+（页面按秒显示，`1793034158.767657` 与 `1793034158.8259401` 均落在 `1793034158` 这一秒内；页面三行的具体数值由用户在设备页面提供，报告本身不导出预览内容，故 `1793034157` 无法从 JSON 复算——见本段末"复算来源"。）
+
+**`receivedAt` 与 `previewFrozenAt` 在 UI 中同秒显示，是因为展示精度到秒**（`yyyy-MM-dd HH:mm:ss zzz` 之外仍按秒取整），**不代表两个阶段没有区分**；两个阶段的差异由注入时钟的原生测试证明（`tests/receive_test.m` 中 `receivedAt` = `1002.5`、`previewFrozenAt` = `5000.25`、`createdAt` = `1001` 且 `createdAtStatus` = `unverified`、`createdAtSemanticsVerified` = `NO`）。**`createdAt` 按原始数字显示，单位与语义仍未验证，不能称为发送时间**；页面文案明确标注"原始值 · 单位/语义未验证"，实现上不交给 `NSDate` 转换（`UI/SRPlanScreens.m` 的 `SRSourceHostTimeText`）。
+
+**人工目视证据（单列）**：用户在本对话明确目视确认预览出现、成员和内容对应。这是**人工目视反馈**，不是 AI 截屏解析，也不证明屏幕消息 ID 的对应性；本段不把人工目视伪装成自动化验证。
+
+**本轮没有做、也不声称做过的**：没有发送、没有送达、没有多群执行、没有视频、没有主动图片、没有消息库派发。本轮没有新增设备操作、没有新导出报告、没有做 source-time probe。
+
+**仍未闭合、且不应通过重复普通接收冒烟强行补齐的边界**：
+
+1. **`createdAt` 的宿主单位、语义及旧/新消息边界未认证**——当前只能证明它是一个稳定的原始数字，不能证明是发送时间、不能证明与"新消息"的判定关系。**以后如确有必要，可在明确授权下做一轮有界 source-time 采样**（只读、单轮、拿到可关联样本或空样本即止）。
+2. **本人消息"早期无 server ID → 后续补 ID"的同一消息关联，当前构建无真机样本**——同样归入上述那一轮有界采样，不另起轮次。
+3. **页面级生命周期的可靠被动观察入口尚未确认**——**先做 ABI/入口调研**：不猜 selector、不轮询、不下载、不调用主动 getter；确认存在已证实的被动通知或只读状态字段后再登记，否则保持未覆盖。
+4. **图片资源就绪没有安全的被动观察入口**——同第 3 项的处理方式：先只读调研，不以主动 getter、轮询、下载或准备媒体补证。
+
+**版本与能力边界**：微信 `8.0.76` 未测，但**不阻塞当前有限 A**（按版本分别登记，不外推）。其他诊断布尔字段的 `0/1` 一致性**不是本轮接收功能的阻塞项**（不改变业务行为，另行授权处理）。**B/C 继续关闭。**
+
+**复算来源（本机实际复算 vs 仅依据用户提供）**：
+- **本机已复算**：提交/父提交/分支身份（`git rev-parse`）；远端 `main` 与修复分支的相对关系（`git rev-parse origin/main` = `b296cc1119c79d19859134762449ca3a52997001`，即修复分支的父提交；本机 `main` 引用仍停在 `f652d5e97180a15f43437fd1e449f3b3063e87fc`，**本轮未更新本机 `main` 引用、未合并 `main`**，`git ls-remote` 确认远端修复分支仍指向 `f920f39b042e49815e8b14b760b2a65b383ee73a`）；run `40360494942` 的 261 项 Python、25 条 clang、三轮一致（`rounds_textually_identical = true`）、时间捕获标记 3 次、127 条 PASS 行（读本机 `.build-cache/40360494942/logs/build_3_Test production core on macOS.txt` 与 `log-verification.json` / `round-verification.json` / `target-coverage.json`）；该 run 的 artifact 身份（id `12668910980`、artifact zip SHA-256 `d90910429dca3e364dfde7014cf123668ad49a28228eb03e81fd0b3d20454854`）与 DEB SHA-256 `fa23e69bc6c16cbf019186684c9086994dce91c53201de32b83260f3e04de90b`（`deb-inspection.json`，含 ar 成员、`control` 字段、fat 头 arm64 + arm64e、内嵌完整 commit 与 ciRun 计数）；报告 `102702` 原始 JSON 的 `build.commit` / `build.ciRun` / `build.plugin` 与事件链时间戳。
+- **本机未复算、仅依据用户提供的设备材料**：报告 `102702` 原始文件本身位于用户侧路径（`E:\微信聊天记录\...`），本轮**直接读取该原始 JSON 完成身份与事件链核对**，其**预览页面三行时间的显示值**（含 `createdAt` = `1793034157`）由用户在设备页面目视/截图提供，**本机无法从 JSON 复算**——报告刻意不导出预览内容（`102702` 顶层无任何 `preview` 相关键，`sourceTime` 的 4 次命中全部来自 `sourceTimeProbe` 等既有键名），故三行时间值以页面证据为准。**run `40357931611` 的日志与产物在本机无缓存**（本机仅有 `40281941160` / `40284279686` / `40360494942` 三个 run 目录），其 261/25/三轮结论来自本机对 `40360494942` 同源日志的复算与既有记录，**未在本机重新下载 `40357931611` 原件核对**。**不得沿用旧包 `2e63369` / `40284279686` 冒充本轮包身份**——本轮真机报告自证的包是 `40360494942` 的产物。
+
+**2026-10-26 报告 `102604` 接收冒烟证据收口 + 阶段 A 剩余门槛梳理（本轮只改本文件，未提交、未推送、未跑 CI、未打包、未安装、未操作设备）：** 本轮是证据收口与剩余门槛梳理，不是新设备测试授权；下列结论来自对报告 `102604`（原报告）、本机限定采集记录（`device-smoke-20261026-211735-247365` 目录下的 `summary.json`）与既有脱敏核验摘要的离线复算，以及对总计划 `OPERATIONS-CAPSULE-PLAN.md` 第 9/10/12/13/14 节与 `OPERATIONS-V2-CONTRACTS.md`、`OPERATIONS-A-DEVICE-READINESS.md`、`OPERATIONS-SOURCE-TIME-DEVICE-CHECK.md` 的对照；历史证据均标注其适用构建，未读取原件的一律写明"历史文档记载"，不作为本轮独立复核。
+
+**固定包身份（报告 `102604` 自证，与固定包一致）**：`plugin` = `0.2.21`、`commit` = `2e63369f0d8725416263bb3d72412f23a8065562`、`ciRun` = `40284279686`；`storageReady` 在原始 JSON 字节中为 `true`，Python 解析类型为 `bool`（同一文件内该键共 15 处出现，值均为 `true`）；`schemaVersion` 为整数 `14`；宿主为微信 `8.0.79` / `8.0.79.35`，iOS `16.0.3`。
+
+**有效捕获开始时的配置**：`dirty=false`、`senderCount=1`、`includesSelf=false`、`senderFilterCount=1`、`textEnabled=true`、`imageEnabled=false`、`textOnlyCandidate=1`、`ruleCount=1`、`sourceSelected=1`、`targetCount=17`。
+
+**结果**：`sourceCapture.state=preview`、`offered=1`、`rejected=0`、`lastReasonCode=0`、`generation=1`；类型普查 `rows` 仅一条 `type=1`（`count=1`）、`sequence=[1]`；方向样本 `path=receive`，`fromIsGroup=true`、`fromIsSource=true`、`toIsAccount=true`、`messageType=1`、`typeReadable=1`，即所选来源群到当前账号；`source_candidate=1`，随后出现 `capture_accepted` 与 `receiver_stopped`（`receiverGeneration=4`、`armed=false`）。**接收器已停止，但报告导出时 `sourceCapture.state` 仍为 `preview`——不得写成用户已放弃预览。**
+
+**必须披露的两处情况**：① 首次 `capture_attempt` 的 `facts` 为 `dirty=true`，同一次点击被 `capture_blocked`（`reasonCode=1`，对应 `UI/SRPanel.m:1047` 的"请先保存"分支）拦截；随后出现 `draft_saved`，再次 `capture_attempt`（`dirty=false`）才出现 `receiver_arm` / `capture_started` 并成功。**不能写成"首次点击直接成功"。** ② 本轮 `counters` 为 `receive_callback=4`、`receive_wrong_session=3`，`sessionRejections.receive_other_string=3`；而 `runtimeLog` 中同类事件行只有各 1 行。已核对 `note:` 实现（`Adapter/SRWeChatReceiver.m:468`）：计数器对**每次**回调累计，`trace` 只在同类**首次**记录，因此**不能用 runtimeLog 的事件行数代替计数器**。最终只有 1 条匹配消息进入类型普查与预览。**不能写成"零拒绝"**；在没有原始会话标识的前提下，不断言那 3 条来自哪个群，也不认定为产品故障。
+
+**人工证据（单列）**：用户在本对话明确确认"预览出现、成员和内容对应"。这是**人工目视反馈**，不是 AI 截屏验证，也不证明屏幕消息 ID 的对应性。报告本身不导出 wxid、群 ID、server ID 或会话标识，因此"来源成员就是所选的那一位"由**配置侧（单成员、排除本人）+ 人工目视**共同支撑，而非由 JSON 自动认证。
+
+**发送状态**：发送实验关闭；`submissionAttempted=false`、`deliveryOutcome=not_submitted`、`hostReturned=false`；本轮无插件发送提交事件。报告中的 `text_attempt_claimed` / `image_attempt_claimed` 属**跨会话保留的历史持久占位**，不是本轮发送，**不清理、不重试**。
+
+**限定采集记录**：21:17:35 至 21:20:35（Asia/Shanghai），180 秒到时自动结束；三条独立的同名微信进程 PID 过滤流，合计 3659 条记录，其中 SyncRelay 标记为 0 条；未保存原始系统日志。同名进程**不能**证明当前活动实例或构建身份，构建身份仍以报告 `102604` 为准；系统日志中无插件记录**不构成接收失败**，也不能补出成员或消息 ID。
+
+**结论边界**：本轮可写——"固定包在微信 8.0.79 上的单成员、非本人、仅文字接收预览冒烟通过；预览成员和内容对应由用户目视确认。"整体状态仍为 **A = 实现完成 + 有限真实宿主证据**。**不得写**阶段 A 整体验收完成；不得写自动捕获或新旧消息判断已经可靠；不得写 server ID 的屏幕对应性已验证；不得写发送、送达、多群、主动图片或消息库派发已通过。`sourceTimeSemanticsVerified=false`、`newMessagesOnly=false`、`imageReadinessObserved=false` 等能力位原样保留，不因本轮结果翻转；B/C 继续关闭。
+
+**本轮补齐的旧缺口**：① 接收预览在**单成员、排除本人、仅文字**的正确配置下成立，补齐了 `102603` 遗留的"来源过滤器为两人且含本人"配置偏差；② "首次点击被未保存配置拦截、保存后再次开始才成功"这一真实产品行为被记录在案（`capture_blocked`/`reasonCode=1` → `draft_saved` → 成功）；③ `receiver_stopped` 之后预览仍保留这一状态关系被明确，避免误读为用户已放弃。**本轮未补齐**：消息 ID 与本次消息的屏幕对应性仍未证（报告不导出 server ID）；`receive_wrong_session` 的 3 次来源仍无法归因。
+
+**阶段 A 剩余门槛表（整理于本轮，依据总计划第 9/10/12/13/14 节的优先规则与当前实现）**：
+
+| 项目 | 证据及适用构建 | 剩余缺口 | 缺测试 or 缺安全观察入口 | 阻塞完整 A | 最小下一步 |
+| --- | --- | --- | --- | --- | --- |
+| 来源时间 ABI、单位、语义与离线旧/新消息边界 | 报告 `102604`（构建 `2e63369`）：`sourceTimeProbe` 为 `state=off`、`samples`/`hookSamples` 均空、`getterDeclaredReturnEncoding=not_observed`、`actualWrapABIObserved=0`、`sourceTimeSemanticsVerified=false`；历史文档记载：`.5` 包（commit `12e3a99…`、CI `40064748000`）的同轮旧/新边界与停止后保留——**不同构建，本轮未读取原件复核** | 实际消息对象逐对象返回编码、时间单位与语义均未认证；离线补同步与同轮停止后保留在当前构建上无证据 | 缺测试（探针入口已在当前构建内，可用） | 是 | 在已安装的同一固定包上做**一轮**只读文字采样，覆盖"他人实时文字"与"离线补同步"两个场景，导出后按既有分析器判据核对 `createdAt`/`listeningSince` 关系与严格策略接受；停止条件=拿到可关联样本或出现空样本（记证据不足）即止，不做第二轮 |
+| 本人延迟补 server ID 与首次回调关联 | 报告 `102604`（构建 `2e63369`）：`ownTextState=waiting`、`ownTextPending=0`，本轮未触发本人消息路径；历史文档记载 `.5` 包上的同轮关联样本——**不同构建，本轮未复核** | 当前构建未复现"早期无 server ID → 后续补 ID"的同一消息关联 | 缺测试 | 是 | 并入上一项同一轮采样：由本人发一条合成文字，核对 `hookMessageOrdinal` 与交付样本 `messageOrdinal` 一致且分析器不报关联不完整；只取一轮 |
+| 停止/代次隔离与生命周期 | 报告 `102604`（构建 `2e63369`）：`receiver_arm=1`、`receiver_stopped=1`、`sourceCapture.generation=1`、`receiverGeneration=4`、停止后预览保留、窗口内除上述 3 次会话拒绝外无其他拒绝计数；历史文档记载 `.5` 包的后台停止、同轮 stop-pair、宿主页面切换未观察到被动通知——**不同构建** | 宿主**页面级**被动生命周期信号在当前构建上无证据（当前源码只接入 `WillResignActive`/`DidBecomeActive`，`UIWindowDidBecomeKey` 仅刷新入口 UI）；`resumedAfterInactive` 字段在当前构建存在但本轮未触发 | 缺安全观察入口（页面级被动信号） | 是 | 先只读调研宿主是否存在可靠的页面级被动通知 ABI：有则登记只读字段，无则登记为"缺入口"并保持未覆盖；**不要求用户重复切页采样** |
+| 图片资源就绪（被动观察入口） | 报告 `102604`（构建 `2e63369`）：`imageReads=0`、`imageSource.reads=0`、`imageReadinessObserved=false`、`imageSendPreparation.selectedSelector=none`、`originSelectorCompatible=false`、`longSelectorCompatible=false`；历史文档记载 `.5` 包仅有 type 3 早期元数据——**不同构建** | 没有可靠的被动就绪通知或只读状态 ABI，无法在不触发资源写入的前提下观察就绪 | **缺安全观察入口** | 是 | 不要求用户重复采样、不猜 selector；先做只读入口调研，确认存在已证实的被动通知或只读状态字段后再登记，否则保持未覆盖。禁止以主动 getter、轮询、下载或准备媒体补证 |
+| 宿主版本矩阵 | 报告 `102604` 只覆盖微信 `8.0.79`（构建 `2e63369`）；当前允许清单为 `8.0.76` 与 `8.0.79`（`Adapter/SRWeChatReceiver.m:509`），本轮未在 `8.0.76` 取证 | `8.0.76` 无真机证据 | 缺测试 | 否（按版本分别登记，不外推） | 保持分别登记；待有 `8.0.76` 设备时再单次取证，不为凑齐版本矩阵重复当前设备采样 |
+| 诊断布尔字段一致性 | 报告 `102604`（构建 `2e63369`）：`storageReady` 已是 JSON 布尔 `true`（含源码契约测试），但 `sendingEnabled=0`、`accountReadable=1`、`centerClassPresent=1`、`sessionClassPresent=1`、`contactClassPresent=1` 仍为 int | 除 `storageReady` 外，其余诊断布尔仍以 `0/1` 序列化 | 缺测试（需契约测试锁定显式装箱写法） | 否（不改变业务行为，但违反诊断布尔契约的一致性） | 另一次授权下按 `storageReady` 的既有做法统一显式装箱并补契约测试；本轮不改代码 |
+| 发送、送达、多群、主动图片、消息库派发 | 报告 `102604`：发送关闭、`submissionAttempted=false`、无提交事件；总计划第 12/13/14 节的发送与派发能力按 C 排期，`dispatchAvailable` 对所有类型仍为 false | 全部未验证 | 缺测试（且属 B/C 范围） | 否（阻塞的是 C，不是 A） | A 收口后按第 12/13/14 节排期推进 B/C，不在 A 内提前开放 |
+
+**推荐的唯一下一步（只提方案，本轮不执行）**：在**已安装的同一固定包**（`2e63369` / run `40284279686`）上做**一轮**只读来源时间采样——由选定的来源成员发一条他人文字、由本人发一条本人文字，若条件允许再覆盖一次断网期间的旧消息补同步；导出报告后用既有离线分析器核对 `createdAt` 与 `listeningSince` 的时间关系、严格策略接受情况及本人 `hookMessageOrdinal` 关联。**预期证据**：同轮可关联的他人/本人文字样本各一条，且时间关系可判；**停止条件**：拿到可关联样本、或出现空样本（记证据不足）、或采样到 16 回调/120 秒上限即止，**不做第二轮、不切后台、不锁屏、不改系统时间**。该轮**不需要代码改动，也不需要重新构建或安装**（采样入口已随该包存在），只需设备侧操作授权与用户各发一条合成文字；本轮不执行。
+
+**2026-10-26 阶段 A 收口结论（实现完成 + 有限宿主证据，sender/消息 ID 两条显式留缺口；本轮只改本文件）：** 修复分支已 fast-forward 合入 `main`（远端 `main` = `b296cc1119c79d19859134762449ca3a52997001`，7 个提交、累计 74 文件 / +12790 / −476）；主线 CI run `40319466204`（`push` 事件、head `b296cc1`）结论 `success`，该 run 的打包/DEB 步骤按 `build_deb` 门控全部 `skipped`、artifact 数为 0——这是预期行为，不表示产生过新包。**本轮唯一有效的真机包仍是** `commit 2e63369f0d8725416263bb3d72412f23a8065562` / CI run `40284279686` / DEB SHA-256 `d19ac21711f81751511b3bf99ce415aa60018651a33ff131279ed76b10ee6d0b`（`Version=0.2.21`、`iphoneos-arm`、脂肪头 arm64 + arm64e）；该包与 `main` 当前产品树的产品文件差异为 0，故"与 `main` 等价"属由 0 差异推出的**推断**，不是在 `b296cc1` 上重新打包得到的直接产物。
+
+本轮新增一条**直接**证据（此前只能推断）：经 USB + `pymobiledevice3 syslog live -m SyncRelay` 只读采集，命中唯一一行 `WeChat{SyncRelay.dylib}[…] <NOTICE>: [SyncRelay] 0.2.21 initialized.`（2026-10-26 21:07:39）。os_log 的图像标注 `{SyncRelay.dylib}` 表明该行由 dylib 内的代码在 `com.tencent.xin` 进程内发出，且走的是构造函数**成功分支**（既非 `Storage unavailable` 也非 `Recovery failed`）——即**注入成功、启动期存储初始化与中断恢复均成功**，`storageReady` 在启动时刻即成立。该行只携带版本号，不含 commit/ciRun，故构建身份仍只能由导出报告的 `build.commit`/`build.ciRun` 区分（`0.2.21` 在 `2e63369` 与 `9616a17` 两个包上取值相同）。
+
+接收侧目前唯一正面样本为报告 `102603`：`receive_callback=1` → `source_candidate=1` → `capture_accepted=1`；类型探针 `rows=[{type:1, count:1}]`、`sequence=[1]`；`sourceCapture` 为 `offered=1`/`rejected=0`/`lastReasonCode=0`/`generation=1`；方向样本 `fromIsGroup`/`fromIsSource`/`toIsAccount` 均为真、`messageType=1`；该窗口内 `receive_wrong_session`/`receive_no_server_id`/`receive_type_filtered`/`account_changed` 均为 0，捕获期间仅 1 次 `inactive` 且发生在 `capture_accepted` 之后（导出/分享面板所致）——故**接收预览（候选冻结）在固定包上一次成立**，来源群方向、类型与轮次隔离均无污染。
+
+**两条显式缺口（本轮结论：不再尝试用现有通道闭合）：** ① **来源成员精确性未证**——该次配置为 `senderCount=2` 且 `includesSelf=true`，并非单选成员；报告不导出 wxid，只能证明该消息落在该过滤内，无法排除本人或另一被选成员。② **消息 ID 对应性未证**——`sourceCapture` 不导出 server ID；且 `Adapter/SRWeChatReceiver.m` 的 `note:` 对 `source_candidate`/`capture_accepted` 等接收事件一律传 `facts:@{}`，事件本身不携带 sender 或消息 ID，这是刻意的隐私设计。两条均**无法由 JSON 或 syslog 补证**：tweak 全仓仅 `Tweak/SRBootstrap.m` 三处 `NSLog`（全在启动路径），逐条消息的判定只进内存环形缓冲与微信容器内 `Library/Application Support/SyncRelay/runtime-log.json`，该路径 AFC 不可达；设备为 Dopamine roothide 越狱、无 openssh（22 端口无监听），也无法 SSH 读取。补证只有两条路且均需另行授权：以**单成员 + text-only** 配置重跑一次接收冒烟，或改代码为事件补充 facts（需重打包重装，`build.commit` 变化会使 `102601`–`102603` 的身份证据作废）。本轮选择**不补**。
+
+**收口口径（本段为阶段 A 当前最新结论）：** A = **实现完成 + 有限宿主证据**。成立的部分：实现与合入、主线 CI 的 macOS 原生测试、打包与产物身份可追溯、真机安装/启动/诊断布尔/schema 14、dylib 注入直证、接收预览一次成立。不成立或未涉及的：来源成员精确性、消息 ID 对应性、预览卡片的屏幕呈现（需目视）、任何发送与送达、多群执行、视频、主动图片、消息库派发。**不得表述为"真实微信宿主整体验收完成"**；阶段 A 未整体验收，B/C 继续关闭。本轮只改本文件，未改代码、未跑 CI、未重新打包、未安装、未迁移、未清理设备数据。
+
 **2026-10-26 定向冒烟包真机有限核验（固定包 commit `2e63369f0d8725416263bb3d72412f23a8065562`、CI run `40284279686`、DEB SHA-256 `d19ac21711f81751511b3bf99ce415aa60018651a33ff131279ed76b10ee6d0b`；本轮只做文档收口）：** 用户在设备侧按授权覆盖安装上述固定包（产物 artifact `12633951110`；`Package=andyz.syncrelay`、`Version=0.2.21`、`Architecture=iphoneos-arm`，脂肪头 arm64 + arm64e），完全退出并重新打开微信后导出两份新报告，代称 `102601`、`102602`。**两份报告的 `build.plugin` / `build.commit` / `build.ciRun` 三个身份字段完全一致**，说明两次导出都来自同一构建、没有旧包混入；上一份包 commit `9616a17` / run `40281941160` 与历史报告 `102501` / `102502` 本轮均未使用，只作历史证据保留。`storageReady` 在原始 JSON 字节中为 `true`，Python 解析类型为 `bool`；`schemaVersion` 为整数 `14`。由于该字段已是真正的 JSON 布尔，`tools/diagnose_report.py` 本轮**不再输出** `storage_readiness_invalid`——该固定代码只在字段缺失或类型非布尔时出现，本轮既未放宽分析器、也未删除该分支，`0/1`、`null`、`"true"`/`"false"` 仍按原规则拒绝。报告中的 `image_attempt_claimed` 与 `text_attempt_claimed` **按契约保留**：它们是单条文字/图片实验的持久占位记录，本轮**不重试、不清理、不删库、不做 schema 11 迁移**，保留原样以便后续审计看到"该账号已存在占位"。**本轮结论严格限定在有限设备核验范围内**：只证实该固定包可安装、可启动、两次导出的构建身份一致、`storageReady` 序列化为 JSON 布尔、`schemaVersion` 为 14；**不代表阶段 A 整体验收**，也不构成任何发送、送达、多群执行或 B/C 能力的证据。本轮未改代码、未跑 CI、未打包、未迁移、未清理设备数据；**提交前核对时**工作树为 `codex/operations-a-receive-gating-fix-20261026`、HEAD `2e63369f0d8725416263bb3d72412f23a8065562`、暂存区为空，改动仅限本文件；随后本段以文档提交 `28061e6f2a8d9065d84f1055eee6a0453d92b9f6` 收口（该提交只含本文件的两行追加）。
 
 **2026-10-26 最小补回 storageReady JSON 布尔修复（隔离工作树 `codex/operations-a-receive-gating-fix-20261026`，基于 `9616a17e0a4121a1cf71b20db3121e85e0202096`）：** 修复分支 `9616a17` 遗漏了 `5d31177638f5f864a8b7e3b1f46e1f371fcac188`（"Fix diagnostic storageReady JSON boolean"）中的生产布尔修复——该提交在主线上，本次修复分支未带入，因此 `UI/SRPanel.m` 的 `report[@"storageReady"]` 仍是 `@(self.store != nil)`。该写法在 Objective-C 中是 `int`，导出 JSON 会序列化成 `0/1`，违反诊断布尔契约（这正是上一轮已记录、本轮才补回的已知缺陷）。本轮**最小补回，不整笔 cherry-pick、不带入该提交的历史文档调整**，只改两处：① `UI/SRPanel.m` 改为 `report[@"storageReady"] = self.store ? @YES : @NO;` 并加说明注释（显式装箱以避免 `0/1`）；② `tests/settings_ui_contract_test.py` 新增 `test_storage_readiness_exports_a_json_boolean`，锁定该键**唯一**赋值为显式 `@YES`/`@NO` 形式，并显式拒绝旧的 `report[@"storageReady"] = @(` 写法。守卫先进：新测试在**未改**的生产旧写法上确实失败（`Lists differ: ['report[@"storageReady"] = @(self.store != nil);'] != ['report[@"storageReady"] = self.store ? @YES : @NO;']`），改生产后通过，故该断言具备判别力，不是恒真。**未放宽分析器、未接受 `0/1`、未删任何断言**；其余布尔字段（`sendingEnabled`、`settingsFooterRecoveryActive`、`floatingEntryEnabled` 等）未统一整理，schema、sender/type 门禁、ABI、捕获/发送逻辑与既有接收测试均未改。本地验证：focused `tests.settings_ui_contract_test` **10 项通过**（原 9 + 新增 1）、完整 Python **247 项通过**（原 246 + 新增 1，与预期一致）、`py -3 -m compileall -q tools tests` 通过、缓存 libclang 双架构语法检查 **106 单元零诊断**（arm64/arm64e 各 53，含 `UI/SRPanel.m`）、`git diff --check` 干净。以上均为**源码契约与语法层**证据：Objective-C 原生链接/执行、CI、DEB 打包、安装、真机均不由此证明，待本提交的 `build_deb=true` CI 验证。**旧包口径**：commit `9616a17` 的打包 run `40281941160`（artifact `12632572605`，DEB SHA-256 `45d81c5b88952d4385b4d2905076b3470e68c5143e4028fcc860066b2eacf0f2`，版本仍 `0.2.21`）身份核验通过，但它**不含本次布尔修复**，因此**不再作为最终定向冒烟对象**，仅作历史证据保留。旧 CI（`40274440125`/`40277683819`/`40280396194`/`40281941160`）与历史包 `102501`/`102502` 均**不构成本新提交的运行证据**。schema 14 直接初始化，B/C 继续关闭。
