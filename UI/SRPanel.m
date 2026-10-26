@@ -1059,6 +1059,9 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             [SRRuntimeLog.shared record:@"capture_arm_failed" facts:@{@"errorCode": @(error.code)}];
             [self.capture cancel]; SRAlert(self, @"接收候选不可用", error.localizedDescription); return;
         }
+        // Bind the receiver round that may deliver into this capture round. The
+        // two counters are independent and are never compared with each other.
+        [self.capture bindReceiverGeneration:self.receiver.diagnostics[@"receiverGeneration"]];
         [SRRuntimeLog.shared record:@"capture_started" facts:[self diagnosticDraft]];
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
     }]];
@@ -1171,6 +1174,15 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         }
     }
 }
+- (void)acceptCapturedMessage:(NSDictionary *)message evidence:(NSDictionary *)evidence {
+    if ([self.capture offerEnvelope:message evidence:evidence]) {
+        [SRRuntimeLog.shared record:@"capture_accepted" facts:@{}];
+        [self.receiver stop]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+    } else {
+        if ([message[@"type"] isEqual:@"image"]) [self.store.imageAssets discardPayload:message[@"payload"]];
+        [SRRuntimeLog.shared record:@"capture_rejected" facts:@{@"reasonCode": self.capture.diagnostics[@"lastReasonCode"] ?: @0}];
+    }
+}
 - (void)prepareCapture {
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     self.capture = [[SRSourceCapture alloc] initWithStore:self.store];
@@ -1178,14 +1190,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     self.identityReader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
     __weak typeof(self) weakSelf = self;
     void (^received)(NSDictionary *) = ^(NSDictionary *message) {
-        SREntry *entry = weakSelf;
-        if ([entry.capture offerEnvelope:message]) {
-            [SRRuntimeLog.shared record:@"capture_accepted" facts:@{}];
-            [entry.receiver stop]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
-        } else {
-            if ([message[@"type"] isEqual:@"image"]) [entry.store.imageAssets discardPayload:message[@"payload"]];
-            [SRRuntimeLog.shared record:@"capture_rejected" facts:@{@"reasonCode": entry.capture.diagnostics[@"lastReasonCode"] ?: @0}];
-        }
+        [weakSelf acceptCapturedMessage:message evidence:nil];
+    };
+    void (^receivedWithTime)(NSDictionary *, NSDictionary *) = ^(NSDictionary *message, NSDictionary *evidence) {
+        [weakSelf acceptCapturedMessage:message evidence:evidence];
     };
     self.receiver = [[SRWeChatReceiver alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
         currentAccount:^NSString * {
@@ -1220,7 +1228,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
                 ![entry.sendProbe.diagnostics[@"armed"] boolValue] && ![entry.textSendHost.diagnostics[@"observing"] boolValue] &&
                 ![entry.imageSendHost.diagnostics[@"observing"] boolValue];
         } monotonicClock:^double { return NSProcessInfo.processInfo.systemUptime; }
-        wallClock:^NSTimeInterval { return NSDate.date.timeIntervalSince1970; } legacyReceived:received
+        wallClock:^NSTimeInterval { return NSDate.date.timeIntervalSince1970; } legacyReceived:receivedWithTime
         changed:^{ [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; }];
     self.receiver.prepareImage = ^NSDictionary *(id wrap, NSDictionary *source, NSError **error) {
         SREntry *entry = weakSelf; if (!entry) return nil;

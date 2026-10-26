@@ -63,6 +63,7 @@
 @property(nonatomic) double wall;
 @property(nonatomic) double monotonic;
 @property(nonatomic) NSUInteger legacyCalls;
+@property(nonatomic, copy) NSDictionary *lastLegacyEvidence;
 @property(nonatomic) NSUInteger changes;
 @property(nonatomic, copy) void (^onChange)(void);
 @property(nonatomic, copy) void (^onReceiverAccountRead)(void);
@@ -105,7 +106,9 @@
                 if (weakSelf.onMonotonicRead) weakSelf.onMonotonicRead();
                 return now;
             } wallClock:^double { return weakSelf.wall; }
-            legacyReceived:^(__unused NSDictionary *message) { weakSelf.legacyCalls++; }
+            legacyReceived:^(__unused NSDictionary *message, NSDictionary *evidence) {
+                weakSelf.legacyCalls++; weakSelf.lastLegacyEvidence = evidence;
+            }
             changed:^{ CHECK(NSThread.isMainThread); weakSelf.changes++; if (weakSelf.onChange) weakSelf.onChange(); }];
     }
     return self;
@@ -209,6 +212,15 @@ static void checkObservation(void) {
     fixture.wall = 2000.5; // A repeated wall time must not swallow legacy capture.
     CHECK([fixture.receiver armForAccount:fixture.current configuration:fixture.configuration error:NULL]);
     receive(fixture, message(2019)); CHECK(fixture.legacyCalls == 1 && count(fixture) == before);
+    // Manual capture is not sampling, but it owns the same hook: its
+    // first-observation evidence must reach the capture path allowlisted only.
+    NSDictionary *legacy = fixture.lastLegacyEvidence;
+    CHECK([legacy[@"schema"] isEqual:@1] && [legacy[@"receivedAt"] isEqual:@2000.5]);
+    CHECK([legacy[@"createdAt"] isEqual:@2019]);
+    CHECK([legacy[@"generation"] isEqual:fixture.receiver.diagnostics[@"receiverGeneration"]]);
+    for (NSString *leaked in @[@"correlationLocalID", @"listeningSince", @"privateXML", @"deliveredAt", @"payload", @"messageID"])
+        CHECK(!legacy[leaked]);
+    CHECK([NSJSONSerialization isValidJSONObject:legacy ?: @{}]);
     [fixture stop];
 }
 

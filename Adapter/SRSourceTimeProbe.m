@@ -40,7 +40,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
 @property(nonatomic, copy) BOOL (^environmentAllowed)(void);
 @property(nonatomic, copy) double (^monotonicClock)(void);
 @property(nonatomic, copy) NSTimeInterval (^wallClock)(void);
-@property(nonatomic, copy) void (^legacyReceived)(NSDictionary *);
+@property(nonatomic, copy) void (^legacyReceived)(NSDictionary *, NSDictionary * _Nullable);
 @property(nonatomic, copy) void (^changed)(void);
 @property(nonatomic) BOOL starting;
 @property(nonatomic) BOOL listening;
@@ -68,7 +68,7 @@ static NSString *SRProbeGetterEncoding(Class type) {
 - (instancetype)initWithReceiver:(SRWeChatReceiver *)receiver classResolver:(Class (^)(NSString *))resolver
                  currentAccount:(NSString *(^)(void))currentAccount configurationForAccount:(NSDictionary *(^)(NSString *))configuration
              environmentAllowed:(BOOL (^)(void))environmentAllowed monotonicClock:(double (^)(void))monotonicClock
-                      wallClock:(NSTimeInterval (^)(void))wallClock legacyReceived:(void (^)(NSDictionary *))legacyReceived
+                      wallClock:(NSTimeInterval (^)(void))wallClock legacyReceived:(void (^)(NSDictionary *, NSDictionary *))legacyReceived
                         changed:(void (^)(void))changed {
     self = [super init];
     if (self) {
@@ -259,7 +259,11 @@ static NSString *SRProbeGetterEncoding(Class type) {
         // wall-clock boundaries here: a later manual capture can share a time.
         if (self.lastProbeGeneration && SRProbeInteger(evidence[@"generation"]) &&
             [evidence[@"generation"] unsignedIntegerValue] <= self.lastProbeGeneration) return;
-        self.legacyReceived(message); return;
+        // Manual capture is not sampling, but it still owns the same receive
+        // hook, so its first-observation evidence must reach the capture path.
+        // Only the allowlisted numeric fields cross; correlation IDs, bodies and
+        // internal observer state stay inside the probe.
+        self.legacyReceived(message, [SRSourceMessage allowlistedTimeEvidence:evidence]); return;
     }
     // Stopping can notify a consumer that explicitly starts another round.
     // A repeated wall-clock boundary must not admit this old callback there.

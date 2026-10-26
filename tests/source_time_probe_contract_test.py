@@ -15,7 +15,7 @@ class SourceTimeProbeContracts(unittest.TestCase):
                           'class_addMethod', 'm_nsContent', '@"payload"'):
             self.assertNotIn(forbidden, source)
         self.assertIn('receiver.receivedWithTimeEvidence =', source)
-        self.assertIn('self.legacyReceived(message)', source)
+        self.assertIn('self.legacyReceived(message, [SRSourceMessage allowlistedTimeEvidence:evidence])', source)
         self.assertIn('textOnly[@"types"] = @[@"text"]', source)
         self.assertIn('newMessagesOnly:NO', source)
 

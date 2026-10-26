@@ -158,8 +158,15 @@ class P3SourceCaptureRoundIsolationTests(unittest.TestCase):
     def test_offer_envelope_ignored_when_not_waiting(self):
         # A late callback after cancel / confirm-failure / stop must not mutate
         # the current round's counters or lastReason.
-        body = method_body(CAPTURE, "- (BOOL)offerEnvelope:(NSDictionary *)envelope {")
+        body = method_body(CAPTURE, "- (BOOL)offerEnvelope:(NSDictionary *)envelope evidence:(NSDictionary *)evidence {")
         self.assertLess(body.index("if (!self.waiting) return NO;"), body.index("self.offered++"))
+
+    def test_offer_envelope_without_evidence_delegates_to_the_same_gate(self):
+        # The compatibility entry point must not grow a second, parallel gate.
+        body = method_body(CAPTURE, "- (BOOL)offerEnvelope:(NSDictionary *)envelope {")
+        lines = [line.strip() for line in body.strip().splitlines() if line.strip()]
+        self.assertEqual(lines, ["return [self offerEnvelope:envelope evidence:nil]; }"])
+        self.assertNotIn("self.offered++", body)
 
     def test_diagnostics_exposes_generation(self):
         body = method_body(CAPTURE, "- (NSDictionary *)diagnostics {")

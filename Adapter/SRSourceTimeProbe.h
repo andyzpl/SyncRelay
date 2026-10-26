@@ -20,7 +20,7 @@ typedef NS_ENUM(NSUInteger, SRSourceTimeProbeStopReason) {
              environmentAllowed:(BOOL (^)(void))environmentAllowed
                  monotonicClock:(double (^)(void))monotonicClock
                       wallClock:(NSTimeInterval (^)(void))wallClock
-                 legacyReceived:(void (^)(NSDictionary *))legacyReceived
+                 legacyReceived:(void (^)(NSDictionary *message, NSDictionary * _Nullable evidence))legacyReceived
                         changed:(void (^)(void))changed;
 - (BOOL)startForAccount:(NSString *)account configuration:(NSDictionary *)configuration error:(NSError **)error;
 - (void)stopForReason:(SRSourceTimeProbeStopReason)reason;

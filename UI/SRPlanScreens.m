@@ -4,6 +4,8 @@
 #import "Core/SRSourceCapture.h"
 #import "Core/SRImageAssetStore.h"
 #import "Adapter/SRSmallGroupSession.h"
+#import <CoreFoundation/CoreFoundation.h>
+#include <math.h>
 
 NSString *const SRRelayStateChangedNotification = @"andyz.syncrelay.stateChanged";
 typedef NS_ENUM(NSUInteger, SRRecordKind) { SRRecordPreview, SRRecordPlans, SRRecordPlan, SRRecordHistory, SRRecordExceptions };
@@ -14,6 +16,40 @@ static NSString *SRDate(id value) {
     formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
     formatter.timeZone = NSTimeZone.localTimeZone; formatter.dateFormat = @"yyyy-MM-dd HH:mm";
     return [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:[value doubleValue]]];
+}
+/* An old snapshot or an old plan has no time metadata at all. A boolean is an
+ * NSNumber but never a time, so it must stay "未记录" instead of 1970-01-01. */
+static BOOL SRSourceTimeValue(id value) {
+    if (![value isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) return NO;
+    double number = [value doubleValue];
+    return isfinite(number) && number > 0;
+}
+/* The two plugin-local times are Unix seconds measured by this process, so they
+ * may be rendered as a wall-clock date: to the second, with an explicit zone. */
+static NSString *SRSourceLocalTime(id value) {
+    if (!SRSourceTimeValue(value)) return @"未记录";
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.timeZone = NSTimeZone.localTimeZone; formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss zzz";
+    return [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:[value doubleValue]]];
+}
+/* The host value is a raw number whose unit, epoch and meaning are unverified.
+ * It is printed as-is and never handed to NSDate: a conversion would present a
+ * guessed date as if it were evidence. */
+static NSString *SRSourceHostTimeText(id value) {
+    if (!SRSourceTimeValue(value)) return @"未记录 / 语义未验证";
+    NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
+    formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    formatter.usesGroupingSeparator = NO; formatter.minimumFractionDigits = 0; formatter.maximumFractionDigits = 3;
+    NSString *raw = [formatter stringFromNumber:(NSNumber *)value] ?: @"未记录";
+    return [NSString stringWithFormat:@"%@（原始值 · 单位/语义未验证）", raw];
+}
+static NSString *SRSourceTimeText(NSDictionary *source, NSInteger row) {
+    NSDictionary *time = [source[@"sourceTime"] isKindOfClass:NSDictionary.class] ? source[@"sourceTime"] : nil;
+    id value = time[row == 5 ? @"receivedAt" : (row == 6 ? @"previewFrozenAt" : @"createdAt")];
+    if (row == 7) return SRSourceHostTimeText(value);
+    return SRSourceLocalTime(value);
 }
 static NSString *SRRunDescription(NSDictionary *run) {
     NSString *state = @{@"running": @"执行中", @"paused": @"已暂停", @"awaiting_resume": @"待手动继续",
@@ -195,8 +231,8 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.problem) return 1;
-    if (self.kind == SRRecordPreview) return section == 0 ? 5 : (section == 1 ? 1 : 2);
-    if (self.kind == SRRecordPlan) return section == 0 ? 5 : MAX((NSUInteger)1, self.rows.count);
+    if (self.kind == SRRecordPreview) return section == 0 ? 8 : (section == 1 ? 1 : 2);
+    if (self.kind == SRRecordPlan) return section == 0 ? 8 : MAX((NSUInteger)1, self.rows.count);
     return MAX((NSUInteger)1, self.rows.count + (self.more ? 1 : 0));
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -222,15 +258,18 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     if (self.problem) { cell.textLabel.text = self.problem; return cell; }
     if ((self.kind == SRRecordPreview || self.kind == SRRecordPlan) && path.section == 0) {
         NSDictionary *source = [self source];
-        cell.textLabel.text = @[@"母群 ID", @"实际发送者 wxid", @"源消息类型", @"源消息 ID", @"消息内容（点开完整查看）"][path.row];
+        // Row 4 stays the content entry point that opens the text/image viewer.
+        // The time rows are appended after it so no existing index shifts.
+        cell.textLabel.text = @[@"母群 ID", @"实际发送者 wxid", @"源消息类型", @"源消息 ID", @"消息内容（点开完整查看）",
+            @"插件首次观察时间", @"抓取完成时间", @"宿主来源时间原始值（未验证）"][path.row];
         NSArray *values = @[source[@"group"] ?: @"未记录", source[@"sender"] ?: @"未记录", source[@"type"] ?: @"未记录", source[@"messageID"] ?: @"未记录"];
         if (path.row < 4) cell.detailTextLabel.text = values[path.row];
-        else {
+        else if (path.row == 4) {
             NSString *text = [self sourceText];
             NSRange range = [text rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, MIN((NSUInteger)600, text.length))];
             cell.detailTextLabel.text = [text substringWithRange:range];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        }
+        } else cell.detailTextLabel.text = SRSourceTimeText(source, path.row);
         return cell;
     }
     if (self.kind == SRRecordPreview) {

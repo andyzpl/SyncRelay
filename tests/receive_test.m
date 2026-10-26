@@ -3,6 +3,7 @@
 #import "Adapter/SRWeChatReceiver.h"
 #import "Core/SRConfiguration.h"
 #import "Core/SRSourceCapture.h"
+#import "Core/SRSourceMessage.h"
 #import "Core/SRStore.h"
 #include <assert.h>
 #include <limits.h>
@@ -292,6 +293,88 @@ static void checkSourceTimeEvidence(void) {
     now = 402; [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:timedWrap(401)]; pump();
     CHECK(messages.count == 3); manager.duringOriginal = nil; [receiver stop];
     puts("PASS: declared time ABI, strict new/old/same-second boundary, immutable receipt evidence, delayed own/image events and late generations");
+}
+/* The probe owns receiver.receivedWithTimeEvidence in production, so the
+ * ordinary capture path only ever sees allowlisted evidence. This walks that
+ * exact consumer boundary and proves the observation time is carried through
+ * untouched while the freeze time is taken once, at acceptance. */
+static void checkSourceTimeCapture(void) {
+    NSString *directory = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    CHECK([NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL]);
+    SRStore *store = [[SRStore alloc] initWithPath:[directory stringByAppendingPathComponent:@"time.sqlite3"] error:NULL]; CHECK(store);
+    __block double frozen = 5000.25, now = 1000.5;
+    SRSourceCapture *capture = [[SRSourceCapture alloc] initWithStore:store clock:^NSTimeInterval { return frozen; }];
+    NSMutableArray *offers = [NSMutableArray array];
+    SRWeChatReceiver *receiver = [[SRWeChatReceiver alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
+        return [name isEqual:@"CMessageMgr"] ? TimeManager.class : ([name isEqual:@"CMessageWrap"] ? TimedReceiveWrap.class : Nil);
+    } currentAccount:^NSString *{ return @"wxid_account"; } received:^(__unused NSDictionary *message) { CHECK(NO); }
+        clock:^double { return now; }];
+    __weak SRWeChatReceiver *weak = receiver;
+    receiver.receivedWithTimeEvidence = ^(NSDictionary *message, NSDictionary *facts) {
+        NSDictionary *allowed = [SRSourceMessage allowlistedTimeEvidence:facts];
+        [offers addObject:@{@"message": message, @"evidence": allowed ?: (id)NSNull.null}];
+        if ([capture offerEnvelope:message evidence:allowed]) [weak stop];
+    };
+    CHECK([capture armForAccount:@"wxid_account" configuration:draft() error:NULL]);
+    CHECK([receiver armForAccount:@"wxid_account" configuration:draft() error:NULL]);
+    // The evidence is bound to the round that was armed, not to whatever the
+    // receiver reports later: a successful delivery stops the receiver, and
+    // stop bumps its generation. Reading diagnostics after the callback would
+    // compare two different rounds and compare two different counters.
+    NSNumber *armedRound = receiver.diagnostics[@"receiverGeneration"];
+    [capture bindReceiverGeneration:armedRound];
+    CHECK([receiver.diagnostics[@"armed"] boolValue]);
+    TimeManager *manager = [TimeManager new]; now = 1002.5;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:timedWrap(1001)]; pump();
+    CHECK(offers.count == 1 && capture.preview);
+    // Stopped, independently of the offer result: the round is over and its
+    // generation is no longer the live one.
+    CHECK(![receiver.diagnostics[@"armed"] boolValue]);
+    CHECK(![receiver.diagnostics[@"receiverGeneration"] isEqual:armedRound]);
+    NSDictionary *time = capture.preview[@"sourceTime"];
+    CHECK([time[@"receivedAt"] isEqual:@1002.5] && [time[@"previewFrozenAt"] isEqual:@5000.25]);
+    CHECK([time[@"createdAt"] isEqual:@1001] && [time[@"createdAtStatus"] isEqual:@"unverified"]);
+    CHECK([time[@"receivedAtStatus"] isEqual:@"recorded"] && [time[@"createdAtSemanticsVerified"] isEqual:@NO]);
+    CHECK([time[@"receiverGeneration"] isEqual:armedRound]);
+    CHECK(![capture.preview.description containsString:@"1000.5"]); // arming is never an observation time
+    // A repeated callback and a repeated read cannot restamp a frozen preview.
+    NSDictionary *firstPreview = capture.preview;
+    CHECK(![capture offerEnvelope:[firstPreview mutableCopy] evidence:offers.firstObject[@"evidence"]]);
+    CHECK([capture.preview isEqual:firstPreview] && [capture.preview isEqual:firstPreview]);
+
+    // A later clock cannot replace the original observation time: the delayed
+    // server-ID / image hand-off delivers the very same evidence, much later.
+    NSDictionary *envelope = @{@"account": @"wxid_account", @"group": @"mother@chatroom", @"sender": @"wxid_sender",
+        @"messageID": @"svr:987654321", @"type": @"text", @"generatedByRelay": @NO, @"payload": @{@"text": @"private timed source"}};
+    NSDictionary *oldRound = @{@"schema": @1, @"generation": armedRound, @"receivedAt": @1002.5, @"createdAt": @1001};
+    [capture cancel]; [receiver stop]; frozen = 6000.25; now = 1030.5;
+    CHECK([capture armForAccount:@"wxid_account" configuration:draft() error:NULL]);
+    CHECK([receiver armForAccount:@"wxid_account" configuration:draft() error:NULL]);
+    // The stopped round is dead: its evidence may never stamp a later round.
+    NSNumber *secondRound = receiver.diagnostics[@"receiverGeneration"];
+    [capture bindReceiverGeneration:secondRound];
+    CHECK(![receiver.diagnostics[@"receiverGeneration"] isEqual:armedRound]);
+    CHECK(![capture offerEnvelope:envelope evidence:oldRound] && !capture.preview);
+    CHECK([capture.diagnostics[@"lastReasonCode"] isEqual:@25]);
+    NSDictionary *delayed = @{@"schema": @1, @"generation": secondRound, @"receivedAt": @1002.5, @"createdAt": @1001};
+    CHECK([capture offerEnvelope:envelope evidence:delayed]);
+    CHECK([capture.preview[@"sourceTime"][@"receivedAt"] isEqual:@1002.5]);
+    CHECK([capture.preview[@"sourceTime"][@"previewFrozenAt"] isEqual:@6000.25]);
+    // A previous receiver round may never stamp the next round's preview.
+    [capture cancel]; [receiver stop];
+    CHECK([capture armForAccount:@"wxid_account" configuration:draft() error:NULL]);
+    CHECK([receiver armForAccount:@"wxid_account" configuration:draft() error:NULL]);
+    [capture bindReceiverGeneration:receiver.diagnostics[@"receiverGeneration"]];
+    CHECK(![capture offerEnvelope:envelope evidence:delayed] && !capture.preview);
+    CHECK([capture.diagnostics[@"lastReasonCode"] isEqual:@25]);
+    CHECK(![capture offerEnvelope:envelope evidence:oldRound]);
+    [capture cancel]; [receiver stop];
+    NSString *diagnostics = capture.diagnostics.description;
+    for (NSString *secret in @[@"wxid_account", @"mother@chatroom", @"987654321", @"private timed source"])
+        CHECK(![diagnostics containsString:secret]);
+    capture = nil; receiver = nil; manager = nil; store = nil;
+    CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
+    puts("PASS: ordinary capture carries first-observation evidence, freezes its own time once and refuses a previous receiver round");
 }
 static void checkImageCapture(void) {
     __block NSString *account = @"wxid_account";
@@ -854,6 +937,7 @@ int main(void) {
         checkReflectedMessage();
         checkImageCapture();
         checkSourceTimeEvidence();
+        checkSourceTimeCapture();
         checkAppMessageProbe();
         checkOutgoingTypeCensus();
         checkImageCapabilityGate();

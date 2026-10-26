@@ -5,6 +5,7 @@
 #import "Core/SRRunner.h"
 #import <sqlite3.h>
 #include <assert.h>
+#include <math.h>
 #define CHECK(...) assert((__VA_ARGS__))
 
 @interface FakeTransport : NSObject <SRSendTransport>
@@ -77,6 +78,123 @@ int main(void) {
         CHECK(![store createPlanFromConfiguration:configuration(2000) envelope:message(@"message1") account:@"account" error:NULL]);
         NSArray *rules = [store rulesForPlan:plan error:NULL]; CHECK(rules.count == 2);
         CHECK([store allocatedTargetsForPlan:plan error:NULL].count == 2001);
+
+        // Source-time metadata: two independent stages, frozen once with the
+        // snapshot, and never restamped by later offers or later reads.
+        __block double frozenClock = 9000.25;
+        SRSourceCapture *timed = [[SRSourceCapture alloc] initWithStore:store clock:^NSTimeInterval { return frozenClock; }];
+        NSDictionary *timedEvidence = @{@"schema": @1, @"generation": @7, @"createdAt": @8000, @"receivedAt": @8500.5,
+            @"listeningSince": @8400, @"correlationLocalID": @4242};
+        CHECK([timed armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        [timed bindReceiverGeneration:@7];
+        NSMutableDictionary *timedSource = message(@"timed-message");
+        CHECK([timed offerEnvelope:timedSource evidence:timedEvidence]);
+        NSDictionary *time = timed.preview[@"sourceTime"];
+        CHECK([time[@"schema"] isEqual:@1] && [time[@"unit"] isEqual:@"unix_seconds"]);
+        CHECK([time[@"receivedAt"] isEqual:@8500.5] && [time[@"previewFrozenAt"] isEqual:@9000.25]);
+        CHECK([time[@"receivedAtStatus"] isEqual:@"recorded"] && [time[@"previewFrozenAtStatus"] isEqual:@"recorded"]);
+        CHECK([time[@"createdAt"] isEqual:@8000] && [time[@"createdAtStatus"] isEqual:@"unverified"]);
+        CHECK([time[@"createdAtSemanticsVerified"] isEqual:@NO] && [time[@"receiverGeneration"] isEqual:@7]);
+        NSString *frozenText = timed.preview.description;
+        for (NSString *leaked in @[@"4242", @"8400", @"correlationLocalID", @"listeningSince"])
+            CHECK(![frozenText containsString:leaked]);
+        CHECK([NSJSONSerialization isValidJSONObject:timed.preview]);
+        NSDictionary *firstFrozen = timed.preview;
+        CHECK(![timed offerEnvelope:message(@"second-timed") evidence:timedEvidence]);
+        timedSource[@"payload"][@"text"] = @"mutated after acceptance";
+        CHECK([timed.preview isEqual:firstFrozen] && [timed.preview isEqual:firstFrozen]);
+
+        // A stale round must be refused instead of landing on a new preview.
+        [timed cancel];
+        CHECK([timed armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        [timed bindReceiverGeneration:@8];
+        CHECK(![timed offerEnvelope:message(@"stale-round") evidence:timedEvidence]);
+        CHECK([timed.diagnostics[@"lastReasonCode"] isEqual:@25] && !timed.preview);
+        CHECK([timed offerEnvelope:message(@"current-round") evidence:@{@"schema": @1, @"generation": @8, @"receivedAt": @8600.5}]);
+        CHECK([timed.preview[@"sourceTime"][@"receivedAt"] isEqual:@8600.5]);
+        CHECK([timed.preview[@"sourceTime"][@"createdAt"] isEqual:NSNull.null]);
+        CHECK([timed.preview[@"sourceTime"][@"createdAtStatus"] isEqual:@"unknown"]);
+        CHECK([timed.preview[@"sourceTime"][@"previewFrozenAt"] isEqual:@9000.25]);
+        // Unusable evidence is not a conflict: it degrades to an explicit
+        // unknown instead of borrowing another round's observation time.
+        [timed cancel];
+        CHECK([timed armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        [timed bindReceiverGeneration:@11];
+        CHECK([timed offerEnvelope:message(@"unusable-evidence") evidence:@{@"schema": @2, @"generation": @11, @"receivedAt": @8700.5}]);
+        CHECK([timed.preview[@"sourceTime"][@"receivedAt"] isEqual:NSNull.null]);
+        CHECK([timed.preview[@"sourceTime"][@"receiverGeneration"] isEqual:NSNull.null]);
+        CHECK([timed.preview[@"sourceTime"][@"receivedAtStatus"] isEqual:@"unknown"]);
+
+        // An unbound round still captures, with an explicit unknown observation time.
+        [timed cancel];
+        CHECK([timed armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        CHECK([timed offerEnvelope:message(@"no-evidence")]);
+        CHECK([timed.preview[@"sourceTime"][@"receivedAt"] isEqual:NSNull.null]);
+        CHECK([timed.preview[@"sourceTime"][@"receivedAtStatus"] isEqual:@"unknown"]);
+        CHECK([timed.preview[@"sourceTime"][@"receiverGeneration"] isEqual:NSNull.null]);
+
+        // Booleans, non-finite values and a broken clock stay explicit unknowns.
+        [timed cancel];
+        CHECK([timed armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        CHECK([timed offerEnvelope:message(@"boolean-time") evidence:@{@"schema": @1, @"generation": @9, @"receivedAt": @YES, @"createdAt": @NO}]);
+        CHECK([timed.preview[@"sourceTime"][@"receivedAt"] isEqual:NSNull.null]);
+        CHECK([timed.preview[@"sourceTime"][@"createdAt"] isEqual:NSNull.null]);
+        [timed cancel];
+        CHECK([timed armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        frozenClock = NAN;
+        CHECK([timed offerEnvelope:message(@"non-finite") evidence:@{@"schema": @1, @"generation": @10, @"receivedAt": @(INFINITY), @"createdAt": @(-5)}]);
+        CHECK([timed.preview[@"sourceTime"][@"receivedAt"] isEqual:NSNull.null]);
+        CHECK([timed.preview[@"sourceTime"][@"previewFrozenAt"] isEqual:NSNull.null]);
+        CHECK([timed.preview[@"sourceTime"][@"previewFrozenAtStatus"] isEqual:@"unknown"]);
+        frozenClock = 9100.5;
+        CHECK([NSJSONSerialization isValidJSONObject:timed.preview]);
+
+        // The same frozen time travels with the persisted snapshot and reads back.
+        NSDictionary *frozenPreview = timed.preview;
+        NSString *timedPlan = [timed confirmForCurrentAccount:@"account" error:NULL]; CHECK(timedPlan);
+        NSDictionary *storedTime = [store plan:timedPlan account:@"account" error:NULL][@"snapshot"][@"sourceTime"];
+        CHECK([storedTime[@"receivedAt"] isEqual:frozenPreview[@"sourceTime"][@"receivedAt"]]);
+        CHECK([storedTime[@"previewFrozenAt"] isEqual:frozenPreview[@"sourceTime"][@"previewFrozenAt"]]);
+        CHECK([storedTime[@"createdAt"] isEqual:frozenPreview[@"sourceTime"][@"createdAt"]]);
+        CHECK([storedTime[@"schema"] isEqual:@1] && [storedTime[@"unit"] isEqual:@"unix_seconds"]);
+        // An older snapshot without time metadata still reads; nothing invents a time.
+        NSString *legacyPlan = [store createPlanFromConfiguration:configuration(1) envelope:message(@"legacy-message") account:@"account" error:NULL];
+        CHECK(legacyPlan && ![store plan:legacyPlan account:@"account" error:NULL][@"snapshot"][@"sourceTime"]);
+
+        // A fully valid round: every stage and every status must survive the
+        // persisted snapshot exactly, not merely as "still NSNull". A later
+        // clock and repeated reads must not restamp what was frozen.
+        frozenClock = 12000.75;
+        [timed cancel];
+        CHECK([timed armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        [timed bindReceiverGeneration:@21];
+        NSDictionary *validEvidence = @{@"schema": @1, @"generation": @21, @"receivedAt": @11000.5, @"createdAt": @10500};
+        CHECK([timed offerEnvelope:message(@"roundtrip-timed-message") evidence:validEvidence]);
+        NSDictionary *validFrozen = timed.preview[@"sourceTime"];
+        CHECK([validFrozen[@"receivedAt"] isEqual:@11000.5] && [validFrozen[@"receivedAtStatus"] isEqual:@"recorded"]);
+        CHECK([validFrozen[@"previewFrozenAt"] isEqual:@12000.75] && [validFrozen[@"previewFrozenAtStatus"] isEqual:@"recorded"]);
+        CHECK([validFrozen[@"createdAt"] isEqual:@10500] && [validFrozen[@"createdAtStatus"] isEqual:@"unverified"]);
+        CHECK([validFrozen[@"createdAtSemanticsVerified"] isEqual:@NO] && [validFrozen[@"receiverGeneration"] isEqual:@21]);
+        NSString *roundTripPlan = [timed confirmForCurrentAccount:@"account" error:NULL]; CHECK(roundTripPlan);
+        NSDictionary *roundTripSnapshot = [store plan:roundTripPlan account:@"account" error:NULL][@"snapshot"];
+        CHECK([roundTripSnapshot[@"messageID"] isEqual:@"roundtrip-timed-message"]);
+        NSDictionary *storedValid = roundTripSnapshot[@"sourceTime"];
+        CHECK([storedValid isEqualToDictionary:validFrozen]);
+        for (NSString *key in @[@"schema", @"unit", @"receivedAt", @"receivedAtStatus", @"previewFrozenAt",
+            @"previewFrozenAtStatus", @"createdAt", @"createdAtStatus", @"createdAtSemanticsVerified",
+            @"receiverGeneration", @"createdAtUnit"]) {
+            CHECK([storedValid[key] isEqual:validFrozen[key]]);
+        }
+        CHECK([storedValid[@"createdAtUnit"] isEqual:@"unverified"]);
+        CHECK([[storedValid[@"unitAppliesTo"] firstObject] isEqual:@"receivedAt"]);
+        CHECK(![storedValid[@"unitAppliesTo"] containsObject:@"createdAt"]);
+        // Changing the injected clock and reading again cannot move a frozen plan.
+        frozenClock = 99999.5;
+        NSDictionary *reread = [store plan:roundTripPlan account:@"account" error:NULL][@"snapshot"][@"sourceTime"];
+        CHECK([reread isEqualToDictionary:validFrozen]);
+        CHECK([[store plan:roundTripPlan account:@"account" error:NULL][@"snapshot"][@"sourceTime"][@"previewFrozenAt"] isEqual:@12000.75]);
+        CHECK([[store plan:roundTripPlan account:@"account" error:NULL][@"snapshot"][@"sourceTime"][@"receivedAt"] isEqual:@11000.5]);
+        timed = nil;
 
         // A new arm starts a new diagnostic round. Cancellation must also
         // fence late offers instead of incrementing the next round's counts.
