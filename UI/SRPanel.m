@@ -692,7 +692,9 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"batchSendingEnabled"] = @NO;
     report[@"settingsEntry"] = self.settingsEntry.diagnostics;
     report[@"settingsFooterRecoveryActive"] = @(self.settingsFooterActive);
-    report[@"storageReady"] = @(self.store != nil);
+    // Box the branch values explicitly so exported JSON preserves a boolean
+    // instead of serializing the BOOL expression as 0/1.
+    report[@"storageReady"] = self.store ? @YES : @NO;
     report[@"schemaVersion"] = self.store ? @(self.store.schemaVersion) : NSNull.null;
     report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
