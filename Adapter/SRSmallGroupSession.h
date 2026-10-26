@@ -37,6 +37,9 @@ typedef id<SRSmallGroupHost> _Nullable (^SRSmallGroupHostFactory)(NSDictionary *
 @property(nonatomic, readonly) BOOL busy;
 @property(nonatomic, readonly) BOOL needsIdleTimer;
 @property(nonatomic, readonly) BOOL usedNativeHost;
+/* Stable identifier for a visible cancel/resume command. A nil value means
+ * there is no attached run; callers must still verify the account snapshot. */
+@property(nonatomic, readonly, copy, nullable) NSString *currentRunID;
 - (NSDictionary *)status;
 - (NSDictionary *)diagnostics;
 @end

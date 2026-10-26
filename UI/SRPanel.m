@@ -1347,11 +1347,42 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self refreshFloatingProgress];
 }
 - (void)refreshFloatingProgress {
+    if (self.presented && !self.presented.presentingViewController && !self.presented.viewIfLoaded.window) self.presented = nil;
+    if (self.presented.presentingViewController) { [self.floatingProgress hide]; return; }
     self.button.hidden = self.presented.presentingViewController != nil || self.smallGroupSession.busy;
-    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive || ![self.smallGroupSession progressBelongsToCurrentAccount]) {
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
         [self.floatingProgress hide]; return;
     }
-    NSDictionary *model = [SRExecutionProgress modelForStatus:self.smallGroupSession.status];
+    NSDictionary *model = nil;
+    if ([self.smallGroupSession progressBelongsToCurrentAccount]) {
+        NSDictionary *progress = [SRExecutionProgress modelForStatus:self.smallGroupSession.status];
+        if ([progress[@"visible"] boolValue]) {
+            NSMutableDictionary *mutable = [progress mutableCopy]; mutable[@"menuEnabled"] = @YES; model = mutable;
+        }
+    }
+    NSDictionary *captureStatus = self.capture.status;
+    NSString *account = [self.identityReader connect:NULL] ? self.identityReader.accountID : nil;
+    BOOL captureBelongs = account.length && [captureStatus[@"account"] isEqual:account];
+    NSDictionary *operations = account.length ? [self.store operationsContentForAccount:account error:NULL] : nil;
+    NSDictionary *currentContent = [operations[@"current"] isKindOfClass:NSDictionary.class] ? operations[@"current"] : nil;
+    NSDictionary *recentContent = [operations[@"recent"] isKindOfClass:NSDictionary.class] ? operations[@"recent"] : nil;
+    if (!model && captureBelongs && self.capture.preview) {
+        model = @{ @"visible": @YES, @"countText": @"新消息", @"phase": @"ready", @"action": @"open",
+            @"actionEnabled": @YES, @"menuEnabled": @YES };
+    } else if (!model && captureBelongs && [captureStatus[@"state"] isEqual:@"waiting"]) {
+        model = @{ @"visible": @YES, @"countText": @"...", @"phase": @"waiting", @"action": @"open",
+            @"actionEnabled": @YES, @"menuEnabled": @YES };
+    } else if (!model && captureBelongs && [self.smallGroupSession.status[@"state"] isEqual:@"completed"]) {
+        model = @{ @"visible": @YES, @"countText": @"完成", @"phase": @"completed", @"action": @"open",
+            @"actionEnabled": @YES, @"menuEnabled": @YES };
+    } else if (!model && currentContent) {
+        model = @{ @"visible": @YES, @"countText": @"待转发", @"phase": @"ready", @"action": @"open",
+            @"actionEnabled": @YES, @"menuEnabled": @YES };
+    } else if (!model && recentContent) {
+        model = @{ @"visible": @YES, @"countText": @"完成", @"phase": @"completed", @"action": @"open",
+            @"actionEnabled": @YES, @"menuEnabled": @YES };
+    }
+    if (!model) { [self.floatingProgress hide]; return; }
     if (![model[@"visible"] boolValue]) { [self.floatingProgress hide]; return; }
     UIWindow *host = nil;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -1369,8 +1400,52 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             [entry.smallGroupSession togglePauseForCurrentAccount:NULL];
             [entry updateSmallGroupState];
         };
+        self.floatingProgress.openAction = ^{ [weakSelf openOperationsFromController:nil]; };
+        self.floatingProgress.menuAction = ^{ [weakSelf showOperationsMenu]; };
     }
     [self.floatingProgress showModel:model inWindow:host]; self.button.hidden = YES;
+}
+- (void)showOperationsMenu {
+    if (self.presented.presentingViewController) return;
+    UIViewController *presenter = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.isKeyWindow && window.windowLevel == UIWindowLevelNormal) { presenter = window.rootViewController; break; }
+        }
+        if (presenter) break;
+    }
+    while (presenter.presentedViewController) presenter = presenter.presentedViewController;
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"SyncRelay 运营" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:[UIAlertAction actionWithTitle:@"打开运营首页" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        [self openOperationsFromController:presenter];
+    }]];
+    NSString *account = [self.identityReader connect:NULL] ? self.identityReader.accountID : nil;
+    NSString *run = self.smallGroupSession.currentRunID;
+    if ([self.smallGroupSession progressBelongsToCurrentAccount] && run.length) {
+        [menu addAction:[UIAlertAction actionWithTitle:@"取消本组发送" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+            UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"取消本组发送？"
+                message:@"尚未尝试的目标将取消；已提交或在途消息无法撤回，其他分组不会自动开始。" preferredStyle:UIAlertControllerStyleAlert];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"继续发送" style:UIAlertActionStyleCancel handler:nil]];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"取消本组" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *x) {
+                [self.smallGroupSession cancelRun:run account:account error:NULL];
+                [self updateSmallGroupState];
+            }]];
+            [presenter presentViewController:confirm animated:YES completion:nil];
+        }]];
+    } else if (self.capture.preview) {
+        [menu addAction:[UIAlertAction actionWithTitle:@"放弃当前预览" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+            [self.capture cancel]; [self updateSmallGroupState];
+        }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"进入设置" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        [self openFromController:presenter];
+    }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    menu.popoverPresentationController.sourceView = self.floatingProgress;
+    menu.popoverPresentationController.sourceRect = self.floatingProgress.bounds;
+    [presenter presentViewController:menu animated:YES completion:nil];
 }
 - (CGRect)floatingEntryAvailableBoundsInWindow:(UIWindow *)window {
     if (!window) return CGRectZero;
@@ -1466,6 +1541,32 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 - (void)open {
     [self openFromController:nil];
+}
+- (void)openOperationsFromController:(UIViewController *)controller {
+    if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive || self.presented.presentingViewController) return;
+    NSString *account = [self.identityReader connect:NULL] ? self.identityReader.accountID : nil;
+    if (!account.length) return;
+    UIViewController *presenter = controller;
+    if (!presenter) for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.isKeyWindow && window.windowLevel == UIWindowLevelNormal) { presenter = window.rootViewController; break; }
+        }
+        if (presenter) break;
+    }
+    while (presenter.presentedViewController) presenter = presenter.presentedViewController;
+    if (!presenter || presenter.isBeingDismissed || presenter.isBeingPresented || [presenter isKindOfClass:UIAlertController.class]) return;
+    BOOL (^verify)(void) = ^BOOL {
+        SREntry *entry = self;
+        return entry && [entry.identityReader verifyAccount:account error:NULL];
+    };
+    UIViewController *home = SRCreateOperationsHome(self.store, self.capture, self.smallGroupSession, account, verify);
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:home];
+    UINavigationController *hostNavigation = [presenter isKindOfClass:UINavigationController.class] ? (UINavigationController *)presenter : presenter.navigationController;
+    SRStyleSettingsNavigation(navigation, hostNavigation);
+    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    self.presented = navigation; self.button.hidden = YES; [self.floatingProgress hide];
+    [presenter presentViewController:navigation animated:YES completion:nil];
 }
 - (void)openFromController:(UIViewController *)controller {
     if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;

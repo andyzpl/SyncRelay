@@ -411,3 +411,148 @@ UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^ver
     screen.kind = SRRecordPlans; screen.store = store; screen.account = account;
     screen.verifyAccount = verifyAccount; screen.execution = execution; screen.title = @"已确认内容计划"; return screen;
 }
+
+/* Phase B keeps the home page deliberately projection-only. The existing
+ * preview, plan list and rule detail screens remain the only command owners;
+ * this page only routes to them with stable account-scoped snapshots. */
+@interface SROperationsHomeScreen : UITableViewController
+@property(nonatomic, strong) SRStore *store;
+@property(nonatomic, strong) SRSourceCapture *capture;
+@property(nonatomic, strong) SRSmallGroupSession *execution;
+@property(nonatomic, copy) NSString *account;
+@property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, copy) NSDictionary *operations;
+@property(nonatomic, copy) NSDictionary *plan;
+@property(nonatomic, copy) NSDictionary *problem;
+@end
+
+@implementation SROperationsHomeScreen
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"SyncRelay 运营";
+    SRStyleSettingsTable(self);
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+        style:UIBarButtonItemStylePlain target:self action:@selector(close)];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:)
+        name:SRRelayStateChangedNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:)
+        name:@"andyz.syncrelay.smallGroupChanged" object:nil];
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reload]; }
+- (void)stateChanged:(__unused NSNotification *)notification { if (self.viewIfLoaded.window) [self reload]; }
+- (BOOL)verified {
+    @try { return self.verifyAccount && self.verifyAccount(); }
+    @catch (__unused id exception) { return NO; }
+}
+- (void)reload {
+    if (![self verified]) {
+        self.operations = nil; self.plan = nil;
+        [self.tableView reloadData]; return;
+    }
+    NSError *error = nil;
+    self.operations = [self.store operationsContentForAccount:self.account error:&error];
+    if (!self.operations) { self.problem = @{ @"message": error.localizedDescription ?: @"无法读取运营状态" }; }
+    else {
+        self.problem = nil;
+        NSDictionary *current = self.operations[@"current"];
+        if ([current isKindOfClass:NSDictionary.class] && current[@"plan_id"] != NSNull.null)
+            self.plan = [self.store plan:current[@"plan_id"] account:self.account error:NULL];
+        else self.plan = nil;
+    }
+    [self.tableView reloadData];
+}
+- (NSDictionary *)current { return [self.operations[@"current"] isKindOfClass:NSDictionary.class] ? self.operations[@"current"] : nil; }
+- (NSDictionary *)recent { return [self.operations[@"recent"] isKindOfClass:NSDictionary.class] ? self.operations[@"recent"] : nil; }
+- (NSString *)phaseText {
+    NSDictionary *status = self.execution.status;
+    if ([status[@"busy"] boolValue]) {
+        NSString *state = status[@"state"];
+        if ([state isEqual:@"running"]) return @"执行中";
+        if ([state isEqual:@"paused"] || [state isEqual:@"awaiting_resume"]) return @"已暂停，等待手动继续";
+        return @"在途处理中";
+    }
+    NSString *captureState = self.capture.status[@"state"];
+    if ([captureState isEqual:@"preview"]) return @"有一条待确认预览";
+    if ([captureState isEqual:@"waiting"]) return @"等待源消息";
+    if ([self current]) return @"内容已确认，可选择分组";
+    if ([self recent]) return @"最近内容已完成";
+    return @"尚未捕获内容";
+}
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 3; }
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 0) return 2;
+    if (section == 1) return 2;
+    return 2;
+}
+- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return @[@"运行状态", @"当前内容", @"入口"][section];
+}
+- (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == 0) return @"打开本页不会开始捕获、创建计划或发送；所有操作都需要明确点击。";
+    if (section == 1) return @"内容、账号和分组以捕获/确认时的冻结快照为准。";
+    return @"阶段 B 只提供运营入口和页面路由；自动捕获、自动接力和批量扩容仍未开放。";
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"operations-home"] ?:
+        [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"operations-home"];
+    SRStyleSettingsCell(cell); cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
+    cell.textLabel.text = nil; cell.detailTextLabel.text = nil; cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    if (path.section == 0) {
+        if (path.row == 0) { cell.textLabel.text = @"当前状态"; cell.detailTextLabel.text = [self phaseText]; cell.selectionStyle = UITableViewCellSelectionStyleNone; }
+        else {
+            NSDictionary *counts = self.execution.status[@"counts"];
+            cell.textLabel.text = @"执行进度";
+            cell.detailTextLabel.text = [self.execution.status[@"busy"] boolValue] ?
+                [NSString stringWithFormat:@"已处理 %@ · 在途 %@ · 未发 %@", counts[@"submitted"] ?: @0, counts[@"submitting"] ?: @0, counts[@"pending"] ?: @0] : @"没有活动运行";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        }
+    } else if (path.section == 1) {
+        NSDictionary *current = [self current];
+        if (path.row == 0) {
+            cell.textLabel.text = current ? @"当前源消息" : @"当前源消息";
+            cell.detailTextLabel.text = current ? @"已确认内容，可进入分组" : (self.capture.preview ? @"待确认预览" : @"暂无内容");
+            cell.accessoryType = (current || self.capture.preview) ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+        } else {
+            NSDictionary *recent = [self recent];
+            cell.textLabel.text = @"最近一次结果";
+            cell.detailTextLabel.text = recent ? @"已归档，可查看历史" : @"暂无归档结果";
+            cell.accessoryType = recent ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+        }
+    } else {
+        if (path.row == 0) { cell.textLabel.text = @"分组与执行"; cell.detailTextLabel.text = @"查看已确认内容、分组和运行详情"; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; }
+        else { cell.textLabel.text = @"打开设置"; cell.detailTextLabel.text = @"修改来源、间隔和目标分组；保存后才影响下一轮"; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; }
+    }
+    if (![self verified]) { cell.textLabel.textColor = UIColor.tertiaryLabelColor; cell.selectionStyle = UITableViewCellSelectionStyleNone; }
+    return cell;
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
+    [tableView deselectRowAtIndexPath:path animated:YES];
+    if (![self verified]) return;
+    if (path.section == 1 && path.row == 0) {
+        if (self.capture.preview) {
+            [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, self.verifyAccount, self.execution) animated:YES];
+        } else if ([self current]) {
+            [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, self.verifyAccount, self.execution) animated:YES];
+        }
+    } else if (path.section == 1 && path.row == 1 && [self recent]) {
+        [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, self.verifyAccount, self.execution) animated:YES];
+    } else if (path.section == 2 && path.row == 0) {
+        [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, self.verifyAccount, self.execution) animated:YES];
+    }
+}
+- (void)close {
+    [self dismissViewControllerAnimated:YES completion:^{
+        [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+    }];
+}
+@end
+
+UIViewController *SRCreateOperationsHome(SRStore *store, SRSourceCapture *capture, SRSmallGroupSession *execution,
+                                          NSString *account, BOOL (^verifyAccount)(void)) {
+    SROperationsHomeScreen *screen = [[SROperationsHomeScreen alloc] initWithStyle:UITableViewStyleGrouped];
+    screen.store = store; screen.capture = capture; screen.execution = execution;
+    screen.account = account; screen.verifyAccount = verifyAccount;
+    return screen;
+}

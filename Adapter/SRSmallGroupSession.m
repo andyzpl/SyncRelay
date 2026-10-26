@@ -230,6 +230,7 @@ static BOOL SRSmallSubmitted(NSDictionary *evidence, NSDictionary *source, NSStr
     @try { return NSThread.isMainThread && self.busy && [self.currentAccount() isEqual:self.account]; }
     @catch (__unused id exception) { return NO; }
 }
+- (NSString *)currentRunID { return self.run; }
 - (BOOL)togglePauseForCurrentAccount:(NSError **)error {
     if (![self progressBelongsToCurrentAccount]) return SRSmallFail(error, @"No active run belongs to the visible account");
     return self.dispatchEnabled ? [self pauseForAccount:self.account error:error] : [self resumeRun:self.run account:self.account error:error];
