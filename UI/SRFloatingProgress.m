@@ -35,6 +35,9 @@
         tap.cancelsTouchesInView = NO; tap.delegate = self; [self addGestureRecognizer:tap];
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
         [self addGestureRecognizer:pan];
+        /* A drag must never be reported as a body tap: the tap waits until the
+         * pan recognizer has failed, so ending a drag cannot open the home. */
+        [tap requireGestureRecognizerToFail:pan];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(keyboardChanged:) name:UIKeyboardWillChangeFrameNotification object:nil];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(keyboardChanged:) name:UIKeyboardWillHideNotification object:nil];
         self.accessibilityIdentifier = @"SyncRelay.ExecutionProgress";
@@ -114,7 +117,11 @@
     if ([self.model[@"action"] isEqual:@"open"]) { if (self.openAction) self.openAction(); }
     else if (self.action) self.action();
 }
-- (void)openPressed { if (self.openAction && ![self.model[@"action"] isEqual:@"open"]) self.openAction(); }
+/* The capsule body is a stable entry point to the operations home. It used to
+ * refuse the tap whenever action was "open", which left the waiting, ready and
+ * completed states with a dead body; the side "查看" button is a separate
+ * path and stays available. */
+- (void)openPressed { if (self.openAction) self.openAction(); }
 - (void)menuPressed { if (self.menuAction) self.menuAction(); }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     if (![gestureRecognizer isKindOfClass:UITapGestureRecognizer.class]) return YES;

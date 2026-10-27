@@ -181,6 +181,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic) NSUInteger textGeneration;
 @property(nonatomic) BOOL ownsIdleTimer;
 @property(nonatomic) BOOL previousIdleTimer;
+/* When the panel is stacked on the operations home, closing it returns to the
+ * home instead of dismissing the whole modal. The unsaved-draft guard and the
+ * save semantics stay the same either way. */
+@property(nonatomic) BOOL returnsToOperationsHome;
 @property(nonatomic, copy) void (^didClose)(void);
 @end
 
@@ -309,6 +313,18 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 - (void)close {
     [self cancelTextExperiment]; self.singleTextSendEnabled = NO;
+    /* Stacked on the operations home, closing returns to the home rather than
+     * dismissing the whole modal. The unsaved-draft guard is unchanged. */
+    if (self.returnsToOperationsHome && self.navigationController.viewControllers.count > 1) {
+        if (!self.dirty) { [self.navigationController popViewControllerAnimated:YES]; return; }
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"放弃未保存的修改？" message:@"已经保存的设置不会被删除。" preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"放弃并关闭" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+            [self.navigationController popViewControllerAnimated:YES];
+        }]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
     if (!self.dirty) { [self dismissViewControllerAnimated:YES completion:self.didClose]; return; }
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"放弃未保存的修改？" message:@"已经保存的设置不会被删除。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
@@ -1132,8 +1148,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 
 @interface SREntry : NSObject
 @property(nonatomic, strong) SRStore *store;
-@property(nonatomic, strong) UIButton *button;
-@property(nonatomic, strong) SRSourceCapture *capture;
+@property(nonatomic, strong) UIButton *button;@property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SRWeChatReceiver *receiver;
 @property(nonatomic, strong) SRSourceTimeProbe *sourceTimeProbe;
 @property(nonatomic, strong) SRWeChatImageSource *imageSource;
@@ -1158,6 +1173,20 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic) BOOL floatingEntryDragging;
 @end
 @implementation SREntry
+/* Locates the real settings panel inside the presented navigation stack.
+ * The stack shape depends on how the settings were reached: the standalone
+ * settings entry has the panel as its root, while the operations home has the
+ * panel pushed on top of the home. The root controller therefore differs
+ * between the two, so reading it would find the home instead of the settings
+ * panel and report the wrong dirty/idle/experiment/countdown state. Pushing a
+ * sub-page (group picker, content viewer, plan list) does not move the root;
+ * the panel is found by its type anywhere in the stack.
+ * Returns nil when no settings panel is presented. */
+- (SRPanel *)presentedSettingsPanel {
+    for (UIViewController *controller in self.presented.viewControllers)
+        if ([controller isKindOfClass:SRPanel.class]) return (SRPanel *)controller;
+    return nil;
+}
 - (void)refreshVisibleSettings {
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -1221,7 +1250,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             if (entry.sourceTimeProbe.active) return !entry.smallGroupSession.busy && [entry.capture.status[@"state"] isEqual:@"idle"] &&
                 ![entry.sendProbe.diagnostics[@"armed"] boolValue] && ![entry.textSendHost.diagnostics[@"observing"] boolValue] &&
                 ![entry.imageSendHost.diagnostics[@"observing"] boolValue];
-            SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
+            SRPanel *panel = [entry presentedSettingsPanel];
             BOOL panelIdle = ![panel isKindOfClass:SRPanel.class] || (!panel.dirty && !panel.ownsIdleTimer &&
                 !panel.singleTextSendEnabled && !panel.singleImageSendEnabled && !panel.textCountdown && !panel.imageCountdown);
             return panelIdle && !entry.smallGroupSession.busy && [entry.capture.status[@"state"] isEqual:@"idle"] &&
@@ -1277,7 +1306,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
-            SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
+            SRPanel *panel = [entry presentedSettingsPanel];
             return entry && !entry.sourceTimeProbe.active && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled &&
                 !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 panel.viewIfLoaded.window && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
@@ -1303,7 +1332,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
     } environmentAllowed:^BOOL {
         SREntry *entry = weakSelf;
-        SRPanel *panel = (SRPanel *)entry.presented.viewControllers.firstObject;
+        SRPanel *panel = [entry presentedSettingsPanel];
         BOOL panelIdle = ![panel isKindOfClass:SRPanel.class] || (!panel.dirty && !panel.ownsIdleTimer && !panel.textCountdown && !panel.imageCountdown);
         return entry && !entry.sourceTimeProbe.active && panelIdle && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
             ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
@@ -1525,9 +1554,9 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
             button.titleLabel.adjustsFontForContentSizeCategory = YES;
             button.backgroundColor = UIColor.secondarySystemBackgroundColor; button.layer.cornerRadius = 22;
-            button.accessibilityLabel = @"打开 SyncRelay 转发";
-            button.accessibilityHint = @"可自由拖动位置；轻触打开设置";
-            [button addTarget:self action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
+            button.accessibilityLabel = @"打开 SyncRelay 运营";
+            button.accessibilityHint = @"可自由拖动位置；轻触打开运营首页";
+            [button addTarget:self action:@selector(openOperations) forControlEvents:UIControlEventTouchUpInside];
             UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(floatingEntryDragged:)];
             pan.cancelsTouchesInView = YES;
             [button addGestureRecognizer:pan];
@@ -1541,6 +1570,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 - (void)open {
     [self openFromController:nil];
+}
+/* The idle floating entry is the operations home entry. It reuses the same
+ * presenter resolution and account binding as the capsule route, so an idle
+ * device reaches the home without a preview, plan, run or history. Opening the
+ * home only projects state: it never arms a receiver, starts a probe, confirms
+ * a plan, restores a run or sends anything. */
+- (void)openOperations {
+    [self openOperationsFromController:nil];
 }
 - (void)openOperationsFromController:(UIViewController *)controller {
     if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive || self.presented.presentingViewController) return;
@@ -1560,13 +1597,71 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         SREntry *entry = self;
         return entry && [entry.identityReader verifyAccount:account error:NULL];
     };
-    UIViewController *home = SRCreateOperationsHome(self.store, self.capture, self.smallGroupSession, account, verify);
-    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:home];
+    /* The home routes to the existing settings panel through an explicit
+     * callback bound to the account captured above. The callback re-verifies
+     * that account, so a changed account refuses the old page instead of
+     * silently switching to the new one. The home's own navigation controller
+     * is captured weakly: the navigation owns the home and the home owns this
+     * block, so a strong capture would form a retain cycle. The navigation is
+     * fetched back and re-checked at call time instead. */
+    __weak typeof(self) weakSelf = self;
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:[[UIViewController alloc] init]];
+    __weak UINavigationController *weakNavigation = navigation;
+    void (^openSettings)(void) = ^void {
+        SREntry *entry = weakSelf;
+        if (!entry) return;
+        UINavigationController *current = weakNavigation;
+        /* The route is only valid while it still owns the home page that
+         * started it. A stale callback must not push into another stack. */
+        if (!current || current != entry.presented) return;
+        NSString *currentAccount = [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
+        if (!currentAccount.length || ![currentAccount isEqual:account]) return;
+        [entry openSettingsFromNavigation:current account:currentAccount verify:verify];
+    };
+    UIViewController *home = SRCreateOperationsHome(self.store, self.capture, self.smallGroupSession, account, verify, openSettings);
+    navigation.viewControllers = @[home];
     UINavigationController *hostNavigation = [presenter isKindOfClass:UINavigationController.class] ? (UINavigationController *)presenter : presenter.navigationController;
     SRStyleSettingsNavigation(navigation, hostNavigation);
     navigation.modalPresentationStyle = UIModalPresentationFullScreen;
     self.presented = navigation; self.button.hidden = YES; [self.floatingProgress hide];
     [presenter presentViewController:navigation animated:YES completion:nil];
+}
+/* Presents the existing settings panel on top of the operations home. The panel
+ * is built from the same shared objects the entry already uses, so there is no
+ * parallel state source, and its own close/draft guard semantics are kept. */
+- (void)openSettingsFromNavigation:(UINavigationController *)navigation account:(NSString *)account verify:(BOOL (^)(void))verify {
+    if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    if (!navigation || !account.length || !verify || !verify()) return;
+    /* The route is only valid for the navigation this entry still manages and
+     * only while the home that started it is still the visible page of that
+     * stack. The home is the root controller, so pushing a page above it does
+     * not move the root; the check is on the top of the stack instead. */
+    if (navigation != self.presented) return;
+    UIViewController *home = navigation.viewControllers.firstObject;
+    if (!home || home != navigation.topViewController) return;
+    if (![home.title isEqualToString:@"SyncRelay 运营"]) return;
+    /* No second settings page: the panel is located anywhere in the stack, so
+     * a settings panel that is already there is recognized. */
+    if ([self presentedSettingsPanel]) return;
+    /* No re-entry while the stack is presenting or dismissing. */
+    if (navigation.isBeingPresented || navigation.isBeingDismissed ||
+        navigation.transitionCoordinator || navigation.presentedViewController) return;
+    SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleGrouped]; panel.store = self.store;
+    panel.capture = self.capture; panel.receiver = self.receiver; panel.sourceTimeProbe = self.sourceTimeProbe;
+    panel.imageSource = self.imageSource;
+    panel.imageSendProbe = self.imageSendProbe;
+    panel.sendProbe = self.sendProbe;
+    panel.textSendHost = self.textSendHost;
+    panel.imageSendHost = self.imageSendHost;
+    panel.smallGroupSession = self.smallGroupSession;
+    panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
+    panel.settingsFooterActive = self.settingsFooterActive;
+    /* The settings panel keeps its own save, close and unsaved-draft guard. It
+     * is pushed onto the home's navigation stack, so closing it returns to the
+     * home instead of tearing the whole home down. */
+    panel.returnsToOperationsHome = YES;
+    panel.didClose = ^{};
+    [navigation pushViewController:panel animated:YES];
 }
 - (void)openFromController:(UIViewController *)controller {
     if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;

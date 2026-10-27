@@ -6,8 +6,11 @@ FOUNDATION_EXPORT UIViewController *SRCreateCapturePreview(SRStore *store, SRSou
                                                           NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession * _Nullable execution);
 FOUNDATION_EXPORT UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession * _Nullable execution);
 /* Phase B operations home. This is a read/projection shell; it does not arm
- * capture or start a run just by opening the page. */
+ * capture or start a run just by opening the page. The optional openSettings
+ * route is an explicit callback bound to the account captured when the home
+ * was opened; the caller re-verifies that account before routing. */
 FOUNDATION_EXPORT UIViewController *SRCreateOperationsHome(SRStore *store, SRSourceCapture *capture,
                                                            SRSmallGroupSession * _Nullable execution,
-                                                           NSString *account, BOOL (^verifyAccount)(void));
+                                                           NSString *account, BOOL (^verifyAccount)(void),
+                                                           void (^ _Nullable openSettings)(void));
 NS_ASSUME_NONNULL_END

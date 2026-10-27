@@ -421,6 +421,10 @@ UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^ver
 @property(nonatomic, strong) SRSmallGroupSession *execution;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) BOOL (^verifyAccount)(void);
+/* An explicit route to the existing settings panel. It is supplied by the
+ * caller so the home never guesses a selector or builds a parallel copy of
+ * the settings state. */
+@property(nonatomic, copy, nullable) void (^openSettings)(void);
 @property(nonatomic, copy) NSDictionary *operations;
 @property(nonatomic, copy) NSDictionary *plan;
 @property(nonatomic, copy) NSDictionary *problem;
@@ -540,6 +544,11 @@ UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^ver
         [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, self.verifyAccount, self.execution) animated:YES];
     } else if (path.section == 2 && path.row == 0) {
         [self.navigationController pushViewController:SRCreatePlanList(self.store, self.account, self.verifyAccount, self.execution) animated:YES];
+    } else if (path.section == 2 && path.row == 1) {
+        /* The settings row is a real route, not a painted row. The callback is
+         * bound to the account captured when this home was opened and the
+         * caller re-verifies it, so a changed account refuses the old page. */
+        if (self.openSettings) self.openSettings();
     }
 }
 - (void)close {
@@ -550,9 +559,11 @@ UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^ver
 @end
 
 UIViewController *SRCreateOperationsHome(SRStore *store, SRSourceCapture *capture, SRSmallGroupSession *execution,
-                                          NSString *account, BOOL (^verifyAccount)(void)) {
+                                          NSString *account, BOOL (^verifyAccount)(void),
+                                          void (^ _Nullable openSettings)(void)) {
     SROperationsHomeScreen *screen = [[SROperationsHomeScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.store = store; screen.capture = capture; screen.execution = execution;
     screen.account = account; screen.verifyAccount = verifyAccount;
+    screen.openSettings = openSettings;
     return screen;
 }
