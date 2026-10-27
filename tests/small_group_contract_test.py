@@ -64,10 +64,17 @@ class SmallGroupContracts(unittest.TestCase):
 
     def test_test_actions_do_not_enable_large_rules_or_replay(self):
         text = self.text('UI/SRPlanScreens.m')
-        self.assertIn('[rule[@"targetCount"] unsignedIntegerValue] <= 20', text)
-        self.assertIn('startRule:rule[@"id"] account:self.account', text)
-        self.assertIn('resumeRun:run[@"id"] account:self.account', text)
+        # B-2 closeout moved every command into the execution detail page, so
+        # the bounded-rule gate and the start/continue calls are pinned there.
+        self.assertIn('[card[@"targetCount"] unsignedIntegerValue] > SRRunProjectionTargetLimit', text)
+        self.assertIn('startRule:rule account:account', text)
+        self.assertIn('resumeRun:runID account:self.account', text)
         self.assertNotIn('replay:YES', text)
+        # The older plan page keeps browsing only: it can no longer issue a
+        # start, pause, continue, cancel or end of its own.
+        old = text.split('@implementation SRRecordScreen', 1)[1].split('@end', 1)[0]
+        for command in ('startRule:', 'pauseForAccount:', 'resumeRun:', 'cancelRun:', 'endRun:'):
+            self.assertNotIn(command, old, command)
 
     def test_foreground_progress_does_not_own_a_window_or_intercept_chat(self):
         text = self.text('UI/SRFloatingProgress.m')

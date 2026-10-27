@@ -13,4 +13,22 @@ FOUNDATION_EXPORT UIViewController *SRCreateOperationsHome(SRStore *store, SRSou
                                                            SRSmallGroupSession * _Nullable execution,
                                                            NSString *account, BOOL (^verifyAccount)(void),
                                                            void (^ _Nullable openSettings)(void));
+/* B-2 group list. planID is the frozen plan of the content the user is acting
+ * on; nil means "no confirmed content" and the page becomes read-only.
+ * `configuration` is the configuration frozen with that content (the preview's
+ * capture-time configuration, or the configuration persisted with the prepared
+ * content). It is projected when planID is nil, so settings edited after the
+ * capture cannot rewrite the groups this content shows. Both pages re-verify
+ * the account and re-read the durable rows before any command. */
+FOUNDATION_EXPORT UIViewController *SRCreateGroupList(SRStore *store, SRSmallGroupSession * _Nullable execution,
+                                                      NSString *account, BOOL (^verifyAccount)(void),
+                                                      NSString * _Nullable planID,
+                                                      NSDictionary * _Nullable configuration);
+FOUNDATION_EXPORT UIViewController *SRCreateRunDetail(SRStore *store, SRSmallGroupSession * _Nullable execution,
+                                                      NSString *account, BOOL (^verifyAccount)(void),
+                                                      NSString * _Nullable planID, NSString * _Nullable ruleID,
+                                                      NSString * _Nullable runID);
+/* Reuses the existing paged exception/unsent screen for one exact run. */
+FOUNDATION_EXPORT UIViewController *SRCreateRunExceptions(SRStore *store, NSString *account,
+                                                          BOOL (^verifyAccount)(void), NSString *run);
 NS_ASSUME_NONNULL_END

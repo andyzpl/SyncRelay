@@ -16,6 +16,7 @@ CAPTURE = (ROOT / 'Core/SRSourceCapture.m').read_text(encoding='utf-8')
 MESSAGE = (ROOT / 'Core/SRSourceMessage.m').read_text(encoding='utf-8')
 PROBE = (ROOT / 'Adapter/SRSourceTimeProbe.m').read_text(encoding='utf-8')
 SCREENS = (ROOT / 'UI/SRPlanScreens.m').read_text(encoding='utf-8')
+PROJECTION = (ROOT / 'Core/SRRunProjection.m').read_text(encoding='utf-8')
 PANEL = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
 
 
@@ -146,32 +147,38 @@ class PlanScreenRowContracts(unittest.TestCase):
         self.assertIn('if (path.row == 4) {', select)
 
     def test_host_created_at_is_never_rendered_as_a_date(self):
-        local = SCREENS.split('static NSString *SRSourceLocalTime(', 1)[1].split('static NSString *SRSourceHostTimeText(', 1)[0]
-        host = SCREENS.split('static NSString *SRSourceHostTimeText(', 1)[1].split('static NSString *SRSourceTimeText(', 1)[0]
-        rows = SCREENS.split('static NSString *SRSourceTimeText(', 1)[1].split('static NSString *SRRunDescription(', 1)[0]
+        # B-2 moved the formatting into Core/SRRunProjection so the operations
+        # pages and the historical rows cannot drift apart. The semantics the
+        # test guards are unchanged; the source that must satisfy them moved.
+        local = SCREENS.split('static NSString *SRSourceTimeText(', 1)[1].split('static NSString *SRRunDescription(', 1)[0]
+        host = PROJECTION.split('+ (NSString *)unverifiedHostTimeText:', 1)[1].split('\n}', 1)[0]
         # The two plugin-local observations are Unix seconds and may be dated.
-        self.assertIn('HH:mm:ss', local)
-        self.assertIn('zzz', local)
-        self.assertIn('NSTimeZone.localTimeZone', local)
+        self.assertIn('"yyyy-MM-dd HH:mm:ss zzz"', PROJECTION)
+        self.assertIn('NSTimeZone.localTimeZone', PROJECTION)
         # The host value is printed as a raw number, never converted.
         self.assertNotIn('dateWithTimeIntervalSince1970', host)
         self.assertNotIn('NSDate', host)
         self.assertIn('单位/语义未验证', host)
         self.assertIn('未记录 / 语义未验证', host)
-        self.assertIn('if (row == 7) return SRSourceHostTimeText(value);', rows)
+        self.assertIn('if (row == 7) return [SRRunProjection hostTimeTextForEnvelope:envelope];', local)
 
     def test_missing_or_boolean_time_shows_an_explicit_unknown(self):
         helper = SCREENS.split('static NSString *SRSourceTimeText(', 1)[1].split('static NSString *SRRunDescription(', 1)[0]
-        local = SCREENS.split('static NSString *SRSourceLocalTime(', 1)[1].split('static NSString *SRSourceHostTimeText(', 1)[0]
-        host = SCREENS.split('static NSString *SRSourceHostTimeText(', 1)[1].split('static NSString *SRSourceTimeText(', 1)[0]
-        self.assertIn('CFBooleanGetTypeID', SCREENS)
-        self.assertIn('return @"未记录";', local)
-        self.assertIn('@"未记录 / 语义未验证"', host)
+        local = PROJECTION.split('static NSString *SRProjectionFormat', 1)[1].split('\n}', 1)[0]
+        host = PROJECTION.split('+ (NSString *)unverifiedHostTimeText:', 1)[1].split('\n}', 1)[0]
+        self.assertIn('CFBooleanGetTypeID', PROJECTION)
+        self.assertIn('return missing;', local)
+        self.assertIn('@"未记录"', PROJECTION)
+        self.assertIn('@"未记录 / 语义未验证"', PROJECTION)
         # Nothing fabricates a time from the current clock.
         self.assertNotIn('NSDate.date', helper)
+        self.assertNotIn('[NSDate date]', PROJECTION)
         self.assertNotIn('NSDate.date', local)
-        # The historical pages keep their own, untouched minute-precision format.
-        self.assertIn('formatter.dateFormat = @"yyyy-MM-dd HH:mm";', SCREENS)
+        self.assertNotIn('NSDate.date', host)
+        # The minute-precision format is still the one historical rows use, now
+        # declared once and reached through the projection.
+        self.assertIn('@"yyyy-MM-dd HH:mm"', PROJECTION)
+        self.assertIn('[SRRunProjection localDateTimeText:value]', SCREENS)
 
 
 if __name__ == '__main__':

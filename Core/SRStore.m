@@ -864,10 +864,21 @@ static NSArray *SRImagePayloadKeys(void) {
         SRRequire(account.length && plan.length && [self query:@"SELECT id FROM plans WHERE id=? AND account=?" values:@[plan, account]].count,
             @"Plan is unavailable for this account");
         NSArray *rules = [self query:@"SELECT r.*,(SELECT COUNT(*) FROM allocations a WHERE a.rule_id=r.id) AS targetCount FROM rules r WHERE r.plan_id=? ORDER BY r.position" values:@[plan]];
+        // Frozen target identifiers in their durable order, read once for the
+        // whole plan so a list cell never queries per row. A frozen plan stores
+        // identifiers only; names are never invented here.
+        NSMutableDictionary *targets = [NSMutableDictionary dictionary];
+        for (NSDictionary *allocation in [self query:@"SELECT rule_id,target FROM allocations WHERE plan_id=? ORDER BY rule_id,position" values:@[plan]]) {
+            NSMutableArray *list = targets[allocation[@"rule_id"]];
+            if (!list) { list = [NSMutableArray array]; targets[allocation[@"rule_id"]] = list; }
+            [list addObject:allocation[@"target"]];
+        }
         BOOL occupied = [self query:@"SELECT id FROM runs WHERE account=? AND state IN ('running','paused','awaiting_resume') LIMIT 1" values:@[account]].count > 0;
         NSMutableArray *cards = [NSMutableArray array]; BOOL precedingEnded = YES;
         for (NSDictionary *rule in rules) {
             NSMutableDictionary *card = [rule mutableCopy];
+            NSArray *identifiers = targets[rule[@"id"]];
+            card[@"targetIdentifiers"] = identifiers ? [identifiers copy] : @[];
             NSDictionary *latest = [self query:@"SELECT rowid AS creationOrder,id,rule_id,state,started_at,ended_at,minimum,maximum FROM runs WHERE rule_id=? ORDER BY rowid DESC LIMIT 1" values:@[rule[@"id"]]].firstObject;
             card[@"latestRun"] = latest ? [self runCard:latest] : (id)NSNull.null;
             card[@"accountOccupied"] = @(occupied);

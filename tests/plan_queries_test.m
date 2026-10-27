@@ -46,6 +46,11 @@ int main(void) {
         CHECK(![store ruleCardsForPlan:plan account:@"other" error:NULL]);
         CHECK([[store plan:plan account:@"account" error:NULL][@"snapshot"][@"payload"][@"text"] isEqual:@"secret message body"]);
         NSArray *cards = [store ruleCardsForPlan:plan account:@"account" error:NULL]; CHECK(cards.count == 3);
+        // Frozen target identifiers are returned per rule, in position order.
+        CHECK([cards[0][@"targetIdentifiers"] isEqual:(@[@"group-0-0@chatroom", @"group-0-1@chatroom"])]);
+        CHECK([cards[1][@"targetIdentifiers"] isEqual:(@[@"group-1-0@chatroom", @"group-1-1@chatroom"])]);
+        CHECK([cards[2][@"targetIdentifiers"] isEqual:@[@"group-2-0@chatroom"]]);
+        CHECK([cards[0][@"targetIdentifiers"] count] == [cards[0][@"targetCount"] unsignedIntegerValue]);
         CHECK([cards[0][@"initialUnlocked"] boolValue] && ![cards[1][@"initialUnlocked"] boolValue]);
         CHECK([cards[0][@"latestRun"] isEqual:NSNull.null] && ![cards[0][@"accountOccupied"] boolValue]);
         NSString *first = cards[0][@"id"], *second = cards[1][@"id"], *third = cards[2][@"id"];
@@ -94,7 +99,8 @@ int main(void) {
         }
         CHECK([store historyForRule:first account:@"account" limit:50 offset:0 error:NULL].count == 2);
         store = nil; CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
-        puts("PASS: account-scoped paged plan/rule/history/exception queries, real completion timestamps, replay isolation and read-only recovery views");
+        puts("PASS: account-scoped paged plan/rule/history/exception queries, frozen target identifiers in "
+             "position order, real completion timestamps, replay isolation and read-only recovery views");
     }
     return 0;
 }

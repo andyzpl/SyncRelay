@@ -52,13 +52,23 @@ class PhaseBUIContracts(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text(encoding="utf-8")
 
+    def home_only(self):
+        """The operations home implementation alone.
+
+        B-2 adds the group list and the run detail after it in the same file, so
+        a split on the home interface would also pick up those pages and their
+        commands. The home itself must still own no capture, plan or send call.
+        """
+        source = self.text("UI/SRPlanScreens.m")
+        return source.split("@implementation SROperationsHomeScreen", 1)[1].split("@end", 1)[0]
+
     def test_operations_home_is_a_projection_only_entry(self):
         header = self.text("UI/SRPlanScreens.h")
         source = self.text("UI/SRPlanScreens.m")
         self.assertIn("SRCreateOperationsHome", header)
         self.assertIn('self.title = @"SyncRelay 运营"', source)
         self.assertIn('打开本页不会开始捕获、创建计划或发送', source)
-        home = source.split("@interface SROperationsHomeScreen", 1)[1]
+        home = self.home_only()
         self.assertNotIn("armForAccount:", home)
         self.assertNotIn("startRule:", home)
         self.assertNotIn("confirmForCurrentAccount:", home)
@@ -68,7 +78,12 @@ class PhaseBUIContracts(unittest.TestCase):
         home = source.split("@interface SROperationsHomeScreen", 1)[1]
         self.assertIn("SRCreateCapturePreview", home)
         self.assertIn("SRCreatePlanList", home)
-        self.assertIn('section == 2 && path.row == 0', home)
+        # B-2 keeps the preview route on the content row and moves the full plan
+        # history to its own explicitly labelled row; the group entry above is
+        # bound to this content's plan instead.
+        self.assertIn('if (path.section == 1 && path.row == 0) {', home)
+        self.assertIn('@"全部内容计划"', home)
+        self.assertIn("SRCreateGroupList", home)
 
     def test_capsule_has_open_and_menu_actions_without_owning_a_window(self):
         header = self.text("UI/SRFloatingProgress.h")
@@ -136,16 +151,20 @@ class PhaseBUIContracts(unittest.TestCase):
             self.assertIn(guard, refresh)
 
     def test_home_settings_row_is_wired_to_a_real_settings_route(self):
-        """The settings row must reach a real settings controller, not only be
-        drawn. The route is an explicit callback, not a guessed selector."""
+        """The settings entry must reach a real settings controller, not only be
+        drawn. The route is an explicit callback, not a guessed selector.
+
+        B-2 follows 12.2 and puts it in the top bar (关闭 / SyncRelay 运营 / 设置)
+        instead of a body row; the callback contract is unchanged."""
         source = self.text("UI/SRPlanScreens.m")
         header = self.text("UI/SRPlanScreens.h")
         home = source.split("@interface SROperationsHomeScreen", 1)[1]
         # An explicit route callback on the home screen.
         self.assertIn("openSettings", header)
         self.assertIn("openSettings", home)
-        # The row is handled in the selection handler, not only painted.
-        self.assertIn("path.section == 2 && path.row == 1", home)
+        # The entry is handled by a real handler, not only painted.
+        self.assertIn("action:@selector(settingsPressed)", home)
+        self.assertIn("- (void)settingsPressed {", home)
         self.assertIn("self.openSettings()", home)
         # The route is a block, never a guessed selector or dynamic message.
         self.assertNotIn("performSelector", home)
@@ -371,8 +390,7 @@ class PhaseBUIContracts(unittest.TestCase):
 
     def test_home_open_never_arms_capture_or_sends(self):
         """Opening the home must not arm capture, sample, confirm or send."""
-        source = self.text("UI/SRPlanScreens.m")
-        home = source.split("@interface SROperationsHomeScreen", 1)[1]
+        home = self.home_only()
         for forbidden in ("armForAccount:", "startRule:", "confirmForCurrentAccount:",
                           "beginCapture", "togglePauseForCurrentAccount", "submitDelivery"):
             self.assertNotIn(forbidden, home)

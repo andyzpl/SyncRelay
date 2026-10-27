@@ -71,7 +71,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<NSDictionary *> *)plansForAccount:(NSString *)account limit:(NSUInteger)limit
                                              offset:(NSUInteger)offset error:(NSError **)error;
 - (nullable NSDictionary *)plan:(NSString *)plan account:(NSString *)account error:(NSError **)error;
-/* Run cards include creationOrder for ordering, never for displayed dates. */
+/* Run cards include creationOrder for ordering, never for displayed dates.
+ * Each card also carries `targetIdentifiers`: the frozen allocation targets in
+ * their durable position order, read once for the whole plan. A frozen plan
+ * stores identifiers only, so no display name is returned or guessed. */
 - (nullable NSArray<NSDictionary *> *)ruleCardsForPlan:(NSString *)plan account:(NSString *)account error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)historyForRule:(NSString *)rule account:(NSString *)account
                                             limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
