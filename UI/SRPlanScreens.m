@@ -1576,3 +1576,8 @@ UIViewController *SRCreateRunExceptions(SRStore *store, NSString *account, BOOL 
     screen.verifyAccount = verifyAccount; screen.identifier = run; screen.title = @"异常与未发项";
     return screen;
 }
+UIViewController *SRCreateReadOnlyText(NSString *title, NSString *body, BOOL (^verifyAccount)(void)) {
+    SRSourceTextScreen *viewer = [[SRSourceTextScreen alloc] init];
+    viewer.title = title; viewer.body = body; viewer.verifyAccount = verifyAccount;
+    return viewer;
+}

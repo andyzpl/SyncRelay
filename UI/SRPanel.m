@@ -11,6 +11,7 @@
 #import "Core/SRImageAssetStore.h"
 #import "Core/SRExecutionProgress.h"
 #import "Core/SRRunProjection.h"
+#import "SRLibraryScreens.h"
 #import "Adapter/SRWeChatImageSource.h"
 #import "Adapter/SRWeChatImageSendProbe.h"
 #import "Adapter/SRWeChatImageSendHost.h"
@@ -349,7 +350,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     if (section == 0) return 10;
     if (section == 1) return 4;
     if (section == 2) return 1;
-    if (section == 4) return 6;
+    if (section == 4) return 8;
     return [self.draft[@"rules"] count] + 3;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -458,6 +459,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             cell.detailTextLabel.text = self.singleImageSendEnabled ? @"选择一个目标群后发送一次" : @"先在更多设置中开启图片实验开关";
             cell.textLabel.textColor = self.singleImageSendEnabled ? UIColor.labelColor : UIColor.tertiaryLabelColor;
         }
+        /* B-3: read-only inventory pages. Both are projections; neither imports,
+         * edits, deletes, cleans up or dispatches anything. */
+        if (path.row == 6) { cell.textLabel.text = @"消息库"; cell.detailTextLabel.text = @"只读 · 条目与版本"; }
+        if (path.row == 7) { cell.textLabel.text = @"资源容量"; cell.detailTextLabel.text = @"只读 · 共用素材上限"; }
     }
     if (section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
     return cell;
@@ -872,6 +877,33 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; return NO;
     };
 }
+/* Read-only pages verify the account and nothing else: opening one must not
+ * stop the receiver or cancel a capture, which is what the plan verifier does. */
+- (BOOL (^)(void))readOnlyVerifier {
+    SRWeChatReader *reader = self.reader; NSString *account = self.account;
+    return ^BOOL { return [reader verifyAccount:account error:NULL]; };
+}
+/* One guard for both read-only entries: a repeated or mid-transition tap must
+ * not stack a second copy of the same page. */
+- (BOOL)canOpenReadOnlyPage {
+    if (![self checkAccount]) return NO;
+    UINavigationController *navigation = self.navigationController;
+    if (!navigation) { SRAlert(self, @"无法打开", @"当前页面没有导航栈，请重新进入设置。"); return NO; }
+    if (navigation.topViewController != self) return NO;
+    if (navigation.isBeingPresented || navigation.isBeingDismissed || navigation.transitionCoordinator) return NO;
+    if (navigation.presentedViewController) return NO;
+    return YES;
+}
+- (void)openLibrary {
+    if (![self canOpenReadOnlyPage]) return;
+    [self.navigationController pushViewController:SRCreateLibraryList(self.store, self.account,
+        [self readOnlyVerifier]) animated:YES];
+}
+- (void)openMediaResources {
+    if (![self canOpenReadOnlyPage]) return;
+    [self.navigationController pushViewController:SRCreateMediaResources(self.store, self.account,
+        [self readOnlyVerifier]) animated:YES];
+}
 - (void)showCapture {
     if (![self.capture.status[@"state"] isEqual:@"preview"]) { SRAlert(self, @"还没有源消息预览", @"请先手动开始等待，再由指定成员在母群发送一条文字并核对预览。"); return; }
     [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier], self.smallGroupSession) animated:YES];
@@ -1183,6 +1215,8 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (path.row == 3) [self beginSingleTextSend];
         if (path.row == 4) [self inspectImageSendContract];
         if (path.row == 5) [self beginSingleImageSend];
+        if (path.row == 6) [self openLibrary];
+        if (path.row == 7) [self openMediaResources];
     }
     if (section == 3) {
         if (path.row == 0) [self chooseExclusions];

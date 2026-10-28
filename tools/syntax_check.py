@@ -29,13 +29,14 @@ for arch in ('arm64', 'arm64e'):
                  'Adapter/SRWeChatImageSendHost.m', 'Adapter/SRWeChatImageMaterial.m',
                  'Adapter/SRSmallGroupSession.m', 'Core/SRExecutionProgress.m', 'UI/SRFloatingProgress.m',
                  'Core/SRRunProjection.m',
+                 'Core/SRMediaProjection.m', 'UI/SRLibraryScreens.m',
                  'Adapter/SRWeChatSettingsEntry.m', 'Core/SREntryPreferences.m', 'Core/SRRuntimeLog.m',
                  'UI/SRPanel.m', 'UI/SRPlanScreens.m', 'UI/SRSettingsFallback.m',
                  'Tweak/SRBootstrap.m', 'tests/store_test.m', 'tests/adapter_test.m',
                  'tests/relay_pipeline_test.m', 'tests/relay_coordinator_test.m', 'tests/automatic_progress_test.m', 'tests/small_group_session_test.m', 'tests/group_planner_test.m',
                  'tests/receive_test.m', 'tests/source_time_probe_test.m', 'tests/plan_queries_test.m', 'tests/send_probe_test.m',
                  'tests/single_text_send_adapter_test.m', 'tests/text_send_host_test.m',
-                 'tests/image_source_test.m', 'tests/image_asset_test.m', 'tests/library_test.m', 'tests/library_task_test.m', 'tests/media_budget_test.m', 'tests/image_send_probe_test.m', 'tests/image_send_host_test.m', 'tests/settings_entry_test.m', 'tests/runtime_log_test.m', 'tests/run_projection_test.m'):
+                 'tests/image_source_test.m', 'tests/image_asset_test.m', 'tests/library_test.m', 'tests/library_task_test.m', 'tests/media_budget_test.m', 'tests/image_send_probe_test.m', 'tests/image_send_host_test.m', 'tests/settings_entry_test.m', 'tests/runtime_log_test.m', 'tests/run_projection_test.m', 'tests/media_projection_test.m'):
         unit = index.parse(str(root / file), args=flags)
         diagnostics = [str(d) for d in unit.diagnostics]
         passed = not any(d.severity >= cindex.Diagnostic.Warning for d in unit.diagnostics)

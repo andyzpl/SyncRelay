@@ -12,6 +12,7 @@ SyncRelay_FILES += Adapter/SRWeChatImageSendHost.m Adapter/SRWeChatImageMaterial
 SyncRelay_FILES += Adapter/SRSmallGroupSession.m
 SyncRelay_FILES += Core/SRExecutionProgress.m UI/SRFloatingProgress.m
 SyncRelay_FILES += Core/SRRunProjection.m
+SyncRelay_FILES += Core/SRMediaProjection.m UI/SRLibraryScreens.m
 SyncRelay_FILES += Core/SROperationsState.c
 SyncRelay_FILES += Core/SRMediaQuota.c Core/SRMediaAlertState.m
 SyncRelay_FILES += Core/SRRelayCoordinator.m
