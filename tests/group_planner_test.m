@@ -103,7 +103,8 @@ int main(void) {
         // Exclusion and allocation use stable IDs even when every nickname is identical.
         NSMutableArray *pool = [groups(3100) mutableCopy];
         [pool addObject:original[@"sourceGroup"]]; [pool addObject:group(0)];
-        NSDictionary *existing = @{@"id": @"existing", @"name": @"Rule 2", @"targets": @[group(0), group(1)]};
+        NSDictionary *existing = @{@"id": @"existing", @"name": @"Rule 2", @"targets": @[group(0), group(1)],
+            @"origin": @"custom"};
         original[@"rules"] = @[existing]; original[@"excludedGroups"] = @[group(2), group(3)];
         NSDictionary *filtered = [SRGroupPlanner previewWithRows:pool draft:original recipe:recipe error:NULL];
         CHECK([filtered[@"availableCount"] isEqual:@3096] && [filtered[@"remainingCount"] isEqual:@96]);
@@ -134,9 +135,21 @@ int main(void) {
         CHECK(restored && ![restored[@"excludedGroups"] count] && targetIDs(restored).count == 2999);
         NSDictionary *released = [SRGroupPlanner previewWithRows:pool draft:restored
             recipe:@[@{@"size": @100, @"count": @1}] error:NULL];
+        // Under the top-up algorithm the first released group fills the single
+        // existing deficit first; only the remaining pool builds the new rule.
+        CHECK([released[@"topUpRuleCount"] isEqual:@1] && [released[@"topUpCount"] isEqual:@1]);
+        CHECK([released[@"topUpRules"][0][@"added"] isEqual:@1]);
+        NSDictionary *topped = nil;
+        for (NSDictionary *rule in released[@"configuration"][@"rules"])
+            if ([rule[@"id"] isEqual:released[@"topUpRules"][0][@"ruleID"]]) topped = rule;
+        CHECK(topped && [[topped[@"targets"] valueForKey:@"id"] containsObject:group(0)[@"id"]]);
+        NSDictionary *recreated = [released[@"configuration"][@"rules"] lastObject];
+        CHECK([recreated[@"targets"] count] == 100);
+        CHECK(![[recreated[@"targets"] valueForKey:@"id"] containsObject:group(0)[@"id"]]);
         CHECK([released[@"assignedCount"] isEqual:@100]);
-        CHECK([released[@"configuration"][@"rules"] lastObject][@"targets"][0] != nil);
-        CHECK([[[released[@"configuration"][@"rules"] lastObject][@"targets"] firstObject][@"id"] isEqual:group(0)[@"id"]]);
+        // Every released group is allocated exactly once across all rules:
+        // targetIDs also fails on a duplicate ID.
+        CHECK(targetIDs(released[@"configuration"]).count == 3100);
 
         NSMutableDictionary *legacy = draft(); [legacy removeObjectForKey:@"excludedGroups"];
         CHECK([SRConfiguration validateDraft:legacy error:NULL]);
@@ -166,6 +179,165 @@ int main(void) {
         NSDictionary *zeroFirst = [SRGroupPlanner previewWithRows:groups(250) draft:draft()
             recipe:@[@{@"size": @100, @"count": @0}, @{@"size": @200, @"count": @2}] error:NULL];
         CHECK([zeroFirst[@"generatedRuleCount"] isEqual:@2] && [zeroFirst[@"partialRuleCount"] isEqual:@1]);
+
+        // --- Automatic rules top up; custom rules never do. ---
+        NSMutableDictionary *topping = draft();
+        NSDictionary *autoRule = @{@"id": @"auto-1", @"name": @"Auto", @"targets": @[group(10), group(11), group(12)],
+            @"origin": @"auto", @"capacity": @100};
+        NSDictionary *customRule = @{@"id": @"custom-1", @"name": @"Mine", @"targets": @[group(20), group(21)],
+            @"origin": @"custom"};
+        topping[@"rules"] = @[autoRule, customRule];
+        NSDictionary *toppingBefore = [SRSourceMessage frozenJSON:topping];
+        // 30 groups minus the 5 already allocated = 25 eligible.
+        NSDictionary *topUp = [SRGroupPlanner previewWithRows:groups(30) draft:topping
+            recipe:@[@{@"size": @100, @"count": @1}] executionLimit:20 error:NULL];
+        CHECK(topUp && [topping isEqual:toppingBefore]);
+        // The automatic rule is filled to the caller's limit (20), not to 100 and
+        // not by a number baked into the planner.
+        CHECK([topUp[@"topUpCount"] isEqual:@17] && [topUp[@"topUpRuleCount"] isEqual:@1]);
+        CHECK([topUp[@"topUpRules"][0][@"added"] isEqual:@17]);
+        CHECK([topUp[@"topUpRules"][0][@"before"] isEqual:@3] && [topUp[@"topUpRules"][0][@"after"] isEqual:@20]);
+        CHECK([topUp[@"topUpRules"][0][@"target"] isEqual:@20] && [topUp[@"topUpRules"][0][@"capacity"] isEqual:@100]);
+        CHECK([topUp[@"configuration"][@"rules"][0][@"targets"] count] == 20);
+        CHECK([topUp[@"configuration"][@"rules"][0][@"origin"] isEqual:@"auto"]);
+        // The custom rule is byte-for-byte untouched.
+        CHECK([topUp[@"configuration"][@"rules"][1] isEqual:customRule]);
+        // Top-up consumes the pool first: 25 - 17 = 8 left for the request.
+        CHECK([topUp[@"assignedCount"] isEqual:@8] && [topUp[@"generatedRuleCount"] isEqual:@1]);
+        CHECK([topUp[@"remainingCount"] isEqual:@0]);
+        // With no clamp the same rule fills to its own spec.
+        NSDictionary *unclamped = [SRGroupPlanner previewWithRows:groups(300) draft:topping
+            recipe:@[@{@"size": @100, @"count": @1}] executionLimit:0 error:NULL];
+        CHECK([unclamped[@"topUpRules"][0][@"target"] isEqual:@100]);
+        CHECK([unclamped[@"topUpRules"][0][@"added"] isEqual:@97]);
+        CHECK([unclamped[@"configuration"][@"rules"][0][@"targets"] count] == 100);
+        // A rule already at the clamp is left alone and generation still runs.
+        NSMutableDictionary *atLimit = draft();
+        atLimit[@"rules"] = @[@{@"id": @"l", @"name": @"L", @"targets": groups(20),
+            @"origin": @"auto", @"capacity": @100}];
+        NSDictionary *capped = [SRGroupPlanner previewWithRows:groups(25) draft:atLimit
+            recipe:@[@{@"size": @100, @"count": @1}] executionLimit:20 error:NULL];
+        CHECK([capped[@"topUpCount"] isEqual:@0]);
+        CHECK([capped[@"configuration"][@"rules"][0][@"targets"] count] == 20);
+        CHECK([capped[@"generatedRuleCount"] isEqual:@1]);
+
+        // A zero-count recipe is a pure top-up: nothing is created, and any
+        // leftover stays unassigned instead of becoming a fragment rule.
+        NSDictionary *pureTopUp = [SRGroupPlanner previewWithRows:groups(30) draft:topping
+            recipe:@[@{@"size": @100, @"count": @0}] executionLimit:20 error:NULL];
+        CHECK(pureTopUp && [pureTopUp[@"generatedRuleCount"] isEqual:@0]);
+        CHECK([pureTopUp[@"topUpCount"] isEqual:@17] && [pureTopUp[@"topUpRuleCount"] isEqual:@1]);
+        CHECK([pureTopUp[@"assignedCount"] isEqual:@0] && [pureTopUp[@"remainingCount"] isEqual:@8]);
+        // Nothing to do at all is still refused: no rule created, no room to fill.
+        CHECK(![SRGroupPlanner previewWithRows:groups(30) draft:atLimit
+            recipe:@[@{@"size": @100, @"count": @0}] executionLimit:20 error:NULL]);
+
+        // Grouping spec: stored capacity wins; a legacy rule is inferred from its
+        // size, and an unreadable capacity falls back to the inference.
+        CHECK([SRGroupPlanner capacityForRule:autoRule] == 100);
+        CHECK([SRGroupPlanner capacityForRule:@{@"targets": @[], @"capacity": @200}] == 200);
+        CHECK([SRGroupPlanner capacityForRule:@{@"targets": @[group(0)], @"capacity": @20}] == 100);
+        CHECK([SRGroupPlanner capacityForRule:@{@"targets": @[group(0)]}] == 100);
+        CHECK([SRGroupPlanner capacityForRule:@{@"targets": groups(150)}] == 200);
+        CHECK([SRGroupPlanner capacityForRule:@{}] == 100);
+
+        // The hand-picked entry produces custom rules with no capacity, and a
+        // later automatic pass leaves them alone.
+        NSDictionary *manual = [SRGroupPlanner previewWithRows:groups(40) draft:draft()
+            recipe:@[@{@"size": @100, @"count": @1}] intent:SRGroupingIntentCustom
+            executionLimit:20 error:NULL];
+        CHECK([manual[@"configuration"][@"rules"][0][@"origin"] isEqual:@"custom"]);
+        CHECK(manual[@"configuration"][@"rules"][0][@"capacity"] == nil);
+        CHECK([manual[@"topUpCount"] isEqual:@0]);
+        NSDictionary *manualAgain = [SRGroupPlanner previewWithRows:groups(45) draft:manual[@"configuration"]
+            recipe:@[@{@"size": @100, @"count": @1}] executionLimit:20 error:NULL];
+        CHECK([manualAgain[@"topUpCount"] isEqual:@0]);
+        CHECK([manualAgain[@"configuration"][@"rules"][0][@"targets"] count] == 40);
+        CHECK([manualAgain[@"generatedRuleCount"] isEqual:@1]);
+
+        // --- The two intents are kept apart in Core. ---
+        // An existing automatic rule with a deficit must not swallow the rows a
+        // hand-picked request reserved for itself.
+        NSMutableDictionary *picking = draft();
+        NSDictionary *autoDeficit = @{@"id": @"auto17", @"name": @"Auto17", @"targets": groups(17),
+            @"origin": @"auto", @"capacity": @100};
+        picking[@"rules"] = @[autoDeficit];
+        NSDictionary *pickingBefore = [SRSourceMessage frozenJSON:picking];
+        NSArray *pickedTwo = @[group(200), group(201)];
+        NSDictionary *picked = [SRGroupPlanner previewWithRows:pickedTwo draft:picking
+            recipe:@[@{@"size": @100, @"count": @1}] intent:SRGroupingIntentCustom
+            executionLimit:20 error:NULL];
+        CHECK(picked && [picking isEqual:pickingBefore]);
+        // The old automatic rule is byte-for-byte unchanged and nothing was topped up.
+        CHECK([picked[@"configuration"][@"rules"][0] isEqual:autoDeficit]);
+        CHECK([picked[@"topUpCount"] isEqual:@0] && [picked[@"topUpRuleCount"] isEqual:@0]);
+        CHECK([picked[@"topUpRules"] count] == 0);
+        // The new custom rule holds exactly the two picked groups, in order.
+        CHECK([picked[@"configuration"][@"rules"] count] == 2);
+        NSDictionary *pickedRule = picked[@"configuration"][@"rules"][1];
+        CHECK([pickedRule[@"origin"] isEqual:@"custom"] && pickedRule[@"capacity"] == nil);
+        CHECK([[pickedRule[@"targets"] valueForKey:@"id"]
+            isEqual:(@[group(200)[@"id"], group(201)[@"id"]])]);
+        // Picking more than the old deficit still keeps every picked group.
+        NSArray *pickedFive = @[group(300), group(301), group(302), group(303), group(304)];
+        NSDictionary *pickedMore = [SRGroupPlanner previewWithRows:pickedFive draft:picking
+            recipe:@[@{@"size": @100, @"count": @1}] intent:SRGroupingIntentCustom
+            executionLimit:20 error:NULL];
+        CHECK(pickedMore && [pickedMore[@"topUpCount"] isEqual:@0]);
+        CHECK([pickedMore[@"configuration"][@"rules"][0] isEqual:autoDeficit]);
+        CHECK([pickedMore[@"configuration"][@"rules"][1][@"targets"] count] == 5);
+        CHECK([[pickedMore[@"configuration"][@"rules"][1][@"targets"] valueForKey:@"id"]
+            isEqual:[pickedFive valueForKey:@"id"]]);
+        // The same draft under the automatic intent does top the rule up, so the
+        // difference above comes from the intent, not from the data.
+        NSDictionary *automaticSame = [SRGroupPlanner previewWithRows:pickedFive draft:picking
+            recipe:@[@{@"size": @100, @"count": @0}] intent:SRGroupingIntentAutomatic
+            executionLimit:20 error:NULL];
+        CHECK([automaticSame[@"topUpCount"] isEqual:@3]);
+        CHECK([automaticSame[@"generatedRuleCount"] isEqual:@0]);
+        CHECK([automaticSame[@"configuration"][@"rules"][0][@"targets"] count] == 20);
+
+        // Provenance is validated: unknown origin, non-spec capacity and a
+        // custom rule that claims a capacity are all refused.
+        NSMutableDictionary *bad = draft();
+        bad[@"rules"] = @[@{@"id": @"r", @"name": @"R", @"targets": @[group(0)], @"origin": @"mystery"}];
+        CHECK(![SRConfiguration validateDraft:bad error:NULL]);
+        bad[@"rules"] = @[@{@"id": @"r", @"name": @"R", @"targets": @[group(0)], @"capacity": @50}];
+        CHECK(![SRConfiguration validateDraft:bad error:NULL]);
+        bad[@"rules"] = @[@{@"id": @"r", @"name": @"R", @"targets": @[group(0)], @"capacity": @YES}];
+        CHECK(![SRConfiguration validateDraft:bad error:NULL]);
+        bad[@"rules"] = @[@{@"id": @"r", @"name": @"R", @"targets": @[group(0)], @"origin": @"custom", @"capacity": @100}];
+        CHECK(![SRConfiguration validateDraft:bad error:NULL]);
+        bad[@"rules"] = @[@{@"id": @"r", @"name": @"R", @"targets": @[group(0)], @"origin": @"custom"}];
+        CHECK([SRConfiguration validateDraft:bad error:NULL]);
+        bad[@"rules"] = @[@{@"id": @"r", @"name": @"R", @"targets": @[group(0)], @"origin": @"auto", @"capacity": @200}];
+        CHECK([SRConfiguration validateDraft:bad error:NULL]);
+        before = [SRSourceMessage frozenJSON:original];
+        // A hand-picked request that creates no rule has nothing to do: it is
+        // refused instead of silently turning into a top-up.
+        CHECK(![SRGroupPlanner previewWithRows:groups(5) draft:original
+            recipe:@[@{@"size": @100, @"count": @0}] intent:SRGroupingIntentCustom
+            executionLimit:20 error:NULL]);
+        CHECK([original isEqual:before]);
+
+        // An explicit request against an empty pool is a valid zero result, not
+        // an error: the caller shows "no change" and keeps the draft. Only a
+        // pure top-up with nothing to fill is refused.
+        NSDictionary *emptyPool = [SRGroupPlanner previewWithRows:@[] draft:original
+            recipe:@[@{@"size": @100, @"count": @1}] intent:SRGroupingIntentAutomatic
+            executionLimit:20 error:NULL];
+        CHECK(emptyPool && [emptyPool[@"generatedRuleCount"] isEqual:@0]);
+        CHECK([emptyPool[@"assignedCount"] isEqual:@0] && [emptyPool[@"remainingCount"] isEqual:@0]);
+        CHECK([emptyPool[@"topUpCount"] isEqual:@0]);
+        NSDictionary *motherOnly = [SRGroupPlanner previewWithRows:@[original[@"sourceGroup"]]
+            draft:original recipe:@[@{@"size": @100, @"count": @1}] intent:SRGroupingIntentAutomatic
+            executionLimit:20 error:NULL];
+        CHECK(motherOnly && [motherOnly[@"assignedCount"] isEqual:@0]);
+        CHECK([motherOnly[@"generatedRuleCount"] isEqual:@0]);
+        CHECK(![SRGroupPlanner previewWithRows:@[] draft:original
+            recipe:@[@{@"size": @100, @"count": @0}] intent:SRGroupingIntentAutomatic
+            executionLimit:20 error:NULL]);
+        CHECK([original isEqual:before]);
 
         // Saving/generated rules alone must create no plan, run or delivery.
         NSString *directory = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
@@ -197,7 +369,8 @@ int main(void) {
         CHECK(scalar(database, "SELECT COUNT(*) FROM runs") == 2);
         CHECK(sqlite3_close(database) == SQLITE_OK); store = nil;
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
-        puts("PASS: automatic 100/200 grouping, partial shortages, shared conditions, ID exclusions, 12345-row pool and no automatic starts");
+        puts("PASS: automatic 100/200 grouping with automatic-only top-up, custom rules left untouched, "
+             "partial shortages, shared conditions, ID exclusions, 12345-row pool and no automatic starts");
     }
     return 0;
 }

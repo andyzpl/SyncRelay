@@ -1,5 +1,6 @@
 #import "SRConfiguration.h"
 #import "SRPacing.h"
+#import <CoreFoundation/CoreFoundation.h>
 
 @implementation SRConfiguration
 + (NSMutableDictionary *)emptyDraft {
@@ -69,6 +70,19 @@
                 ![rule[@"id"] length] || [ruleIDs containsObject:rule[@"id"]] ||
                 ![rule[@"name"] isKindOfClass:NSString.class] || ![rule[@"name"] length] ||
                 ![rule[@"targets"] isKindOfClass:NSArray.class] || ![rule[@"targets"] count]) @throw @"rule";
+            // Optional grouping provenance. Absent means a rule saved before this
+            // field existed; the planner treats such a rule as automatic. A
+            // custom rule never takes part in a top-up, so it may not claim a
+            // capacity. The capacity is the grouping spec (100/200) only.
+            id origin = rule[@"origin"], capacity = rule[@"capacity"];
+            if (origin && (![origin isKindOfClass:NSString.class] ||
+                ![@[@"auto", @"custom"] containsObject:origin])) @throw @"rule origin";
+            if (capacity) {
+                if (![capacity isKindOfClass:NSNumber.class] ||
+                    CFGetTypeID((__bridge CFTypeRef)capacity) == CFBooleanGetTypeID() ||
+                    ![@[@100, @200] containsObject:capacity]) @throw @"rule capacity";
+                if ([origin isEqual:@"custom"]) @throw @"custom rule with capacity";
+            }
             [ruleIDs addObject:rule[@"id"]];
             for (id row in rule[@"targets"]) {
                 if (![self row:row group:YES] || [row[@"id"] isEqual:source[@"id"]] ||

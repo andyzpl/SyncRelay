@@ -45,8 +45,34 @@ static void SRGroupingError(NSError **error, id reason) {
         return [SRSourceMessage frozenJSON:candidate];
     } @catch (id reason) { SRGroupingError(error, reason); return nil; }
 }
++ (NSUInteger)capacityForRule:(NSDictionary *)rule {
+    id capacity = [rule isKindOfClass:NSDictionary.class] ? rule[@"capacity"] : nil;
+    if ([capacity isKindOfClass:NSNumber.class] && ([capacity isEqual:@100] || [capacity isEqual:@200]))
+        return [capacity unsignedIntegerValue];
+    // A rule saved before the field existed came from the same 100/200 batches,
+    // so more than 100 targets can only be the residue of a 200 batch.
+    NSUInteger count = [rule[@"targets"] isKindOfClass:NSArray.class] ? [rule[@"targets"] count] : 0;
+    return count > 100 ? 200 : 100;
+}
+
 + (NSDictionary *)previewWithRows:(NSArray<NSDictionary *> *)rows draft:(NSDictionary *)draft
                           recipe:(NSArray<NSDictionary *> *)recipe error:(NSError **)error {
+    // No executable-range clamp: pure grouping. The app passes its real limit.
+    return [self previewWithRows:rows draft:draft recipe:recipe intent:SRGroupingIntentAutomatic
+        executionLimit:0 error:error];
+}
+
++ (NSDictionary *)previewWithRows:(NSArray<NSDictionary *> *)rows draft:(NSDictionary *)draft
+                          recipe:(NSArray<NSDictionary *> *)recipe
+                  executionLimit:(NSUInteger)executionLimit error:(NSError **)error {
+    return [self previewWithRows:rows draft:draft recipe:recipe intent:SRGroupingIntentAutomatic
+        executionLimit:executionLimit error:error];
+}
+
++ (NSDictionary *)previewWithRows:(NSArray<NSDictionary *> *)rows draft:(NSDictionary *)draft
+                          recipe:(NSArray<NSDictionary *> *)recipe
+                          intent:(SRGroupingIntent)intent
+                  executionLimit:(NSUInteger)executionLimit error:(NSError **)error {
     @try {
         NSDictionary *snapshot = [SRSourceMessage frozenJSON:draft];
         if (![SRConfiguration validateDraft:snapshot error:NULL] || ![snapshot[@"sourceGroup"] count])
@@ -62,18 +88,48 @@ static void SRGroupingError(NSError **error, id reason) {
             if (count > (NSUIntegerMax - requested) / size) @throw @"The requested total is too large";
             requested += size * count; requestedRules += count;
         }
-        if (!requested) @throw @"Request at least one rule";
+        // A zero-count recipe is allowed: it means "top up only, create nothing".
+        // Whether there is any work at all is decided after the top-up pass.
         for (id row in rows) if (!SRGroupRow(row)) @throw @"The group list contains an invalid stable group ID or name";
         NSMutableSet *excluded = [NSMutableSet setWithObject:snapshot[@"sourceGroup"][@"id"]];
         for (NSDictionary *row in snapshot[@"excludedGroups"]) [excluded addObject:row[@"id"]];
         for (NSDictionary *rule in snapshot[@"rules"]) [excluded addObjectsFromArray:[rule[@"targets"] valueForKey:@"id"]];
         SRSelection *selection = [[SRSelection alloc] initWithRows:rows excludedIDs:excluded selectedIDs:NSSet.set];
         NSArray *eligible = selection.rows;
-        NSMutableArray *rules = [snapshot[@"rules"] mutableCopy], *batches = [NSMutableArray array];
-        NSMutableSet *names = [NSMutableSet setWithArray:[rules valueForKey:@"name"]];
-        NSUInteger cursor = 0, generated = 0, partial = 0, nextNumber = rules.count + 1;
+        NSMutableArray *rules = [NSMutableArray array], *topUps = [NSMutableArray array], *batches = [NSMutableArray array];
+        NSMutableSet *names = [NSMutableSet setWithArray:[snapshot[@"rules"] valueForKey:@"name"]];
+        NSUInteger cursor = 0;
+        // Top up automatic rules first, in allocation order. A custom rule is a
+        // deliberate composition and is never filled; a rule already at or above
+        // its target is left untouched. The fill target is the rule's own spec,
+        // clamped by the caller's executable range, so nothing here assumes a
+        // particular limit value. A hand-picked request never tops anything up:
+        // the rows the user selected are reserved for the rules it creates.
+        BOOL topUp = (intent == SRGroupingIntentAutomatic);
+        for (NSDictionary *rule in snapshot[@"rules"]) {
+            NSMutableDictionary *updated = [rule mutableCopy];
+            if (topUp && ![rule[@"origin"] isEqual:@"custom"]) {
+                NSUInteger capacity = [self capacityForRule:rule];
+                NSUInteger target = executionLimit ? MIN(capacity, executionLimit) : capacity;
+                NSUInteger current = [rule[@"targets"] count];
+                if (current < target && cursor < eligible.count) {
+                    NSUInteger added = MIN(target - current, eligible.count - cursor);
+                    NSMutableArray *targets = [rule[@"targets"] mutableCopy];
+                    [targets addObjectsFromArray:[eligible subarrayWithRange:NSMakeRange(cursor, added)]];
+                    updated[@"targets"] = targets;
+                    [topUps addObject:@{@"ruleID": rule[@"id"], @"name": rule[@"name"], @"added": @(added),
+                        @"before": @(current), @"after": @(current + added),
+                        @"capacity": @(capacity), @"target": @(target)}];
+                    cursor += added;
+                }
+                updated[@"origin"] = @"auto"; updated[@"capacity"] = @(capacity);
+            }
+            [rules addObject:updated];
+        }
+        NSUInteger generatedFrom = cursor, generated = 0, partial = 0, nextNumber = rules.count + 1;
         for (NSDictionary *entry in recipe) {
             NSUInteger size = [entry[@"size"] unsignedIntegerValue], count = [entry[@"count"] unsignedIntegerValue];
+            BOOL custom = (intent == SRGroupingIntentCustom);
             NSUInteger batchStart = cursor, batchRules = 0;
             // Stop at available rows even when the requested rule count is very large.
             for (NSUInteger i = 0; i < count && cursor < eligible.count; i++) {
@@ -82,8 +138,12 @@ static void SRGroupingError(NSError **error, id reason) {
                 do { name = [NSString stringWithFormat:@"Rule %lu", (unsigned long)nextNumber++]; }
                 while ([names containsObject:name]);
                 [names addObject:name];
-                [rules addObject:@{@"id": NSUUID.UUID.UUIDString, @"name": name,
-                    @"targets": [eligible subarrayWithRange:NSMakeRange(cursor, length)]}];
+                NSMutableDictionary *created = [@{@"id": NSUUID.UUID.UUIDString, @"name": name,
+                    @"targets": [eligible subarrayWithRange:NSMakeRange(cursor, length)],
+                    @"origin": custom ? @"custom" : @"auto"} mutableCopy];
+                // A custom rule carries no capacity: it is never topped up.
+                if (!custom) created[@"capacity"] = @(size);
+                [rules addObject:created];
                 cursor += length; generated++; batchRules++;
                 if (length < size) partial++;
             }
@@ -92,11 +152,18 @@ static void SRGroupingError(NSError **error, id reason) {
         }
         NSMutableDictionary *candidate = [snapshot mutableCopy]; candidate[@"rules"] = rules;
         if (![SRConfiguration validateDraft:candidate error:NULL]) @throw @"Generated configuration is invalid; previous rules are unchanged";
+        // Two different "nothing happened" cases. An explicit request that finds
+        // no available row is a legitimate zero result: the caller shows "no
+        // change" and keeps the draft. A pure top-up with nothing to fill asked
+        // for work that cannot be done, so it is refused.
+        if (!generated && !topUps.count && !requested)
+            @throw @"Nothing to assign: no automatic rule is below its target";
         return [SRSourceMessage frozenJSON:@{@"configuration": candidate, @"batches": batches,
+            @"topUpRules": topUps, @"topUpCount": @(generatedFrom), @"topUpRuleCount": @(topUps.count),
             @"requestedCount": @(requested), @"requestedRuleCount": @(requestedRules),
-            @"availableCount": @(eligible.count), @"assignedCount": @(cursor),
+            @"availableCount": @(eligible.count), @"assignedCount": @(cursor - generatedFrom),
             @"generatedRuleCount": @(generated), @"partialRuleCount": @(partial),
-            @"shortfallCount": @(requested - cursor), @"remainingCount": @(eligible.count - cursor)}];
+            @"shortfallCount": @(requested - (cursor - generatedFrom)), @"remainingCount": @(eligible.count - cursor)}];
     } @catch (id reason) { SRGroupingError(error, reason); return nil; }
 }
 

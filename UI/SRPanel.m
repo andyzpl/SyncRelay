@@ -10,6 +10,7 @@
 #import "Core/SRVersion.h"
 #import "Core/SRImageAssetStore.h"
 #import "Core/SRExecutionProgress.h"
+#import "Core/SRRunProjection.h"
 #import "Adapter/SRWeChatImageSource.h"
 #import "Adapter/SRWeChatImageSendProbe.h"
 #import "Adapter/SRWeChatImageSendHost.h"
@@ -427,9 +428,19 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     } else if (section == 3) {
         NSArray *rules = self.draft[@"rules"];
         if (path.row == 0) { cell.textLabel.text = @"排除群聊"; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个", (unsigned long)[self.draft[@"excludedGroups"] count]]; }
-        else if (path.row == 1) { cell.textLabel.text = @"自动分组"; cell.detailTextLabel.text = @"默认 100 群/条"; }
-        else if (path.row == 2) cell.textLabel.text = @"手动选择群聊";
-        else { NSDictionary *rule = rules[path.row - 3]; cell.textLabel.text = rule[@"name"]; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群", (unsigned long)[rule[@"targets"] count]]; }
+        else if (path.row == 1) { cell.textLabel.text = @"自动分组"; cell.detailTextLabel.text = @"默认 100 群/条 · 新群自动补位"; }
+        else if (path.row == 2) { cell.textLabel.text = @"手动选择群聊"; cell.detailTextLabel.text = @"生成自定义分组，不参与补位"; }
+        else {
+            NSDictionary *rule = rules[path.row - 3];
+            cell.textLabel.text = rule[@"name"];
+            NSUInteger count = [rule[@"targets"] count];
+            /* The cell shows the grouping spec, never the executable range:
+             * that range is a separate, temporary gate. */
+            cell.detailTextLabel.text = [rule[@"origin"] isEqual:@"custom"] ?
+                [NSString stringWithFormat:@"%lu 个群 · 自定义，不参与补位", (unsigned long)count] :
+                [NSString stringWithFormat:@"%lu 个群 · 自动，补位到 %lu", (unsigned long)count,
+                    (unsigned long)[SRGroupPlanner capacityForRule:rule]];
+        }
     } else {
         NSString *state = self.capture.status[@"state"];
         if (path.row == 0) { cell.textLabel.text = [state isEqual:@"waiting"] ? @"取消等待" : @"等待源消息"; cell.detailTextLabel.text = [state isEqual:@"waiting"] ? @"等待中" : @"手动开始"; }
@@ -557,10 +568,11 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     for (NSDictionary *rule in self.draft[@"rules"]) [excluded addObjectsFromArray:[rule[@"targets"] valueForKey:@"id"]];
     __weak typeof(self) weakSelf = self;
     [self picker:@"选择目标群 · 自动拆分" rows:groups selected:@[] excluded:excluded multiple:YES excluding:NO completion:^(NSArray *chosen) {
-        // Manual selection follows the conservative product default: every rule is capped at 100 groups.
+        // A hand-picked pool stays a deliberate composition: every rule it
+        // creates is marked custom, so a later top-up never adds groups to it.
         NSUInteger size = 100;
         NSUInteger count = chosen.count / size + (chosen.count % size ? 1 : 0);
-        [weakSelf previewGroups:chosen recipe:@[@{@"size": @(size), @"count": @(count)}]];
+        [weakSelf previewGroups:chosen recipe:@[@{@"size": @(size), @"count": @(count)}] intent:SRGroupingIntentCustom];
     }];
 }
 - (BOOL)checkDraft:(NSDictionary *)snapshot account:(NSString *)account {
@@ -605,7 +617,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }
     NSError *error = nil; NSArray *groups = [self.reader groups:&error];
     if (!groups) { SRAlert(self, @"无法读取群", error.localizedDescription); return; }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自动分配规则" message:@"推荐每条 100 个群；200 群保留为高级规格。只填写各自生成条数，先分配 100 群规则，再分配 200 群规则；0 或留空表示不生成。群不足按实际数量生成，最后一条可不足额。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自动分配规则" message:@"推荐每条 100 个群；200 群保留为高级规格。只填写各自生成条数，先分配 100 群规则，再分配 200 群规则；0 或留空表示不生成。群不足按实际数量生成，最后一条可不足额。两项都为 0 时只把新群补进未满的自动分组，不新建规则。" preferredStyle:UIAlertControllerStyleAlert];
     for (NSNumber *size in @[@100, @200]) [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.keyboardType = UIKeyboardTypeNumberPad; field.text = size.unsignedIntegerValue == 100 ? @"10" : @"0";
         field.placeholder = [NSString stringWithFormat:@"每条 %@ 个群：生成多少条规则", size]; field.accessibilityLabel = field.placeholder;
@@ -619,30 +631,33 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [alert addAction:[UIAlertAction actionWithTitle:@"查看分配预览" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         if (![self checkDraft:snapshot account:account]) return;
         NSNumber *hundreds = SRRuleCount(weakAlert.textFields[0].text), *twoHundreds = SRRuleCount(weakAlert.textFields[1].text);
-        if (!hundreds || !twoHundreds || (!hundreds.unsignedIntegerValue && !twoHundreds.unsignedIntegerValue)) {
-            SRAlert(self, @"条数无效", @"请输入非负整数，并至少生成一条规则。"); return;
+        if (!hundreds || !twoHundreds) {
+            SRAlert(self, @"条数无效", @"请输入非负整数。两项都为 0 表示只补位、不新建规则。"); return;
         }
-        [self previewGroups:groups recipe:@[@{@"size": @100, @"count": hundreds}, @{@"size": @200, @"count": twoHundreds}]];
+        [self previewGroups:groups recipe:@[@{@"size": @100, @"count": hundreds}, @{@"size": @200, @"count": twoHundreds}] intent:SRGroupingIntentAutomatic];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
-- (void)previewGroups:(NSArray *)groups recipe:(NSArray *)recipe {
+- (void)previewGroups:(NSArray *)groups recipe:(NSArray *)recipe intent:(SRGroupingIntent)intent {
     if (![self checkAccount]) return;
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
     NSError *error = nil;
-    NSDictionary *preview = [SRGroupPlanner previewWithRows:groups draft:snapshot recipe:recipe error:&error];
+    NSDictionary *preview = [SRGroupPlanner previewWithRows:groups draft:snapshot recipe:recipe
+        intent:intent executionLimit:SRRunProjectionTargetLimit error:&error];
     if (!preview) { SRAlert(self, @"无法生成分组", error.localizedDescription); return; }
-    if (![preview[@"generatedRuleCount"] unsignedIntegerValue]) {
-        SRAlert(self, @"没有新增规则", [NSString stringWithFormat:@"本次要求 %@ 个群，实际可分配 0 个。请检查排除项和已有规则；不生成空规则，原有设置不变。", preview[@"requestedCount"]]); return;
+    if (![preview[@"generatedRuleCount"] unsignedIntegerValue] && ![preview[@"topUpCount"] unsignedIntegerValue]) {
+        SRAlert(self, @"没有变更", [NSString stringWithFormat:@"本次要求 %@ 个群，实际可分配 0 个，也没有可补位的分组。请检查排除项和已有规则；原有设置不变。", preview[@"requestedCount"]]); return;
     }
     NSMutableArray *typeNames = [NSMutableArray array];
     for (NSString *type in snapshot[@"types"]) [typeNames addObject:[type isEqual:@"text"] ? @"文字" : @"图片"];
     NSMutableString *message = [NSMutableString stringWithFormat:@"统一条件\n母群：%@\n%@\n发送者：%lu 人（按 wxid）\n类型：%@\n间隔：%@–%@ 秒\n\n",
         snapshot[@"sourceGroup"][@"name"], snapshot[@"sourceGroup"][@"id"], (unsigned long)[snapshot[@"senders"] count], [typeNames componentsJoinedByString:@"、"], snapshot[@"minimum"], snapshot[@"maximum"]];
+    for (NSDictionary *topUp in preview[@"topUpRules"])
+        [message appendFormat:@"补位：%@ %@ → %@ 群（上限 %@）\n", topUp[@"name"], topUp[@"before"], topUp[@"after"], topUp[@"target"]];
     for (NSDictionary *batch in preview[@"batches"]) if ([batch[@"count"] unsignedIntegerValue])
         [message appendFormat:@"%@ 群/条 × %@ 条 → 实际 %@ 条、%@ 群\n", batch[@"size"], batch[@"count"], batch[@"generatedCount"], batch[@"assignedCount"]];
-    [message appendFormat:@"\n本次可分配 %@ 群，新增 %@ 条规则、%@ 群。\n不足 %@ 群，末尾不足额 %@ 条；剩余未分配 %@ 群。\n\n母群、排除群、已分配群不会重复选入。群列表仅以当前接口返回为准。\n这里只生成规则，需点“保存”保留，不发送；后续每条仍需手动开始，不会自动接着执行。",
-        preview[@"availableCount"], preview[@"generatedRuleCount"], preview[@"assignedCount"], preview[@"shortfallCount"], preview[@"partialRuleCount"], preview[@"remainingCount"]];
+    [message appendFormat:@"\n本次可分配 %@ 群：补位 %@ 群，新建 %@ 条规则、%@ 群。\n不足 %@ 群，末尾不足额 %@ 条；剩余未分配 %@ 群。\n\n母群、排除群、已分配群不会重复选入；标记为自定义的分组不参与补位。群列表仅以当前接口返回为准。\n这里只生成规则，需点“保存”保留，不发送；后续每条仍需手动开始，不会自动接着执行。",
+        preview[@"availableCount"], preview[@"topUpCount"], preview[@"generatedRuleCount"], preview[@"assignedCount"], preview[@"shortfallCount"], preview[@"partialRuleCount"], preview[@"remainingCount"]];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自动分组预览" message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确认生成（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -674,14 +689,46 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
+- (void)setRuleIndex:(NSUInteger)index custom:(BOOL)custom {
+    if (![self checkAccount]) return;
+    NSMutableArray *rules = [self.draft[@"rules"] mutableCopy];
+    if (index >= rules.count) return;
+    NSMutableDictionary *rule = [rules[index] mutableCopy];
+    if (custom) {
+        // A custom rule is never topped up, so it must not claim a capacity.
+        rule[@"origin"] = @"custom"; [rule removeObjectForKey:@"capacity"];
+    } else {
+        rule[@"origin"] = @"auto";
+        rule[@"capacity"] = @([SRGroupPlanner capacityForRule:rule]);
+    }
+    rules[index] = rule;
+    NSMutableDictionary *candidate = [self.draft mutableCopy]; candidate[@"rules"] = rules;
+    NSError *error = nil;
+    if (![SRConfiguration validateDraft:candidate error:&error]) {
+        SRAlert(self, @"无法修改分组类型", error.localizedDescription); return;
+    }
+    self.draft = candidate; [self changed];
+}
 - (void)showRule:(NSUInteger)index {
     NSDictionary *rule = self.draft[@"rules"][index];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:rule[@"name"] message:@"共用本计划的母群、发送者 wxid、类型和间隔，不需要单独配置。此分组尚未执行；移除后，其中的群可重新分配。" preferredStyle:UIAlertControllerStyleAlert];
+    BOOL custom = [rule[@"origin"] isEqual:@"custom"];
+    NSString *provenance = custom ? @"当前为自定义分组：新群不会自动补进来。"
+        : [NSString stringWithFormat:@"自动分组：新群会补到 %lu 个；可执行范围更小时按较小值。",
+            (unsigned long)[SRGroupPlanner capacityForRule:rule]];
+    NSString *message = [NSString stringWithFormat:
+        @"共用本计划的母群、发送者 wxid、类型和间隔，不需要单独配置。此分组尚未执行；移除后，其中的群可重新分配。\n\n%@",
+        provenance];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:rule[@"name"]
+        message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"查看目标" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self picker:rule[@"name"] rows:rule[@"targets"] selected:@[] excluded:NSSet.set multiple:NO excluding:NO completion:^(NSArray *chosen) {
             SRAlert(self, chosen[0][@"name"], chosen[0][@"id"]);
         }];
     }]];
+    [alert addAction:[UIAlertAction actionWithTitle:(custom ? @"改为自动分组（参与补位）" : @"改为自定义分组（不参与补位）")
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self setRuleIndex:index custom:!custom];
+        }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"移除分组" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
         if (![self checkAccount]) return;
         NSMutableArray *rules = [self.draft[@"rules"] mutableCopy]; [rules removeObjectAtIndex:index];
