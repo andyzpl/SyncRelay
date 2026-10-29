@@ -102,6 +102,42 @@ static void SRPrimitiveStage(const char *stage) {
     fflush(stderr);
 }
 
+/* Return-value handshake experiment.
+ *
+ * Production receives a Class from a block: the block returns it and the caller
+ * stores it in a strong local. These four dynamic classes measure that path and
+ * three controls. Each has its own counter and is created inline, so no helper
+ * returns a Class. A nonzero ready count marks that group's premise invalid; it
+ * is recorded, the run continues, and the other groups still report. */
+static NSUInteger gRetCInitialize = 0;
+static NSUInteger gRetAInitialize = 0;
+static NSUInteger gRetDInitialize = 0;
+static NSUInteger gRetBInitialize = 0;
+
+static Class gRetCClass = Nil;
+static Class gRetAClass = Nil;
+static Class gRetDClass = Nil;
+static Class gRetBClass = Nil;
+
+/* Counts +initialize per class. Compares class pointers only. */
+static void SRReturnInitialize(id self, SEL command) {
+    if (self == (id)gRetCClass) gRetCInitialize++;
+    else if (self == (id)gRetAClass) gRetAInitialize++;
+    else if (self == (id)gRetDClass) gRetDInitialize++;
+    else if (self == (id)gRetBClass) gRetBInitialize++;
+    (void)command;
+}
+
+static void SRReturnStage(const char *stage) {
+    fprintf(stderr, "[probe-return] %-22s C=%lu A=%lu D=%lu B=%lu\n",
+            stage,
+            (unsigned long)gRetCInitialize,
+            (unsigned long)gRetAInitialize,
+            (unsigned long)gRetDInitialize,
+            (unsigned long)gRetBInitialize);
+    fflush(stderr);
+}
+
 
 /* Every stand-in counts its own invocations: the probe must never call them. */
 @interface ProbeMenuController : NSObject
@@ -451,11 +487,109 @@ int main(void) {
         free(primShapeMethods);
         SRPrimitiveStage("methodShape-done");
 
-        // Both groups and every primitive have recorded their stages. Run the
-        // deferred checks now, unchanged in strength and without clearing.
+        // C: creation control. Nothing is returned and nothing is read, so any
+        // count recorded here means class creation alone polluted this group.
+        Class retC = objc_allocateClassPair(NSObject.class, "ProbeReturnC", 0);
+        CHECK(retC != Nil);
+        gRetCClass = retC;
+        BOOL retCCounterAdded = class_addMethod(object_getClass(retC),
+                                                NSSelectorFromString(@"initialize"),
+                                                (IMP)SRReturnInitialize, "v@:");
+        CHECK(retCCounterAdded);
+        objc_registerClassPair(retC);
+        SRReturnStage("C-ready");
+        if (gRetCInitialize != 0) SRReturnStage("C-ready-invalid");
+        @autoreleasepool {
+            SRReturnStage("C-scope-before");
+            (void)retC;
+            SRReturnStage("C-scope-after");
+        }
+        SRReturnStage("C-done");
+
+        // A: the production shape. A Class-returning block is copied, then
+        // called and stored in a strong Class local, as entryForClassName: does.
+        Class retA = objc_allocateClassPair(NSObject.class, "ProbeReturnA", 0);
+        CHECK(retA != Nil);
+        gRetAClass = retA;
+        BOOL retACounterAdded = class_addMethod(object_getClass(retA),
+                                                NSSelectorFromString(@"initialize"),
+                                                (IMP)SRReturnInitialize, "v@:");
+        CHECK(retACounterAdded);
+        objc_registerClassPair(retA);
+        SRReturnStage("A-ready");
+        if (gRetAInitialize != 0) SRReturnStage("A-ready-invalid");
+        Class retAReceived = Nil;
+        SRReturnStage("A-pool-before");
+        @autoreleasepool {
+            Class (^returnClass)(void) = ^Class(void) { return retA; };
+            SRReturnStage("A-block-built");
+            Class (^copiedReturn)(void) = [returnClass copy];
+            SRReturnStage("A-block-copied");
+            SRReturnStage("A-before-call");
+            retAReceived = copiedReturn();
+            SRReturnStage("A-after-call");
+        }
+        SRReturnStage("A-pool-after");
+        BOOL retAReceivedIsClass = (retAReceived == retA);
+        SRReturnStage("A-done");
+
+        // D: delivery without a Class return. A void block writes the Class into
+        // an explicitly non-owning out-parameter; nothing returns a Class.
+        Class retD = objc_allocateClassPair(NSObject.class, "ProbeReturnD", 0);
+        CHECK(retD != Nil);
+        gRetDClass = retD;
+        BOOL retDCounterAdded = class_addMethod(object_getClass(retD),
+                                                NSSelectorFromString(@"initialize"),
+                                                (IMP)SRReturnInitialize, "v@:");
+        CHECK(retDCounterAdded);
+        objc_registerClassPair(retD);
+        SRReturnStage("D-ready");
+        if (gRetDInitialize != 0) SRReturnStage("D-ready-invalid");
+        __unsafe_unretained Class retDReceived = Nil;
+        SRReturnStage("D-pool-before");
+        @autoreleasepool {
+            void (^deliverClass)(__unsafe_unretained Class *) =
+                ^(__unsafe_unretained Class *out) { *out = retD; };
+            SRReturnStage("D-block-built");
+            void (^copiedDeliver)(__unsafe_unretained Class *) = [deliverClass copy];
+            SRReturnStage("D-block-copied");
+            SRReturnStage("D-before-call");
+            copiedDeliver(&retDReceived);
+            SRReturnStage("D-after-call");
+        }
+        SRReturnStage("D-pool-after");
+        BOOL retDReceivedIsClass = (retDReceived == retD);
+        SRReturnStage("D-done");
+
+        // B: a metadata read with no Class return anywhere on the path.
+        Class retB = objc_allocateClassPair(NSObject.class, "ProbeReturnB", 0);
+        CHECK(retB != Nil);
+        gRetBClass = retB;
+        BOOL retBCounterAdded = class_addMethod(object_getClass(retB),
+                                                NSSelectorFromString(@"initialize"),
+                                                (IMP)SRReturnInitialize, "v@:");
+        CHECK(retBCounterAdded);
+        objc_registerClassPair(retB);
+        SRReturnStage("B-ready");
+        if (gRetBInitialize != 0) SRReturnStage("B-ready-invalid");
+        unsigned int retBMethodCount = 0;
+        Method *retBMethods = class_copyMethodList(retB, &retBMethodCount);
+        free(retBMethods);
+        SRReturnStage("B-after");
+        @autoreleasepool {
+            SRReturnStage("B-scope-before");
+            SRReturnStage("B-scope-after");
+        }
+        SRReturnStage("B-done");
+
+        // Both groups, every primitive and every return-path stage have recorded
+        // their values. Run the deferred checks now, unchanged in strength.
         SRCounterStage("original-assert");
         SRFreshStage("fresh-assert");
         SRPrimitiveStage("primitive-assert");
+        SRReturnStage("return-assert");
+        CHECK(retAReceivedIsClass);
+        CHECK(retDReceivedIsClass);
         CHECK(gInitialize == 0 && gResolveInstance == 0 && gResolveClass == 0);
         CHECK(gFreshInitialize == 0 && gFreshResolveInstance == 0 && gFreshResolveClass == 0);
         CHECK(gPrimGetClassInitialize == 0);
