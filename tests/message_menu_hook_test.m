@@ -292,16 +292,45 @@ int main(void) {
         CHECK([hook handleSelection:third.lastObject current:currentIdentity(@"account", @"owner-1", @"g3", @"msg-3")]  == SRMenuIntentSaved);
         CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == 2);
 
-        // Build a fresh item before releasing the store so this is a new
-        // operation, not a replay already answered by the adapter ledger.
-        NSArray *deadItems = [hook appendOwnItemToItems:third generation:@"g4"
-            source:makeContext(@"account", @"待写入但存储将失效", @"msg-4", @"op-4")];
-        CHECK([hook ownsItem:deadItems.lastObject]);
-
         // --- storage gone: refuse, never report success ---
-        SRMessageMenuHook *deadHook = hook;
-        store = nil; intake = nil;
-        CHECK([deadHook handleSelection:deadItems.lastObject current:currentIdentity(@"account", @"owner-1", @"g4", @"msg-4")] == SRMenuIntentStorageUnavailable);
+        // Isolated fixture: the store is created inside an inner pool and is
+        // released when that pool drains, while the hook and its item stay
+        // strongly held in this outer scope. That way "the store was released"
+        // cannot be confused with "the hook or the menu item disappeared".
+        NSString *deadPath = [directory stringByAppendingPathComponent:@"dead.sqlite3"];
+        SRMessageMenuHook *deadHook = nil;
+        NSArray *deadItems = nil;
+        __weak SRStore *weakDeadStore = nil;
+        @autoreleasepool {
+            SRStore *deadStore = [[SRStore alloc] initWithPath:deadPath error:NULL];
+            CHECK(deadStore != nil);
+            weakDeadStore = deadStore;
+            SRLibraryIntake *deadIntake = [[SRLibraryIntake alloc] initWithStore:deadStore];
+            CHECK(deadIntake != nil);
+            // The callbacks capture the account string only, never the store.
+            deadHook = [[SRMessageMenuHook alloc] initWithIntake:deadIntake
+                currentAccount:^NSString *{ return @"account"; }
+                accountActive:^BOOL(NSString *value) { return [value isEqual:@"account"]; }
+                enabled:^BOOL { return YES; }];
+            CHECK(deadHook != nil);
+            // A new operation that was never clicked and never saved.
+            deadItems = [deadHook appendOwnItemToItems:@[] generation:@"g4"
+                source:makeContext(@"account", @"写入但存储已失效", @"msg-4", @"op-4")];
+            CHECK(deadItems.count == 1);
+            deadStore = nil;
+        }
+        // Precondition: the store is really gone while hook and item survive.
+        CHECK(weakDeadStore == nil);
+        CHECK(deadHook != nil);
+        CHECK([deadHook ownsItem:deadItems.lastObject]);
+        CHECK([deadHook contextForOwnItem:deadItems.lastObject] != nil);
+        SRMenuIntentResult deadResult = [deadHook handleSelection:deadItems.lastObject
+            current:currentIdentity(@"account", @"owner-1", @"g4", @"msg-4")];
+        if (deadResult != SRMenuIntentStorageUnavailable) {
+            // Numbers only: no body, account, message ID or address.
+            NSLog(@"storage-gone fixture returned intent %lu", (unsigned long)deadResult);
+        }
+        CHECK(deadResult == SRMenuIntentStorageUnavailable);
 
         // --- freeze: a mutable source cannot change what an item will save ---
         NSMutableString *mAccount = [@"account" mutableCopy];
