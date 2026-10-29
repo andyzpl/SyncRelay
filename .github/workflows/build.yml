@@ -58,6 +58,10 @@ jobs:
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c tests/media_budget_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/media-budget-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRRunProjection.m tests/run_projection_test.m -framework Foundation -o "$RUNNER_TEMP/run-projection-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRMediaProjection.m tests/media_projection_test.m -framework Foundation -o "$RUNNER_TEMP/media-projection-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c Core/SRLibraryIntake.m tests/library_intake_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/library-intake-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c Core/SRLibraryIntake.m tests/library_intake_lifecycle_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/library-intake-lifecycle-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c Core/SRLibraryIntake.m Core/SREntryPreferences.m Adapter/SRMessageMenuHook.m tests/message_menu_hook_test.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/message-menu-hook-test"
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Adapter/SRMenuABIProbe.m tests/menu_abi_probe_test.m -framework Foundation -framework CoreGraphics -o "$RUNNER_TEMP/menu-abi-probe-test"
           for pass in 1 2 3; do
             "$RUNNER_TEMP/store-test"
             "$RUNNER_TEMP/adapter-test"
@@ -84,6 +88,10 @@ jobs:
             "$RUNNER_TEMP/media-budget-test"
             "$RUNNER_TEMP/run-projection-test"
             "$RUNNER_TEMP/media-projection-test"
+            "$RUNNER_TEMP/library-intake-test"
+            "$RUNNER_TEMP/library-intake-lifecycle-test"
+            "$RUNNER_TEMP/message-menu-hook-test"
+            "$RUNNER_TEMP/menu-abi-probe-test"
           done
       - name: Install build tools
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb

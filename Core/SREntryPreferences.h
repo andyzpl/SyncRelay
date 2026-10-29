@@ -7,6 +7,9 @@ FOUNDATION_EXPORT NSNotificationName const SREntryPreferencesChangedNotification
 @interface SREntryPreferences : NSObject
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults;
 @property(nonatomic) BOOL floatingEntryEnabled;
+/* Independent UI preference: whether the chat long-press menu gets the
+ * SyncRelay entry. Off by default; never part of the frozen business draft. */
+@property(nonatomic) BOOL libraryMenuEntryEnabled;
 @property(nonatomic, readonly) CGFloat floatingEntryUnitX;
 @property(nonatomic, readonly) CGFloat floatingEntryUnitY;
 @property(nonatomic, readonly) BOOL floatingEntryLeftEdge;

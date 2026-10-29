@@ -119,3 +119,19 @@ section 数量、行数、表头表尾、cell 与重试分支都按这一条实�
 Python 侧只做源码契约（`tests/phase_b3_media_contract_test.py`）：生命周期遮蔽与回前台
 重核、账号失败清屏、三种空态措辞、投影函数被页面使用、注册位置。**Python 镜像不能代替
 原生执行**，上述取值结论以 CI 的原生运行结果为准。
+
+## 11. 长按「SR 入库」适配层（仍未接宿主）
+
+本轮另有一个独立的文字入库层，但没有把它冒充成已经出现在微信里的菜单功能：
+
+- `SRLibraryIntake` 只接受普通文字，完整保存正文；operation key 绑定账号、类型和原文，
+  查重、写入和发布在同一临界区，不创建 task/run/claim/delivery，也不发送。
+- `SRMessageMenuHook` 只负责门禁、冻结菜单上下文和返回意图。上下文与点击时的
+  `SRMenuCurrentIdentity` 分开保存，逐项核对账号、owner token、generation、消息身份，
+  失败不触碰消息库；入库幂等由 `SRLibraryIntake` 单一负责。
+- `libraryMenuEntryEnabled` 是独立的 `NSUserDefaults` 偏好，默认关闭；本快照没有在
+  设置页显示一个会让用户误以为菜单已接通的开关，也没有安装 `MSHookMessageEx`。
+  因而微信长按菜单目前仍不会出现「SR 入库」，这不是宿主 ABI 或真机通过的证据。
+- 新增的原生菜单/入库测试已注册到 macOS CI，但本机 Windows 未编译、链接或执行；菜单
+  ABI、UIKit、真实宿主共存和真机行为仍待验证。Python 全量为 **379 项**，只代表源码
+  契约层通过。

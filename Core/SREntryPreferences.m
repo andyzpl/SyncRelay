@@ -3,6 +3,7 @@
 
 NSNotificationName const SREntryPreferencesChangedNotification = @"andyz.syncrelay.entryPreferencesChanged";
 static NSString *const SRFloatingEntryKey = @"andyz.syncrelay.floatingEntryEnabled";
+static NSString *const SRLibraryMenuEntryKey = @"andyz.syncrelay.libraryMenuEntryEnabled";
 static NSString *const SRFloatingEntryUnitXKey = @"andyz.syncrelay.floatingEntryUnitX";
 static NSString *const SRFloatingEntryUnitYKey = @"andyz.syncrelay.floatingEntryUnitY";
 static NSString *const SRFloatingEntryLeftEdgeKey = @"andyz.syncrelay.floatingEntryLeftEdge";
@@ -25,6 +26,15 @@ static NSString *const SRFloatingEntryPlacementSetKey = @"andyz.syncrelay.floati
 - (void)setFloatingEntryEnabled:(BOOL)enabled {
     BOOL changed = self.floatingEntryEnabled != enabled;
     [self.defaults setBool:enabled forKey:SRFloatingEntryKey];
+    if (changed) [NSNotificationCenter.defaultCenter postNotificationName:SREntryPreferencesChangedNotification object:self];
+}
+- (BOOL)libraryMenuEntryEnabled {
+    id value = [self.defaults objectForKey:SRLibraryMenuEntryKey];
+    return [value isKindOfClass:NSNumber.class] && [value boolValue];
+}
+- (void)setLibraryMenuEntryEnabled:(BOOL)enabled {
+    BOOL changed = self.libraryMenuEntryEnabled != enabled;
+    [self.defaults setBool:enabled forKey:SRLibraryMenuEntryKey];
     if (changed) [NSNotificationCenter.defaultCenter postNotificationName:SREntryPreferencesChangedNotification object:self];
 }
 - (CGFloat)floatingEntryUnitY {
