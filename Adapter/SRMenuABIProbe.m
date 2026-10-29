@@ -9,12 +9,12 @@ static const unsigned int SRMenuProbeArgumentLimit = 8;
 static NSString *const SRMenuTokenUnknown = @"unknown";
 
 @interface SRMenuABIProbe ()
-@property(nonatomic, copy, nullable) Class _Nullable (^resolver)(NSString *className);
+@property(nonatomic, copy, nullable) SRMenuABIResolver resolver;
 @end
 
 @implementation SRMenuABIProbe
 
-- (instancetype)initWithResolver:(Class _Nullable (^)(NSString *))resolver {
+- (instancetype)initWithResolver:(nullable SRMenuABIResolver)resolver {
     self = [super init];
     if (self) {
         _resolver = [resolver copy];
@@ -84,7 +84,15 @@ static Method SRMenuLookupMethod(Class start, SEL selector, BOOL *declaredOnStar
 
 - (NSDictionary *)entryForClassName:(NSString *)className selector:(NSString *)selectorName {
     NSString *label = [NSString stringWithFormat:@"%@ / %@", className, selectorName];
-    Class cls = self.resolver ? self.resolver(className) : NSClassFromString(className);
+    // The resolver writes through a non-owning out-parameter; no Class crosses a
+    // function or block return here. The local starts Nil, so a resolver that
+    // writes nothing reports `missing` and never falls back to the runtime.
+    __unsafe_unretained Class cls = Nil;
+    if (self.resolver) {
+        self.resolver(className, &cls);
+    } else {
+        cls = NSClassFromString(className);
+    }
     if (!cls) {
         return @{@"candidate": label, @"classStatus": @"missing", @"methodStatus": @"missing",
                  @"argumentCount": @"0", @"returnToken": SRMenuTokenUnknown, @"argumentTokens": @[]};

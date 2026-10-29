@@ -294,10 +294,10 @@ static NSArray *Whitelist(void) {
 }
 
 static NSDictionary *EntryFor(Class menuClass, Class itemClass, NSUInteger index) {
-    SRMenuABIProbe *probe = [[SRMenuABIProbe alloc] initWithResolver:^Class(NSString *name) {
-        if ([name isEqual:@"MMMenuController"]) return menuClass;
-        if ([name isEqual:@"MMMenuItem"]) return itemClass;
-        return (Class)nil;
+    SRMenuABIProbe *probe = [[SRMenuABIProbe alloc] initWithResolver:^(NSString *name,
+                                                                      __unsafe_unretained Class _Nullable * _Nonnull resolvedClass) {
+        if ([name isEqual:@"MMMenuController"]) *resolvedClass = menuClass;
+        else if ([name isEqual:@"MMMenuItem"]) *resolvedClass = itemClass;
     }];
     NSArray *snapshot = probe.snapshot;
     CHECK(snapshot.count == 3);
@@ -340,6 +340,48 @@ int main(void) {
         CHECK([partial[@"methodStatus"] isEqual:@"missing"]);
         CHECK([EntryFor(ProbeClassOnlyController.class, ProbeMenuItem.class, 0)[@"methodStatus"] isEqual:@"class_only"]);
         CHECK([EntryFor(ProbeSubController.class, ProbeMenuItem.class, 0)[@"methodStatus"] isEqual:@"inherited"]);
+
+        // The injected resolver now delivers through a non-owning out-parameter.
+        // Registering a class under the candidate name lets these probes tell
+        // "the resolver wrote nothing" apart from "the default lookup ran".
+        Class registeredMenu = objc_allocateClassPair(NSObject.class, "MMMenuController", 0);
+        CHECK(registeredMenu != Nil);
+        objc_registerClassPair(registeredMenu);
+        SRCounterStage("resolver-class-registered");
+
+        SRMenuABIProbe *writeProbe = [[SRMenuABIProbe alloc] initWithResolver:^(NSString *name,
+                                                                               __unsafe_unretained Class _Nullable * _Nonnull resolvedClass) {
+            if ([name isEqual:@"MMMenuController"]) *resolvedClass = registeredMenu;
+        }];
+        SRCounterStage("resolver-write-built");
+        NSArray *writeSnapshot = [writeProbe snapshot];
+        SRCounterStage("resolver-write-snapshot");
+        BOOL resolverWroteClass = writeSnapshot.count == 3 &&
+                                  [writeSnapshot[0][@"classStatus"] isEqual:@"present"];
+
+        SRMenuABIProbe *nilWriteProbe = [[SRMenuABIProbe alloc] initWithResolver:^(NSString *name,
+                                                                                  __unsafe_unretained Class _Nullable * _Nonnull resolvedClass) {
+            (void)name;
+            *resolvedClass = Nil;
+        }];
+        NSArray *nilWriteSnapshot = [nilWriteProbe snapshot];
+        BOOL resolverWroteNil = nilWriteSnapshot.count == 3 &&
+                                [nilWriteSnapshot[0][@"classStatus"] isEqual:@"missing"];
+
+        SRMenuABIProbe *silentProbe = [[SRMenuABIProbe alloc] initWithResolver:^(NSString *name,
+                                                                                __unsafe_unretained Class _Nullable * _Nonnull resolvedClass) {
+            (void)name;
+            (void)resolvedClass;
+        }];
+        NSArray *silentSnapshot = [silentProbe snapshot];
+        BOOL resolverWroteNothing = silentSnapshot.count == 3 &&
+                                    [silentSnapshot[0][@"classStatus"] isEqual:@"missing"];
+
+        SRMenuABIProbe *defaultProbe = [[SRMenuABIProbe alloc] initWithResolver:nil];
+        NSArray *defaultSnapshot = [defaultProbe snapshot];
+        BOOL defaultLookupFoundClass = defaultSnapshot.count == 3 &&
+                                       [defaultSnapshot[0][@"classStatus"] isEqual:@"present"];
+        SRCounterStage("resolver-probes-done");
 
         // A class that resolves missing methods must not be asked to. The two
         // groups below measure different paths and never share a class, so the
@@ -390,12 +432,19 @@ int main(void) {
         CHECK(addedResolveClass);
         objc_registerClassPair(fresh);
         SRFreshStage("fresh-created");
-        SRMenuABIProbe *freshProbe = [[SRMenuABIProbe alloc] initWithResolver:^Class(NSString *name) {
-            return [name isEqual:@"MMMenuController"] ? fresh : (Class)nil;
-        }];
-        SRFreshStage("fresh-resolver-built");
-        NSArray *freshSnapshot = [freshProbe snapshot];
-        SRFreshStage("fresh-snapshot-called");
+        SRFreshStage("fresh-pool-before");
+        SRMenuABIProbe *freshProbe = nil;
+        NSArray *freshSnapshot = nil;
+        @autoreleasepool {
+            freshProbe = [[SRMenuABIProbe alloc] initWithResolver:^(NSString *name,
+                                                                   __unsafe_unretained Class _Nullable * _Nonnull resolvedClass) {
+                if ([name isEqual:@"MMMenuController"]) *resolvedClass = fresh;
+            }];
+            SRFreshStage("fresh-resolver-built");
+            freshSnapshot = [freshProbe snapshot];
+            SRFreshStage("fresh-snapshot-called");
+        }
+        SRFreshStage("fresh-pool-after");
         BOOL freshMissing = freshSnapshot.count == 3 &&
                             [freshSnapshot[0][@"methodStatus"] isEqual:@"missing"];
         SRFreshStage("fresh-entry-read");
@@ -588,6 +637,11 @@ int main(void) {
         SRFreshStage("fresh-assert");
         SRPrimitiveStage("primitive-assert");
         SRReturnStage("return-assert");
+        SRCounterStage("resolver-assert");
+        CHECK(resolverWroteClass);
+        CHECK(resolverWroteNil);
+        CHECK(resolverWroteNothing);
+        CHECK(defaultLookupFoundClass);
         CHECK(retAReceivedIsClass);
         CHECK(retDReceivedIsClass);
         CHECK(gInitialize == 0 && gResolveInstance == 0 && gResolveClass == 0);

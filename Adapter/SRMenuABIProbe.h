@@ -18,10 +18,22 @@ NS_ASSUME_NONNULL_BEGIN
  * echoed back; only the candidate label is. */
 @interface SRMenuABIProbe : NSObject
 
-/* `resolver` maps a candidate class name to a Class. The default resolver asks
+/* The resolver delivers the resolved class through a non-owning out-parameter
+ * instead of returning it: the probe passes the address of its own
+ * Nil-initialized `__unsafe_unretained Class` local, and the block writes to it
+ * only when it recognises the name. A block that writes nothing therefore leaves
+ * the candidate `missing`; once a resolver is supplied the probe never falls
+ * back to the runtime lookup.
+ *
+ * This is the shape the probe itself requests, not a claim that the delivery is
+ * free of runtime effects: the resolver block, the property copy and the caller's
+ * scope still run under ARC. Only when no resolver is provided does the probe ask
  * the runtime (`NSClassFromString`), which also does not initialize the class.
- * Injecting one keeps the probe testable without any host present. */
-- (instancetype)initWithResolver:(nullable Class _Nullable (^)(NSString *className))resolver;
+ * Injecting a resolver keeps the probe testable without any host present. */
+typedef void (^SRMenuABIResolver)(NSString *className,
+                                  __unsafe_unretained Class _Nullable * _Nonnull resolvedClass);
+
+- (instancetype)initWithResolver:(nullable SRMenuABIResolver)resolver;
 
 /* Three entries, in this order:
  *   MMMenuController / setMenuItems:
