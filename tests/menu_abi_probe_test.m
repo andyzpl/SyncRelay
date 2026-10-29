@@ -43,55 +43,63 @@ static void SRFreshStage(const char *stage) {
  *
  * The production missing-method path calls object_getClass, class_copyMethodList
  * on the class and on its metaclass, class_getSuperclass, method_getName and the
- * method shape reads. Each primitive below runs on its own freshly allocated
- * class with its own +initialize counter, so an earlier stage that realized a
- * class cannot hide the next stage's answer. Only read-only runtime calls are
- * used: no class_getInstanceMethod/class_getClassMethod, no selector is sent,
- * and no host object is created. */
-enum {
-    SRPrimitiveGetClass = 0,
-    SRPrimitiveInstanceList,
-    SRPrimitiveSuperclass,
-    SRPrimitiveMetaList,
-    SRPrimitiveMethodShape,
-    SRPrimitiveCount
-};
+ * method shape reads. Each primitive runs on its own class declared at compile
+ * time: no class is allocated, registered or extended at runtime, so a ready
+ * record reflects a compile-time baseline instead of dynamic class setup. Only
+ * read-only runtime calls are used: no class_getInstanceMethod or
+ * class_getClassMethod, no selector is sent, and no host object is created. */
+static NSUInteger gPrimGetClassInitialize = 0;
+static NSUInteger gPrimInstanceListInitialize = 0;
+static NSUInteger gPrimSuperclassInitialize = 0;
+static NSUInteger gPrimMetaListInitialize = 0;
+static NSUInteger gPrimMethodShapeInitialize = 0;
 
-static Class gPrimitiveClass[SRPrimitiveCount];
-static NSUInteger gPrimitiveInitialize[SRPrimitiveCount];
+/* Each class counts its own +initialize; the self check keeps an inherited
+ * +initialize from being counted for a subclass. */
+@interface ProbePrimGetClass : NSObject
+@end
+@implementation ProbePrimGetClass
++ (void)initialize { if (self == (id)objc_getClass("ProbePrimGetClass")) gPrimGetClassInitialize++; }
+@end
 
-/* Counts +initialize per class. Compares class pointers only. */
-static void SRPrimitiveInitialize(id self, SEL command) {
-    for (int index = 0; index < SRPrimitiveCount; index++) {
-        if (gPrimitiveClass[index] == (Class)self) { gPrimitiveInitialize[index]++; break; }
-    }
-    (void)command;
-}
+@interface ProbePrimInstanceList : NSObject
+@end
+@implementation ProbePrimInstanceList
++ (void)initialize { if (self == (id)objc_getClass("ProbePrimInstanceList")) gPrimInstanceListInitialize++; }
+@end
+
+@interface ProbePrimSuperclass : NSObject
+@end
+@implementation ProbePrimSuperclass
++ (void)initialize { if (self == (id)objc_getClass("ProbePrimSuperclass")) gPrimSuperclassInitialize++; }
+@end
+
+@interface ProbePrimMetaList : NSObject
+@end
+@implementation ProbePrimMetaList
++ (void)initialize { if (self == (id)objc_getClass("ProbePrimMetaList")) gPrimMetaListInitialize++; }
+@end
+
+/* Declares a real method the shape stage can read. The method is never sent. */
+@interface ProbePrimMethodShape : NSObject
+- (void)setMenuItems:(id)items;
+@end
+@implementation ProbePrimMethodShape
++ (void)initialize { if (self == (id)objc_getClass("ProbePrimMethodShape")) gPrimMethodShapeInitialize++; }
+- (void)setMenuItems:(id)items { gCalls++; (void)items; }
+@end
 
 /* Fixed labels, integers only, flushed before any assertion can abort. */
 static void SRPrimitiveStage(const char *stage) {
     fprintf(stderr,
             "[probe-primitive] %-24s getClass=%lu instanceList=%lu superclass=%lu metaList=%lu methodShape=%lu\n",
             stage,
-            (unsigned long)gPrimitiveInitialize[SRPrimitiveGetClass],
-            (unsigned long)gPrimitiveInitialize[SRPrimitiveInstanceList],
-            (unsigned long)gPrimitiveInitialize[SRPrimitiveSuperclass],
-            (unsigned long)gPrimitiveInitialize[SRPrimitiveMetaList],
-            (unsigned long)gPrimitiveInitialize[SRPrimitiveMethodShape]);
+            (unsigned long)gPrimGetClassInitialize,
+            (unsigned long)gPrimInstanceListInitialize,
+            (unsigned long)gPrimSuperclassInitialize,
+            (unsigned long)gPrimMetaListInitialize,
+            (unsigned long)gPrimMethodShapeInitialize);
     fflush(stderr);
-}
-
-/* One dedicated, never-messaged class per primitive. Class creation and counter
- * installation are prerequisites: failing them aborts before any stage runs. */
-static Class SRCreatePrimitiveClass(int slot, const char *name) {
-    Class cls = objc_allocateClassPair(NSObject.class, name, 0);
-    CHECK(cls != Nil);
-    gPrimitiveClass[slot] = cls;
-    BOOL added = class_addMethod(object_getClass(cls), NSSelectorFromString(@"initialize"),
-                                 (IMP)SRPrimitiveInitialize, "v@:");
-    CHECK(added);
-    objc_registerClassPair(cls);
-    return cls;
 }
 
 
@@ -356,41 +364,42 @@ int main(void) {
                             [freshSnapshot[0][@"methodStatus"] isEqual:@"missing"];
         SRFreshStage("fresh-entry-read");
 
-        // Primitive-by-primitive, one class at a time. A class is created,
-        // registered, recorded as ready and checked at zero before its own
-        // primitive runs, and the next class is not created until this one's
-        // measurement is finished: the previous run showed every earlier class
-        // already at 1 before its first record, so the shared setup left no
-        // clean baseline. A ready count above zero fails here, before any
-        // primitive runs, instead of being explained as that primitive's effect.
-        Class primGetClass = SRCreatePrimitiveClass(SRPrimitiveGetClass, "ProbePrimGetClass");
+        // Primitive-by-primitive on compiled classes. Taking the Class object
+        // sends no message, so a ready count above zero means the runtime had
+        // already initialized that class before its primitive ran; the run then
+        // fails here instead of explaining the after value as that primitive.
+        Class primGetClass = objc_getClass("ProbePrimGetClass");
+        CHECK(primGetClass != Nil);
         SRPrimitiveStage("getClass-ready");
-        CHECK(gPrimitiveInitialize[SRPrimitiveGetClass] == 0);
+        CHECK(gPrimGetClassInitialize == 0);
         SRPrimitiveStage("getClass-before");
         Class primMetaResult = object_getClass(primGetClass);
         (void)primMetaResult;
         SRPrimitiveStage("getClass-after");
 
-        Class primInstanceList = SRCreatePrimitiveClass(SRPrimitiveInstanceList, "ProbePrimInstanceList");
+        Class primInstanceList = objc_getClass("ProbePrimInstanceList");
+        CHECK(primInstanceList != Nil);
         SRPrimitiveStage("instanceList-ready");
-        CHECK(gPrimitiveInitialize[SRPrimitiveInstanceList] == 0);
+        CHECK(gPrimInstanceListInitialize == 0);
         SRPrimitiveStage("instanceList-before");
         unsigned int primInstanceCount = 0;
         Method *primInstanceMethods = class_copyMethodList(primInstanceList, &primInstanceCount);
         free(primInstanceMethods);
         SRPrimitiveStage("instanceList-after");
 
-        Class primSuperclass = SRCreatePrimitiveClass(SRPrimitiveSuperclass, "ProbePrimSuperclass");
+        Class primSuperclass = objc_getClass("ProbePrimSuperclass");
+        CHECK(primSuperclass != Nil);
         SRPrimitiveStage("superclass-ready");
-        CHECK(gPrimitiveInitialize[SRPrimitiveSuperclass] == 0);
+        CHECK(gPrimSuperclassInitialize == 0);
         SRPrimitiveStage("superclass-before");
         Class primSuperclassResult = class_getSuperclass(primSuperclass);
         (void)primSuperclassResult;
         SRPrimitiveStage("superclass-after");
 
-        Class primMetaList = SRCreatePrimitiveClass(SRPrimitiveMetaList, "ProbePrimMetaList");
+        Class primMetaList = objc_getClass("ProbePrimMetaList");
+        CHECK(primMetaList != Nil);
         SRPrimitiveStage("metaList-ready");
-        CHECK(gPrimitiveInitialize[SRPrimitiveMetaList] == 0);
+        CHECK(gPrimMetaListInitialize == 0);
         // The metaclass read and the metaclass method-list read stay separate,
         // each with its own before/after record.
         SRPrimitiveStage("metaList-getClass-before");
@@ -402,21 +411,10 @@ int main(void) {
         SRPrimitiveStage("metaList-list-after");
         free(primMetaMethods);
 
-        // Created only now, so no later class can disturb this baseline. It needs
-        // one real method to read; that method is never sent.
-        Class primMethodShape = objc_allocateClassPair(NSObject.class, "ProbePrimMethodShape", 0);
+        Class primMethodShape = objc_getClass("ProbePrimMethodShape");
         CHECK(primMethodShape != Nil);
-        gPrimitiveClass[SRPrimitiveMethodShape] = primMethodShape;
-        BOOL shapeInitialize = class_addMethod(object_getClass(primMethodShape),
-                                               NSSelectorFromString(@"initialize"),
-                                               (IMP)SRPrimitiveInitialize, "v@:");
-        BOOL shapeMethod = class_addMethod(primMethodShape, NSSelectorFromString(@"setMenuItems:"),
-                                           (IMP)SRProbeNeverCalled, "v@:@");
-        CHECK(shapeInitialize);
-        CHECK(shapeMethod);
-        objc_registerClassPair(primMethodShape);
         SRPrimitiveStage("methodShape-ready");
-        CHECK(gPrimitiveInitialize[SRPrimitiveMethodShape] == 0);
+        CHECK(gPrimMethodShapeInitialize == 0);
 
         // A Method can only be had from the method list, so this class records
         // the list, the name scan and each shape read separately: if the list
@@ -460,11 +458,11 @@ int main(void) {
         SRPrimitiveStage("primitive-assert");
         CHECK(gInitialize == 0 && gResolveInstance == 0 && gResolveClass == 0);
         CHECK(gFreshInitialize == 0 && gFreshResolveInstance == 0 && gFreshResolveClass == 0);
-        CHECK(gPrimitiveInitialize[SRPrimitiveGetClass] == 0);
-        CHECK(gPrimitiveInitialize[SRPrimitiveInstanceList] == 0);
-        CHECK(gPrimitiveInitialize[SRPrimitiveSuperclass] == 0);
-        CHECK(gPrimitiveInitialize[SRPrimitiveMetaList] == 0);
-        CHECK(gPrimitiveInitialize[SRPrimitiveMethodShape] == 0);
+        CHECK(gPrimGetClassInitialize == 0);
+        CHECK(gPrimInstanceListInitialize == 0);
+        CHECK(gPrimSuperclassInitialize == 0);
+        CHECK(gPrimMetaListInitialize == 0);
+        CHECK(gPrimMethodShapeInitialize == 0);
         CHECK([resolvingMethodStatus isEqual:@"missing"]);
         CHECK(freshMissing);
         SRFreshStage("fresh-done");
