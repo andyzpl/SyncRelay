@@ -3,12 +3,42 @@
 #import <objc/runtime.h>
 #include <assert.h>
 #include <string.h>
+#include <stdio.h>
 #define CHECK(...) assert((__VA_ARGS__))
 
 static NSUInteger gCalls = 0;
 static NSUInteger gResolveInstance = 0;
 static NSUInteger gResolveClass = 0;
 static NSUInteger gInitialize = 0;
+static NSUInteger gFreshInitialize = 0;
+static NSUInteger gFreshResolveInstance = 0;
+static NSUInteger gFreshResolveClass = 0;
+
+/* A second, independently created class. Its counters live apart from the first
+ * one so a warmed class cannot mask a stage. Never messaged except by the probe. */
+static void SRFreshInitialize(id self, SEL command) { gFreshInitialize++; (void)self; (void)command; }
+static BOOL SRFreshResolveInstance(id self, SEL command, SEL selector) {
+    gFreshResolveInstance++; (void)self; (void)command; (void)selector; return NO;
+}
+static BOOL SRFreshResolveClass(id self, SEL command, SEL selector) {
+    gFreshResolveClass++; (void)self; (void)command; (void)selector; return NO;
+}
+
+/* Numeric, bounded, flushed before any assertion can abort. */
+static void SRCounterStage(const char *stage) {
+    fprintf(stderr, "[probe-stage] %-22s initialize=%lu resolveInstance=%lu resolveClass=%lu calls=%lu\n",
+            stage, (unsigned long)gInitialize, (unsigned long)gResolveInstance,
+            (unsigned long)gResolveClass, (unsigned long)gCalls);
+    fflush(stderr);
+}
+
+static void SRFreshStage(const char *stage) {
+    fprintf(stderr, "[probe-fresh] %-22s initialize=%lu resolveInstance=%lu resolveClass=%lu calls=%lu\n",
+            stage, (unsigned long)gFreshInitialize, (unsigned long)gFreshResolveInstance,
+            (unsigned long)gFreshResolveClass, (unsigned long)gCalls);
+    fflush(stderr);
+}
+
 
 /* Every stand-in counts its own invocations: the probe must never call them. */
 @interface ProbeMenuController : NSObject
@@ -212,13 +242,74 @@ int main(void) {
         CHECK([EntryFor(ProbeClassOnlyController.class, ProbeMenuItem.class, 0)[@"methodStatus"] isEqual:@"class_only"]);
         CHECK([EntryFor(ProbeSubController.class, ProbeMenuItem.class, 0)[@"methodStatus"] isEqual:@"inherited"]);
 
-        // A class that resolves missing methods must not be asked to.
+        // A class that resolves missing methods must not be asked to. The two
+        // groups below measure different paths and never share a class, so the
+        // first group's control call cannot warm what the second one measures.
+        //
+        // These diagnostics only touch stand-ins, so each group records its
+        // stages first and the zero-side-effect checks all run afterwards: a
+        // non-zero count in group 1 must not stop group 2 from producing
+        // evidence. Counters are never cleared, no recorded failure is dropped
+        // and no check is relaxed. Broken prerequisites (class creation, method
+        // installation) still abort immediately, because such a group would
+        // measure nothing.
+        //
+        // Group 1 keeps the untouched original call as the control path:
+        // EntryFor builds the resolver-backed probe, calls snapshot, then reads
+        // the returned entry. A non-zero count here is only known to be
+        // somewhere inside that whole call; construction, the snapshot and the
+        // metadata reads are not separated, so this group cannot yet tell them
+        // apart (尚不能区分).
         Class resolving = objc_getClass("ProbeResolvingController");
         CHECK(resolving != Nil);
+        SRCounterStage("original-before");
+        NSDictionary *resolvingEntry = EntryFor(resolving, ProbeMenuItem.class, 0);
+        NSString *resolvingMethodStatus = resolvingEntry[@"methodStatus"];
+        SRCounterStage("original-after");
+
+        // Group 2 runs the decomposed construction/snapshot path on a class
+        // allocated here, which was never messaged before. A non-zero count at
+        // fresh-resolver-built localises to the probe construction/copy step; a
+        // count that first appears at fresh-snapshot-called still mixes the
+        // resolver callbacks with the method-list and type-encoding reads, so
+        // neither stage identifies a single trigger mechanism by itself.
+        Class fresh = objc_allocateClassPair(NSObject.class, "ProbeResolveFresh", 0);
+        CHECK(fresh != Nil);
+        BOOL addedInitialize = class_addMethod(object_getClass(fresh),
+                                               NSSelectorFromString(@"initialize"),
+                                               (IMP)SRFreshInitialize, "v@:");
+        BOOL addedResolveInstance = class_addMethod(object_getClass(fresh),
+                                                    NSSelectorFromString(@"resolveInstanceMethod:"),
+                                                    (IMP)SRFreshResolveInstance, "B@::");
+        BOOL addedResolveClass = class_addMethod(object_getClass(fresh),
+                                                 NSSelectorFromString(@"resolveClassMethod:"),
+                                                 (IMP)SRFreshResolveClass, "B@::");
+        // An uninstalled counter would let the group pass while measuring
+        // nothing, so each installation is proven before the stage runs.
+        CHECK(addedInitialize);
+        CHECK(addedResolveInstance);
+        CHECK(addedResolveClass);
+        objc_registerClassPair(fresh);
+        SRFreshStage("fresh-created");
+        SRMenuABIProbe *freshProbe = [[SRMenuABIProbe alloc] initWithResolver:^Class(NSString *name) {
+            return [name isEqual:@"MMMenuController"] ? fresh : (Class)nil;
+        }];
+        SRFreshStage("fresh-resolver-built");
+        NSArray *freshSnapshot = [freshProbe snapshot];
+        SRFreshStage("fresh-snapshot-called");
+        BOOL freshMissing = freshSnapshot.count == 3 &&
+                            [freshSnapshot[0][@"methodStatus"] isEqual:@"missing"];
+        SRFreshStage("fresh-entry-read");
+
+        // Both groups have recorded every stage. Run the deferred checks now,
+        // unchanged in strength and without clearing anything.
+        SRCounterStage("original-assert");
+        SRFreshStage("fresh-assert");
         CHECK(gInitialize == 0 && gResolveInstance == 0 && gResolveClass == 0);
-        NSDictionary *unresolved = EntryFor(resolving, ProbeMenuItem.class, 0);
-        CHECK([unresolved[@"methodStatus"] isEqual:@"missing"]);
-        CHECK(gInitialize == 0 && gResolveInstance == 0 && gResolveClass == 0);
+        CHECK(gFreshInitialize == 0 && gFreshResolveInstance == 0 && gFreshResolveClass == 0);
+        CHECK([resolvingMethodStatus isEqual:@"missing"]);
+        CHECK(freshMissing);
+        SRFreshStage("fresh-done");
 
         // Integer width and signedness stay distinct; c is not BOOL. C long's
         // encoding is platform-defined, so derive its expected token from the
