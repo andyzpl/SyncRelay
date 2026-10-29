@@ -356,46 +356,43 @@ int main(void) {
                             [freshSnapshot[0][@"methodStatus"] isEqual:@"missing"];
         SRFreshStage("fresh-entry-read");
 
-        // Primitive-by-primitive: every candidate call the missing-method path
-        // makes gets its own class, so a counter that moves can only be that
-        // stage's own class being realized.
+        // Primitive-by-primitive, one class at a time. A class is created,
+        // registered, recorded as ready and checked at zero before its own
+        // primitive runs, and the next class is not created until this one's
+        // measurement is finished: the previous run showed every earlier class
+        // already at 1 before its first record, so the shared setup left no
+        // clean baseline. A ready count above zero fails here, before any
+        // primitive runs, instead of being explained as that primitive's effect.
         Class primGetClass = SRCreatePrimitiveClass(SRPrimitiveGetClass, "ProbePrimGetClass");
-        Class primInstanceList = SRCreatePrimitiveClass(SRPrimitiveInstanceList, "ProbePrimInstanceList");
-        Class primSuperclass = SRCreatePrimitiveClass(SRPrimitiveSuperclass, "ProbePrimSuperclass");
-        Class primMetaList = SRCreatePrimitiveClass(SRPrimitiveMetaList, "ProbePrimMetaList");
-
-        Class primMethodShape = objc_allocateClassPair(NSObject.class, "ProbePrimMethodShape", 0);
-        CHECK(primMethodShape != Nil);
-        gPrimitiveClass[SRPrimitiveMethodShape] = primMethodShape;
-        BOOL shapeInitialize = class_addMethod(object_getClass(primMethodShape),
-                                               NSSelectorFromString(@"initialize"),
-                                               (IMP)SRPrimitiveInitialize, "v@:");
-        // The shape stage needs one real method to read; it is never sent.
-        BOOL shapeMethod = class_addMethod(primMethodShape, NSSelectorFromString(@"setMenuItems:"),
-                                           (IMP)SRProbeNeverCalled, "v@:@");
-        CHECK(shapeInitialize);
-        CHECK(shapeMethod);
-        objc_registerClassPair(primMethodShape);
-
+        SRPrimitiveStage("getClass-ready");
+        CHECK(gPrimitiveInitialize[SRPrimitiveGetClass] == 0);
         SRPrimitiveStage("getClass-before");
         Class primMetaResult = object_getClass(primGetClass);
         (void)primMetaResult;
         SRPrimitiveStage("getClass-after");
 
+        Class primInstanceList = SRCreatePrimitiveClass(SRPrimitiveInstanceList, "ProbePrimInstanceList");
+        SRPrimitiveStage("instanceList-ready");
+        CHECK(gPrimitiveInitialize[SRPrimitiveInstanceList] == 0);
         SRPrimitiveStage("instanceList-before");
         unsigned int primInstanceCount = 0;
         Method *primInstanceMethods = class_copyMethodList(primInstanceList, &primInstanceCount);
         free(primInstanceMethods);
         SRPrimitiveStage("instanceList-after");
 
+        Class primSuperclass = SRCreatePrimitiveClass(SRPrimitiveSuperclass, "ProbePrimSuperclass");
+        SRPrimitiveStage("superclass-ready");
+        CHECK(gPrimitiveInitialize[SRPrimitiveSuperclass] == 0);
         SRPrimitiveStage("superclass-before");
         Class primSuperclassResult = class_getSuperclass(primSuperclass);
         (void)primSuperclassResult;
         SRPrimitiveStage("superclass-after");
 
-        // The metaclass read and the metaclass method-list read were fused into
-        // one expression, so a counter change could not be attributed to either
-        // of them. Each call now gets its own before/after record.
+        Class primMetaList = SRCreatePrimitiveClass(SRPrimitiveMetaList, "ProbePrimMetaList");
+        SRPrimitiveStage("metaList-ready");
+        CHECK(gPrimitiveInitialize[SRPrimitiveMetaList] == 0);
+        // The metaclass read and the metaclass method-list read stay separate,
+        // each with its own before/after record.
         SRPrimitiveStage("metaList-getClass-before");
         Class primMetaClass = object_getClass(primMetaList);
         SRPrimitiveStage("metaList-getClass-after");
@@ -404,6 +401,22 @@ int main(void) {
         Method *primMetaMethods = class_copyMethodList(primMetaClass, &primMetaCount);
         SRPrimitiveStage("metaList-list-after");
         free(primMetaMethods);
+
+        // Created only now, so no later class can disturb this baseline. It needs
+        // one real method to read; that method is never sent.
+        Class primMethodShape = objc_allocateClassPair(NSObject.class, "ProbePrimMethodShape", 0);
+        CHECK(primMethodShape != Nil);
+        gPrimitiveClass[SRPrimitiveMethodShape] = primMethodShape;
+        BOOL shapeInitialize = class_addMethod(object_getClass(primMethodShape),
+                                               NSSelectorFromString(@"initialize"),
+                                               (IMP)SRPrimitiveInitialize, "v@:");
+        BOOL shapeMethod = class_addMethod(primMethodShape, NSSelectorFromString(@"setMenuItems:"),
+                                           (IMP)SRProbeNeverCalled, "v@:@");
+        CHECK(shapeInitialize);
+        CHECK(shapeMethod);
+        objc_registerClassPair(primMethodShape);
+        SRPrimitiveStage("methodShape-ready");
+        CHECK(gPrimitiveInitialize[SRPrimitiveMethodShape] == 0);
 
         // A Method can only be had from the method list, so this class records
         // the list, the name scan and each shape read separately: if the list
