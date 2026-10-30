@@ -395,6 +395,12 @@ static NSTimeInterval SRMenuObserverMonotonic(void) {
 @interface SRMenuCallObserver (SRRecording)
 - (void)recordBuildWithItems:(id)items receiver:(id)receiver;
 - (void)recordSelectionItem:(id)item itemView:(id)view receiver:(id)receiver;
+- (BOOL)observationStillValidForSession:(NSUInteger)session;
+- (NSUInteger)acquireSelectGuardLocked;
+- (void)releaseSelectGuardLocked:(NSUInteger)token;
+- (void)releaseSelectReservationLocked:(NSUInteger)session;
+- (NSDictionary *)handlerMetadataForItem:(id)item receiver:(id)receiver gate:(BOOL (^)(void))gate;
++ (NSDictionary *)inspectHandlerGettersForItem:(id)item receiver:(id)receiver;
 - (void)recordInitWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action result:(id)result;
 @end
 
@@ -464,6 +470,94 @@ static NSString *SRMenuMetadataSignature(Method method) {
     }
     if (count > limit) [text appendString:@",<overflow>"];
     return text;
+}
+
+/* Declared-method lookup is defined below; the getter helpers above the
+ * trampolines only need its prototype. */
+static Method SRMenuDeclaredMethodInfo(id target, SEL action, NSUInteger *argumentCount);
+static BOOL SRMenuObserverArgumentIsObject(Method method, unsigned int index);
+static BOOL SRMenuObserverArgumentIsSEL(Method method, unsigned int index);
+
+/* Status of one declared zero-argument getter read on a host object. */
+typedef NS_ENUM(NSInteger, SRMenuGetterStatus) {
+    SRMenuGetterOK = 0,
+    SRMenuGetterMissing = 1,
+    SRMenuGetterFailed = 2,
+};
+
+/* A getter must really be (self, _cmd) -> value, checked on the declared method
+ * found by the direct walk; nothing is sent before this passes. */
+static BOOL SRMenuObserverZeroArgShape(Method method) {
+    return method && method_getNumberOfArguments(method) == 2 &&
+        SRMenuObserverArgumentIsObject(method, 0) && SRMenuObserverArgumentIsSEL(method, 1);
+}
+
+static BOOL SRMenuObserverValidateZeroArgObjectGetter(Method method) {
+    if (!SRMenuObserverZeroArgShape(method)) return NO;
+    char *type = method_copyReturnType(method);
+    BOOL matches = type && type[0] == '@' && type[1] != '?';
+    free(type);
+    return matches;
+}
+
+static BOOL SRMenuObserverValidateZeroArgBlockGetter(Method method) {
+    if (!SRMenuObserverZeroArgShape(method)) return NO;
+    char *type = method_copyReturnType(method);
+    BOOL matches = type && type[0] == '@' && type[1] == '?';
+    free(type);
+    return matches;
+}
+
+static BOOL SRMenuObserverValidateZeroArgSELGetter(Method method) {
+    if (!SRMenuObserverZeroArgShape(method)) return NO;
+    char *type = method_copyReturnType(method);
+    BOOL matches = type && type[0] == ':';
+    free(type);
+    return matches;
+}
+
+/* Reads a declared, zero-argument getter only after its ABI matched. Nothing is
+ * sent unless the method is really declared in the class or a superclass. */
+static id SRMenuObserverReadObjectGetter(id target, SEL selector, SRMenuGetterStatus *status) {
+    *status = SRMenuGetterMissing;
+    Method method = SRMenuDeclaredMethodInfo(target, selector, NULL);
+    if (!method || !SRMenuObserverValidateZeroArgObjectGetter(method)) return nil;
+    *status = SRMenuGetterOK;
+    @try {
+        return ((id (*)(id, SEL))method_getImplementation(method))(target, selector);
+    } @catch (__unused NSException *exception) {
+        *status = SRMenuGetterFailed;
+        return nil;
+    }
+}
+
+static SEL SRMenuObserverReadSELGetter(id target, SEL selector, SRMenuGetterStatus *status) {
+    *status = SRMenuGetterMissing;
+    Method method = SRMenuDeclaredMethodInfo(target, selector, NULL);
+    if (!method || !SRMenuObserverValidateZeroArgSELGetter(method)) return NULL;
+    *status = SRMenuGetterOK;
+    @try {
+        return ((SEL (*)(id, SEL))method_getImplementation(method))(target, selector);
+    } @catch (__unused NSException *exception) {
+        *status = SRMenuGetterFailed;
+        return NULL;
+    }
+}
+
+/* Presence only: the getter is read after ABI validation, the block is never
+ * called and never exported. */
+static BOOL SRMenuObserverReadBlockGetter(id target, SEL selector, SRMenuGetterStatus *status) {
+    *status = SRMenuGetterMissing;
+    Method method = SRMenuDeclaredMethodInfo(target, selector, NULL);
+    if (!method || !SRMenuObserverValidateZeroArgBlockGetter(method)) return NO;
+    *status = SRMenuGetterOK;
+    @try {
+        id block = ((id (*)(id, SEL))method_getImplementation(method))(target, selector);
+        return block != nil;
+    } @catch (__unused NSException *exception) {
+        *status = SRMenuGetterFailed;
+        return NO;
+    }
 }
 
 /* Trampolines read the published context under the global lock, isolate the
@@ -619,6 +713,14 @@ static Method SRMenuDeclaredMethodInfo(id target, SEL action, NSUInteger *argume
 @property(nonatomic, strong) NSObject *lock;
 /* Session token: a snapshot taken before touching host code is only committed
  * if the session is still the same when the lock is taken again. */
+/* Reservation for one in-flight click: admission is charged before any getter
+ * is read, so two overlapping clicks cannot exceed the select limit. */
+@property(nonatomic) NSUInteger selectReserved;
+/* Minimal reentrancy guard: a getter that re-enters select must not read
+ * getters again or record a second observation. */
+@property(nonatomic) BOOL selectGuardActive;
+@property(nonatomic) NSUInteger selectGuardToken;
+@property(nonatomic) NSUInteger selectGuardSeq;
 @property(nonatomic) NSUInteger session;
 /* How much of the last build array was actually inspected:
  * none = no build yet, complete = every element, truncated = cap reached,
@@ -773,6 +875,10 @@ static Method SRMenuDeclaredMethodInfo(id target, SEL action, NSUInteger *argume
             [self.constructedIndex removeAllObjects];
             [self.droppedConstructs removeAllObjects];
             self.metadataDropped = 0;
+            self.selectReserved = 0;
+            self.selectGuardActive = NO;
+            self.selectGuardToken = 0;
+            self.selectGuardSeq += 1;
             self.initLinksTruncated = NO;
             self.session++;
             self.buildState = SRMenuObserverBuildNone;
@@ -1023,42 +1129,178 @@ static Method SRMenuDeclaredMethodInfo(id target, SEL action, NSUInteger *argume
     }
 }
 
-- (void)recordSelectionItem:(id)item itemView:(id)view receiver:(id)receiver {
+- (BOOL)observationStillValidForSession:(NSUInteger)session {
     @synchronized(self.lock) {
-        if (!_sampling) return;
+        if (session != self.session || !_sampling) return NO;
         NSTimeInterval now = self.clock();
-        if (![self admitKind:@"select" limit:SRMenuObserverSelectLimit used:self.selectCount now:now]) return;
-        BOOL itemKnown = item && self.itemClass && object_getClass(item) == self.itemClass;
-        BOOL viewKnown = view && self.itemClass && object_getClass(view) == self.itemClass;
-        /* In-session construction link: identity only, never a business message
-         * identity. `init` is the metadata index of this exact constructed
-         * object, or an explicit reason why it cannot be named. */
-        id initValue = @"<none>";
-        NSString *link = @"none";
-        if (self.initCount > 0) {
-            NSNumber *index = item ? [self.constructedIndex objectForKey:item] : nil;
-            if (index) { initValue = index; link = @"matched"; }
-            else if (item && [self.droppedConstructs containsObject:item]) { initValue = @"<overflow>"; link = @"unmatched"; }
-            else { initValue = @"<unmatched>"; link = @"unmatched"; }
-        }
-        [self appendMetadataLocked:@{@"kind": @"select",
-            @"receiver": SRMenuMetadataToken(NSStringFromClass(object_getClass(receiver))),
-            @"view": SRMenuMetadataToken(NSStringFromClass(object_getClass(view))),
-            @"link": link,
-            @"init": initValue}];
-        self.selectCount++;
-        [self.events addObject:@{@"kind": @"select",
-            @"main": @(NSThread.isMainThread),
-            @"itemNull": @(item == nil),
-            @"viewNull": @(view == nil),
-            @"itemKnown": @(itemKnown),
-            @"viewKnown": @(viewKnown),
-            @"itemPresence": [self presenceForObject:item],
-            @"viewPresence": [self presenceForObject:view],
-            @"coverage": [self coverageName],
-            @"sameObject": @(item != nil && item == view)}];
+        if (!isfinite(now) || now >= self.deadline) { [self stopLocked:@"timeout"]; return NO; }
+        return YES;
     }
 }
+
+- (NSUInteger)acquireSelectGuardLocked {
+    self.selectGuardActive = YES;
+    self.selectGuardToken = ++self.selectGuardSeq;
+    return self.selectGuardToken;
+}
+
+- (void)releaseSelectGuardLocked:(NSUInteger)token {
+    // A stale owner must not clear a newer call's guard.
+    if (!self.selectGuardActive || self.selectGuardToken != token) return;
+    self.selectGuardActive = NO;
+}
+
+/* Candidate handler clues for the clicked item, read only from declared
+ * zero-argument getters after their ABI matched. After every getter returns the
+ * session, sampling state and deadline are re-checked; if any changed, no
+ * further getter is read and no observation is committed. Never calls the
+ * action, never runs the block, never reads extraInfo/userInfo or any message
+ * content. */
+- (void)releaseSelectReservationLocked:(NSUInteger)session {
+    // Only the session that owns the reservation may release it; a new session
+    // already discarded the old one when it started.
+    if (session != self.session) return;
+    if (self.selectReserved > 0) self.selectReserved -= 1;
+}
+
+/* Candidate handler clues for the clicked item, read only from declared
+ * zero-argument getters after their ABI matched. `gate` is called after every
+ * getter; returning NO stops the remaining reads and aborts the observation.
+ * Never calls the action, never runs the block, never reads extraInfo/userInfo
+ * or any message content. */
+- (NSDictionary *)handlerMetadataForItem:(id)item receiver:(id)receiver gate:(BOOL (^)(void))gate {
+    SRMenuGetterStatus targetStatus = SRMenuGetterMissing;
+    SRMenuGetterStatus actionStatus = SRMenuGetterMissing;
+    SRMenuGetterStatus blockStatus = SRMenuGetterMissing;
+    SRMenuGetterStatus responderStatus = SRMenuGetterMissing;
+    id target = nil; SEL action = NULL; BOOL blockPresent = NO;
+    id responder = nil;
+    if (item) {
+        target = SRMenuObserverReadObjectGetter(item, NSSelectorFromString(@"target"), &targetStatus);
+        if (!gate()) return nil;
+        action = SRMenuObserverReadSELGetter(item, NSSelectorFromString(@"action"), &actionStatus);
+        if (!gate()) return nil;
+        blockPresent = SRMenuObserverReadBlockGetter(item, NSSelectorFromString(@"actionBlock"), &blockStatus);
+        if (!gate()) return nil;
+    }
+    NSString *kind = @"none";
+    NSString *targetToken = @"<missing>";
+    NSString *actionToken = @"<missing>";
+    NSString *signature = @"<missing>";
+    NSString *responderToken = @"<nil>";
+    NSString *responderSignature = @"<missing>";
+    NSString *blockToken = blockStatus == SRMenuGetterOK ? (blockPresent ? @"yes" : @"no")
+        : (blockStatus == SRMenuGetterFailed ? @"<error>" : @"<missing>");
+    if (targetStatus == SRMenuGetterFailed) targetToken = @"<error>";
+    else if (targetStatus == SRMenuGetterMissing) targetToken = @"<missing>";
+    else targetToken = SRMenuMetadataToken(target ? NSStringFromClass(object_getClass(target)) : nil);
+    if (actionStatus == SRMenuGetterFailed) actionToken = @"<error>";
+    else if (actionStatus == SRMenuGetterMissing) actionToken = @"<missing>";
+    else actionToken = action ? SRMenuMetadataToken(NSStringFromSelector(action)) : @"<nil>";
+    if (targetStatus == SRMenuGetterOK && target) {
+        kind = @"target";
+        if (actionStatus == SRMenuGetterOK && action) {
+            signature = SRMenuMetadataSignature(SRMenuDeclaredMethodInfo(target, action, NULL));
+        }
+    } else if (targetStatus == SRMenuGetterOK) {
+        targetToken = @"<nil>";
+        if (actionStatus == SRMenuGetterOK && action) {
+            responder = SRMenuObserverReadObjectGetter(receiver, NSSelectorFromString(@"responder"), &responderStatus);
+            if (!gate()) return nil;
+            if (responderStatus == SRMenuGetterOK && responder) {
+                kind = @"responder";
+                responderToken = SRMenuMetadataToken(NSStringFromClass(object_getClass(responder)));
+                responderSignature = SRMenuMetadataSignature(SRMenuDeclaredMethodInfo(responder, action, NULL));
+            } else {
+                responderToken = responderStatus == SRMenuGetterFailed ? @"<error>"
+                    : (responderStatus == SRMenuGetterOK ? @"<nil>" : @"<missing>");
+                if (blockPresent) kind = @"block";
+            }
+        } else if (blockPresent) {
+            kind = @"block";
+        }
+    } else if (blockPresent) {
+        kind = @"block";
+    }
+    return @{@"handlerKind": kind, @"handlerTarget": targetToken, @"handlerAction": actionToken,
+             @"handlerSignature": signature, @"responder": responderToken,
+             @"responderSignature": responderSignature, @"actionBlock": blockToken};
+}
+
+/* Private test seam: inspects the getter ABI of arbitrary objects without a
+ * session. Not part of the public header and never used by production paths. */
++ (NSDictionary *)inspectHandlerGettersForItem:(id)item receiver:(id)receiver {
+    SRMenuCallObserver *probe = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 0; }];
+    return [probe handlerMetadataForItem:item receiver:receiver gate:^BOOL { return YES; }];
+}
+
+- (void)recordSelectionItem:(id)item itemView:(id)view receiver:(id)receiver {
+    BOOL itemKnown = item && self.itemClass && object_getClass(item) == self.itemClass;
+    NSUInteger session = 0, guard = 0;
+    BOOL reserved = NO;
+    @try {
+        /* Phase 1: admission, reservation and guard before any host getter. */
+        @synchronized(self.lock) {
+            if (!_sampling) return;
+            if (self.selectGuardActive) return;      // nested click: forward only
+            guard = [self acquireSelectGuardLocked];
+            NSTimeInterval now = self.clock();
+            if (![self admitKind:@"select" limit:SRMenuObserverSelectLimit
+                            used:self.selectCount + self.selectReserved now:now]) return;
+            session = self.session;
+            self.selectReserved += 1;
+            reserved = YES;
+        }
+        /* Phase 2: outside the lock, with a check after every getter. */
+        NSDictionary *handler = itemKnown
+            ? [self handlerMetadataForItem:item receiver:receiver gate:^BOOL {
+                return [self observationStillValidForSession:session];
+            }]
+            : nil;
+        /* Phase 3: commit only for the session that admitted the click, and only
+         * if the deadline still holds at commit time. */
+        @synchronized(self.lock) {
+            if (reserved) { [self releaseSelectReservationLocked:session]; reserved = NO; }
+            if (session != self.session || !_sampling) return;
+            NSTimeInterval commitNow = self.clock();
+            if (!isfinite(commitNow) || commitNow >= self.deadline) { [self stopLocked:@"timeout"]; return; }
+            if (self.events.count >= self.budget) { [self stopLocked:@"budget"]; return; }
+            BOOL viewKnown = view && self.itemClass && object_getClass(view) == self.itemClass;
+            id initValue = @"<none>";
+            NSString *link = @"none";
+            if (self.initCount > 0) {
+                NSNumber *index = item ? [self.constructedIndex objectForKey:item] : nil;
+                if (index) { initValue = index; link = @"matched"; }
+                else if (item && [self.droppedConstructs containsObject:item]) { initValue = @"<overflow>"; link = @"unmatched"; }
+                else { initValue = @"<unmatched>"; link = @"unmatched"; }
+            }
+            NSMutableDictionary *entry = [@{@"kind": @"select",
+                @"receiver": SRMenuMetadataToken(NSStringFromClass(object_getClass(receiver))),
+                @"view": SRMenuMetadataToken(NSStringFromClass(object_getClass(view))),
+                @"link": link,
+                @"init": initValue} mutableCopy];
+            if (handler) [entry addEntriesFromDictionary:handler];
+            [self appendMetadataLocked:entry];
+            self.selectCount++;
+            [self.events addObject:@{@"kind": @"select",
+                @"main": @(NSThread.isMainThread),
+                @"itemNull": @(item == nil),
+                @"viewNull": @(view == nil),
+                @"itemKnown": @(itemKnown),
+                @"viewKnown": @(viewKnown),
+                @"itemPresence": [self presenceForObject:item],
+                @"viewPresence": [self presenceForObject:view],
+                @"coverage": [self coverageName],
+                @"sameObject": @(item != nil && item == view)}];
+        }
+    } @finally {
+        @synchronized(self.lock) {
+            if (reserved) { [self releaseSelectReservationLocked:session]; reserved = NO; }
+            [self releaseSelectGuardLocked:guard];
+        }
+    }
+}
+
 
 - (void)recordInitWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action result:(id)result {
     @synchronized(self.lock) {

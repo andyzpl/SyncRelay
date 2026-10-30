@@ -197,8 +197,11 @@ typedef NS_ENUM(NSUInteger, SRMenuCallObserverState) {
 
 /* Fixed keys only: state, installed, sampling, restoreRefused, stopReason,
  * counts, budget, the bounded event list and `menuCallMetadata` (bounded class
- * and selector tokens plus normalized type tokens). No address, description,
- * account, body, message identity, group, path or media token is included. */
+ * and selector tokens plus normalized type tokens). The select entries also
+ * carry candidate handler clues of the clicked item (target/responder class,
+ * action name, declared signature and block presence) read only from declared
+ * getters. No address, description, account, body, message identity, group,
+ * path or media token is included. */
 - (NSDictionary *)diagnostics;
 @end
 NS_ASSUME_NONNULL_END

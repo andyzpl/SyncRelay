@@ -155,7 +155,9 @@ static void SRNeverCalled4(id self, SEL command, id first, id second) {
 @end
 
 /* --- observation-only menu call observer fixtures ----------------------- */
+static NSUInteger gResponderGetterCalls = 0;
 @interface SRObservedMenu : NSObject
+@property(nonatomic, strong) id responder;
 @property(nonatomic) NSUInteger setCalls;
 @property(nonatomic) NSUInteger selectCalls;
 @property(nonatomic) BOOL raiseOnSet;
@@ -165,6 +167,8 @@ static void SRNeverCalled4(id self, SEL command, id first, id second) {
 - (void)observeAction:(id)item;
 @end
 @implementation SRObservedMenu
+@synthesize responder = _responder;
+- (id)responder { gResponderGetterCalls++; return _responder; }
 - (void)setMenuItems:(NSArray *)items {
     self.setCalls++;
     self.lastItems = items;
@@ -176,14 +180,36 @@ static void SRNeverCalled4(id self, SEL command, id first, id second) {
 - (void)observeAction:(id)item { (void)item; }
 @end
 
+/* Declares the three handler getters the observer may read after ABI checks. */
+static NSUInteger gTargetGetterCalls = 0;
+static NSUInteger gActionGetterCalls = 0;
+static NSUInteger gBlockGetterCalls = 0;
 @interface SRObservedItem : NSObject
+@property(nonatomic, strong) id handlerTarget;
+@property(nonatomic) SEL handlerAction;
+@property(nonatomic, copy) void (^handlerBlock)(void);
+@property(nonatomic) BOOL raiseOnHandlerTarget;
+@property(nonatomic, copy) void (^targetGetterHook)(void);
 - (instancetype)initWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action;
+- (id)target;
+- (SEL)action;
+- (void (^)(void))actionBlock;
 @end
 /* The original implementation's behaviour is switched here so the init-family
  * ownership cases can all use the one allowed class pair. 0 = self,
  * 1 = nil, 2 = replacement object. */
 static NSInteger gItemInitMode = 0;
 @implementation SRObservedItem
+- (id)target {
+    gTargetGetterCalls++;
+    if (self.targetGetterHook) self.targetGetterHook();
+    if (self.raiseOnHandlerTarget) {
+        @throw [NSException exceptionWithName:@"SRTestGetter" reason:@"target" userInfo:nil];
+    }
+    return self.handlerTarget;
+}
+- (SEL)action { gActionGetterCalls++; return self.handlerAction; }
+- (void (^)(void))actionBlock { gBlockGetterCalls++; return self.handlerBlock; }
 - (instancetype)initWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action {
     (void)title; (void)icon; (void)target; (void)action;
     if (gItemInitMode == 1) return nil;
@@ -255,11 +281,12 @@ static NSUInteger gArrayIndexCalls = 0;
 @end
 
 /* Declares its action, so the signature is read from a real method list. */
+static NSUInteger gOtherActionCalls = 0;
 @interface SRSecondaryTarget : NSObject
 - (void)otherAction:(id)sender;
 @end
 @implementation SRSecondaryTarget
-- (void)otherAction:(__unused id)sender {}
+- (void)otherAction:(__unused id)sender { gOtherActionCalls++; }
 @end
 
 /* Must never be asked to resolve: the observer reads declared methods only. */
@@ -268,6 +295,41 @@ static NSUInteger gResolverCalls = 0;
 @end
 @implementation SRUnresolvedTarget
 + (BOOL)resolveInstanceMethod:(__unused SEL)selector { gResolverCalls++; return NO; }
+@end
+
+/* Wrong getter shapes: none of these may be called, and none may wake the
+ * runtime resolver. */
+static NSUInteger gWrongTargetCalls = 0;
+static NSUInteger gWrongActionCalls = 0;
+static NSUInteger gWrongBlockCalls = 0;
+static NSUInteger gWrongResponderCalls = 0;
+static NSUInteger gWrongABIResolverCalls = 0;
+@interface SRWrongABIItem : NSObject
+@end
+@implementation SRWrongABIItem
++ (BOOL)resolveInstanceMethod:(__unused SEL)selector { gWrongABIResolverCalls++; return NO; }
+- (int)target { gWrongTargetCalls++; return 7; }
+- (void)action { gWrongActionCalls++; }
+- (id)actionBlock { gWrongBlockCalls++; return [NSObject new]; }
+@end
+@interface SRWrongABIReceiver : NSObject
+@end
+@implementation SRWrongABIReceiver
+- (int)responder { gWrongResponderCalls++; return 9; }
+@end
+@interface SRResponderABIItem : NSObject
+@end
+@implementation SRResponderABIItem
+- (id)target { return nil; }
+- (SEL)action { return @selector(otherAction:); }
+- (void (^)(void))actionBlock { return nil; }
+@end
+@interface SRNoGetterItem : NSObject
+@end
+@implementation SRNoGetterItem
+@end
+@interface SRMenuCallObserver (SRTestSeam)
++ (NSDictionary *)inspectHandlerGettersForItem:(id)item receiver:(id)receiver;
 @end
 
 /* A later hook installed on top of the observer's trampoline. */
@@ -509,8 +571,14 @@ int main(void) {
         // (2) one installer per process.
         __block NSTimeInterval observedNow = 1000;
         __block BOOL clockThrows = NO;
+        __block NSMutableArray<NSNumber *> *clockScript = nil;
         SRMenuCallObserver *observer = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval {
             if (clockThrows) @throw [NSException exceptionWithName:@"SRTestClock" reason:@"clock" userInfo:nil];
+            if (clockScript.count) {
+                double value = clockScript.firstObject.doubleValue;
+                [clockScript removeObjectAtIndex:0];
+                return value;
+            }
             return observedNow;
         }];
         CHECK(!observer.installed);
@@ -851,6 +919,242 @@ int main(void) {
         CHECK(gResolverCalls == 0);
         [observer stopSampling];
         CHECK(!observer.sampling);
+
+        // (8) Clicked-item handler clues from declared getters only.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:16 error:NULL]);
+        SRSecondaryTarget *handlerTarget = [SRSecondaryTarget new];
+        SRObservedItem *handlerItem = [[SRObservedItem alloc] init];
+        handlerItem.handlerTarget = handlerTarget;
+        handlerItem.handlerAction = @selector(otherAction:);
+        gOtherActionCalls = 0;
+        [observedMenu onMenuItemSelected:handlerItem itemView:nil];
+        NSDictionary *handlerMeta = [(NSArray *)observer.diagnostics[@"menuCallMetadata"][@"entries"] lastObject];
+        CHECK([handlerMeta[@"handlerKind"] isEqual:@"target"]);
+        CHECK([handlerMeta[@"handlerTarget"] isEqual:@"SRSecondaryTarget"]);
+        CHECK([handlerMeta[@"handlerAction"] isEqual:@"otherAction:"]);
+        CHECK([handlerMeta[@"handlerSignature"] isEqual:@"ret=void;args=object,sel,object"]);
+        CHECK([handlerMeta[@"actionBlock"] isEqual:@"no"]);
+        CHECK(gOtherActionCalls == 0);           // the action is never called
+
+        // target nil: the same click resolves the controller's responder.
+        SRObservedItem *responderItem = [[SRObservedItem alloc] init];
+        responderItem.handlerAction = @selector(otherAction:);
+        observedMenu.responder = handlerTarget;
+        [observedMenu onMenuItemSelected:responderItem itemView:nil];
+        NSDictionary *responderMeta = [(NSArray *)observer.diagnostics[@"menuCallMetadata"][@"entries"] lastObject];
+        CHECK([responderMeta[@"handlerKind"] isEqual:@"responder"]);
+        CHECK([responderMeta[@"handlerTarget"] isEqual:@"<nil>"]);
+        CHECK([responderMeta[@"responder"] isEqual:@"SRSecondaryTarget"]);
+        CHECK([responderMeta[@"responderSignature"] isEqual:@"ret=void;args=object,sel,object"]);
+        observedMenu.responder = nil;
+
+        // Block presence is recorded; the block is never executed.
+        __block NSUInteger blockRuns = 0;
+        SRObservedItem *blockItem = [[SRObservedItem alloc] init];
+        blockItem.handlerBlock = ^{ blockRuns++; };
+        [observedMenu onMenuItemSelected:blockItem itemView:nil];
+        NSDictionary *blockMeta = [(NSArray *)observer.diagnostics[@"menuCallMetadata"][@"entries"] lastObject];
+        CHECK([blockMeta[@"handlerKind"] isEqual:@"block"]);
+        CHECK([blockMeta[@"actionBlock"] isEqual:@"yes"]);
+        CHECK(blockRuns == 0);
+
+        // A throwing getter is explicit and never breaks the host call.
+        SRObservedItem *raisingItem = [[SRObservedItem alloc] init];
+        raisingItem.raiseOnHandlerTarget = YES;
+        NSUInteger hostBeforeRaising = observedMenu.selectCalls;
+        [observedMenu onMenuItemSelected:raisingItem itemView:nil];
+        CHECK(observedMenu.selectCalls == hostBeforeRaising + 1);
+        NSDictionary *raisingMeta = [(NSArray *)observer.diagnostics[@"menuCallMetadata"][@"entries"] lastObject];
+        CHECK([raisingMeta[@"handlerTarget"] isEqual:@"<error>"]);
+        CHECK([raisingMeta[@"handlerKind"] isEqual:@"none"]);
+
+        // An undeclared action stays undeclared and never wakes the resolver.
+        SRUnresolvedTarget *unresolvedTarget = [SRUnresolvedTarget new];
+        SRObservedItem *handlerUnresolvedItem = [[SRObservedItem alloc] init];
+        handlerUnresolvedItem.handlerTarget = unresolvedTarget;
+        handlerUnresolvedItem.handlerAction = NSSelectorFromString(@"missingAction:");
+        gResolverCalls = 0;
+        [observedMenu onMenuItemSelected:handlerUnresolvedItem itemView:nil];
+        NSDictionary *unresolvedMeta = [(NSArray *)observer.diagnostics[@"menuCallMetadata"][@"entries"] lastObject];
+        CHECK([unresolvedMeta[@"handlerSignature"] isEqual:@"<undeclared>"]);
+        CHECK(gResolverCalls == 0);
+
+        // After a stop no further getter is read.
+        [observer stopSampling];
+        CHECK(!observer.sampling);
+        NSUInteger targetGets = gTargetGetterCalls;
+        [observedMenu onMenuItemSelected:handlerItem itemView:nil];
+        CHECK(gTargetGetterCalls == targetGets);
+
+        // (9) The getter window is protected: stop, restart, deadline or a
+        // reentrant click during a getter stops further reads and never commits
+        // the stale observation into another session.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        SRObservedItem *stopItem = [[SRObservedItem alloc] init];
+        stopItem.handlerTarget = handlerTarget;
+        stopItem.handlerAction = @selector(otherAction:);
+        stopItem.targetGetterHook = ^{ [observer stopSampling]; };
+        gTargetGetterCalls = 0; gActionGetterCalls = 0; gBlockGetterCalls = 0;
+        [observedMenu onMenuItemSelected:stopItem itemView:nil];
+        CHECK(gTargetGetterCalls == 1);
+        CHECK(gActionGetterCalls == 0 && gBlockGetterCalls == 0);
+        CHECK(!observer.sampling);
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 0);
+
+        // A getter may even restart a session; the old click must not land in it.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        NSUInteger beforeRestartToken = observer.sessionToken;
+        SRObservedItem *restartItem = [[SRObservedItem alloc] init];
+        restartItem.handlerTarget = handlerTarget;
+        restartItem.handlerAction = @selector(otherAction:);
+        restartItem.targetGetterHook = ^{
+            [observer stopSampling];
+            [observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL];
+        };
+        gTargetGetterCalls = 0; gActionGetterCalls = 0;
+        [observedMenu onMenuItemSelected:restartItem itemView:nil];
+        CHECK(gTargetGetterCalls == 1);
+        CHECK(gActionGetterCalls == 0);
+        CHECK(observer.sessionToken != beforeRestartToken);
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 0);
+        [observer stopSampling];
+
+        // A getter that crosses the deadline stops the session and the reads.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        SRObservedItem *deadlineItem = [[SRObservedItem alloc] init];
+        deadlineItem.handlerTarget = handlerTarget;
+        deadlineItem.handlerAction = @selector(otherAction:);
+        deadlineItem.targetGetterHook = ^{ observedNow += 31; };
+        gTargetGetterCalls = 0; gActionGetterCalls = 0;
+        [observedMenu onMenuItemSelected:deadlineItem itemView:nil];
+        CHECK(gTargetGetterCalls == 1);
+        CHECK(gActionGetterCalls == 0);
+        CHECK(!observer.sampling);
+        CHECK([observer.diagnostics[@"stopReason"] isEqual:@"timeout"]);
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 0);
+
+        // Reentrant click from a getter: bounded reads, both calls forwarded once.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        SRObservedItem *nestedItem = [[SRObservedItem alloc] init];
+        SRObservedItem *outerItem = [[SRObservedItem alloc] init];
+        outerItem.handlerTarget = handlerTarget;
+        outerItem.handlerAction = @selector(otherAction:);
+        outerItem.targetGetterHook = ^{ [observedMenu onMenuItemSelected:nestedItem itemView:nil]; };
+        gTargetGetterCalls = 0;
+        NSUInteger forwardsBeforeNested = observedMenu.selectCalls;
+        [observedMenu onMenuItemSelected:outerItem itemView:nil];
+        CHECK(observedMenu.selectCalls == forwardsBeforeNested + 2);
+        CHECK(gTargetGetterCalls == 1);
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 1);
+
+        // After the guard is released, a later normal click is observed again.
+        [observedMenu onMenuItemSelected:nestedItem itemView:nil];
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 2);
+        [observer stopSampling];
+
+        // Budget exhaustion stops sampling before any getter is read.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:5 error:NULL]);
+        for (NSUInteger index = 0; index < 5; index++) [observedMenu onMenuItemSelected:nestedItem itemView:nil];
+        gTargetGetterCalls = 0; gActionGetterCalls = 0; gBlockGetterCalls = 0;
+        gResponderGetterCalls = 0;
+        [observedMenu onMenuItemSelected:nestedItem itemView:nil];
+        CHECK(gTargetGetterCalls == 0);
+        CHECK(gActionGetterCalls == 0 && gBlockGetterCalls == 0);
+        CHECK(gResponderGetterCalls == 0);
+        CHECK(!observer.sampling);
+        CHECK([observer.diagnostics[@"stopReason"] isEqual:@"budget"]);
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 5);
+
+        // Select-limit rejection keeps the original dropped accounting.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:24 error:NULL]);
+        for (NSUInteger index = 0; index < 16; index++) [observedMenu onMenuItemSelected:nestedItem itemView:nil];
+        gTargetGetterCalls = 0; gActionGetterCalls = 0; gBlockGetterCalls = 0;
+        gResponderGetterCalls = 0;
+        [observedMenu onMenuItemSelected:nestedItem itemView:nil];
+        CHECK(gTargetGetterCalls == 0);
+        CHECK(gActionGetterCalls == 0 && gBlockGetterCalls == 0);
+        CHECK(gResponderGetterCalls == 0);
+        CHECK([observer.diagnostics[@"counts"][@"dropped"] unsignedIntegerValue] == 1);
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 16);
+        [observer stopSampling];
+
+        // A stopped session never reads responder either.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        observedMenu.responder = handlerTarget;
+        SRObservedItem *responderStopItem = [[SRObservedItem alloc] init];
+        responderStopItem.handlerAction = @selector(otherAction:);
+        responderStopItem.targetGetterHook = ^{ [observer stopSampling]; };
+        gTargetGetterCalls = 0; gResponderGetterCalls = 0;
+        [observedMenu onMenuItemSelected:responderStopItem itemView:nil];
+        CHECK(gTargetGetterCalls == 1);
+        CHECK(gResponderGetterCalls == 0);
+        observedMenu.responder = nil;
+
+        // (10) Guard cleanup covers admission-clock failures, the commit deadline
+        // is checked again, and wrong getter shapes are rejected without calls.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        clockThrows = YES;
+        NSUInteger forwardsBeforeClockThrow = observedMenu.selectCalls;
+        [observedMenu onMenuItemSelected:nestedItem itemView:nil];
+        CHECK(observedMenu.selectCalls == forwardsBeforeClockThrow + 1);
+        clockThrows = NO;
+        CHECK(observer.sampling);                      // no session was reopened
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 0);
+        gTargetGetterCalls = 0;
+        [observedMenu onMenuItemSelected:nestedItem itemView:nil];
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == 1);
+        CHECK(gTargetGetterCalls <= 1);                // guard was released
+        [observer stopSampling];
+
+        // Getter checks pass, but the commit clock is past the deadline.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        NSTimeInterval cutoff = observedNow + 30;
+        // diagnostics reads self.sampling, which reads the clock: taking the
+        // baselines after the script is armed would spend the admission tick.
+        NSUInteger selectsBeforeLateCommit = [observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue];
+        NSUInteger metadataBeforeLateCommit = [(NSArray *)observer.diagnostics[@"menuCallMetadata"][@"entries"] count];
+        NSUInteger forwardsBeforeLateCommit = observedMenu.selectCalls;
+        gTargetGetterCalls = 0; gActionGetterCalls = 0; gBlockGetterCalls = 0;
+        // Five ticks: admission and the three getter checks are all before the
+        // deadline, the fifth one - the commit check - crosses it.
+        clockScript = [@[@(cutoff - 1), @(cutoff - 1), @(cutoff - 1), @(cutoff - 1), @(cutoff + 1)] mutableCopy];
+        [observedMenu onMenuItemSelected:nestedItem itemView:nil];
+        // Before touching sampling/diagnostics again: every getter ran once and
+        // the script was consumed exactly.
+        CHECK(gTargetGetterCalls == 1);
+        CHECK(gActionGetterCalls == 1 && gBlockGetterCalls == 1);
+        CHECK(clockScript.count == 0);
+        CHECK(observedMenu.selectCalls == forwardsBeforeLateCommit + 1);
+        CHECK(!observer.sampling);
+        CHECK([observer.diagnostics[@"stopReason"] isEqual:@"timeout"]);
+        CHECK([observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue] == selectsBeforeLateCommit);
+        CHECK([(NSArray *)observer.diagnostics[@"menuCallMetadata"][@"entries"] count] == metadataBeforeLateCommit);
+        clockScript = nil;
+
+        // Wrong getter ABI: rejected before any call, no resolver.
+        gWrongTargetCalls = 0; gWrongActionCalls = 0; gWrongBlockCalls = 0;
+        gWrongResponderCalls = 0; gWrongABIResolverCalls = 0;
+        NSDictionary *wrongABI = [SRMenuCallObserver inspectHandlerGettersForItem:[SRWrongABIItem new]
+                                                                        receiver:[SRWrongABIReceiver new]];
+        CHECK([wrongABI[@"handlerTarget"] isEqual:@"<missing>"]);
+        CHECK([wrongABI[@"handlerAction"] isEqual:@"<missing>"]);
+        CHECK([wrongABI[@"actionBlock"] isEqual:@"<missing>"]);
+        CHECK(gWrongTargetCalls == 0 && gWrongActionCalls == 0 && gWrongBlockCalls == 0);
+        CHECK(gWrongABIResolverCalls == 0);
+
+        // A valid item cannot rescue a wrong responder getter.
+        NSDictionary *wrongResponder = [SRMenuCallObserver inspectHandlerGettersForItem:[SRResponderABIItem new]
+                                                                             receiver:[SRWrongABIReceiver new]];
+        CHECK([wrongResponder[@"handlerTarget"] isEqual:@"<nil>"]);
+        CHECK([wrongResponder[@"responder"] isEqual:@"<missing>"]);
+        CHECK(gWrongResponderCalls == 0);
+
+        // An object with no getters is explicit, not guessed.
+        NSDictionary *noGetters = [SRMenuCallObserver inspectHandlerGettersForItem:[SRNoGetterItem new]
+                                                                        receiver:[SRNoGetterItem new]];
+        CHECK([noGetters[@"handlerKind"] isEqual:@"none"]);
+        CHECK([noGetters[@"handlerTarget"] isEqual:@"<missing>"]);
+        CHECK([noGetters[@"actionBlock"] isEqual:@"<missing>"]);
 
         // Lifecycle stop keeps the interceptors and clears weak references.
         CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
