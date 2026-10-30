@@ -35,6 +35,17 @@ typedef void (^SRMenuABIResolver)(NSString *className,
 
 - (instancetype)initWithResolver:(nullable SRMenuABIResolver)resolver;
 
+/* Explicit collection: runs the read-only scan once and replaces the stored
+ * entries, so only the latest three results are kept. It never runs from init,
+ * from -lastSnapshot, or from the diagnostic report; one call is one collection
+ * and nothing retries on its own. The default state before the first call is
+ * "not collected", which the diagnostic report renders as `not_run`. */
+- (void)collect;
+
+/* The most recent collection, or nil before the first -collect. Read-only:
+ * reading it never re-runs the scan and never changes the stored entries. */
+- (nullable NSArray<NSDictionary *> *)lastSnapshot;
+
 /* Three entries, in this order:
  *   MMMenuController / setMenuItems:
  *   MMMenuController / onMenuItemSelected:itemView:

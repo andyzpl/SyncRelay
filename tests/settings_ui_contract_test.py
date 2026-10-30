@@ -117,6 +117,77 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertIn('MAX(0, MIN(1, unitY))', source)
         self.assertIn('SREntryPreferencesChangedNotification', source)
 
+    def test_menu_abi_probe_separates_explicit_collection_from_read_only_latest(self):
+        header = (ROOT / 'Adapter/SRMenuABIProbe.h').read_text(encoding='utf-8')
+        source = (ROOT / 'Adapter/SRMenuABIProbe.m').read_text(encoding='utf-8')
+        self.assertIn('- (void)collect;', header)
+        self.assertIn('- (nullable NSArray<NSDictionary *> *)lastSnapshot;', header)
+        collect = source.split('- (void)collect {', 1)[1].split('}', 1)[0]
+        self.assertIn('self.lastSnapshot = [self snapshot];', collect)
+        snapshot = source.split('- (NSArray<NSDictionary *> *)snapshot {', 1)[1]
+        self.assertNotIn('lastSnapshot', snapshot.split('@end', 1)[0])
+
+    def test_menu_abi_row_is_appended_without_an_account_gate(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertIn('if (section == 0) return 11;', panel)
+        self.assertIn('if (path.row == 10) [self confirmMenuABIDiagnostic];', panel)
+        # "more settings" is the logical section 0; the new row is handled before
+        # the account gate, so it never touches identity or storage.
+        more = panel.split('if (section == 0) {', 1)[1].split('if (![self checkAccount]) return;', 1)[0]
+        self.assertIn('path.row == 10', more)
+        self.assertIn(u'@"\u83dc\u5355 ABI \u8bca\u65ad"', panel)
+
+    def test_one_shared_probe_is_injected_into_both_panel_paths(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertEqual(panel.count('entry.menuABIProbe = [[SRMenuABIProbe alloc] initWithResolver:nil];'), 1)
+        self.assertEqual(panel.count('panel.menuABIProbe = self.menuABIProbe;'), 2)
+        self.assertIn('@property(nonatomic, strong) SRMenuABIProbe *menuABIProbe;', panel)
+
+    def test_confirmation_checks_liveness_and_only_the_action_collects(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        confirm = panel.split('- (void)confirmMenuABIDiagnostic {', 1)[1].split('\n- (NSDictionary *)diagnosticDraft', 1)[0]
+        self.assertIn('UIAlertActionStyleCancel', confirm)
+        self.assertIn('UIApplicationStateActive', confirm)
+        self.assertIn('panel.viewIfLoaded.window', confirm)
+        self.assertIn('panel.isBeingDismissed', confirm)
+        self.assertIn('panel.navigationController.topViewController != panel', confirm)
+        self.assertEqual(confirm.count('[panel.menuABIProbe collect];'), 1)
+        self.assertNotIn('checkAccount', confirm)
+        # Nothing else in the panel may collect: no lifecycle, refresh or report path.
+        self.assertEqual(panel.count('menuABIProbe collect]'), 1)
+        self.assertEqual(panel.count('menuABIProbe lastSnapshot]'), 2)
+
+    def test_diagnostic_report_reads_latest_menu_abi_without_collecting(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        report = panel.split('- (NSDictionary *)diagnosticReport {', 1)[1].split('- (void)exportDiagnosticFromController:', 1)[0]
+        self.assertIn('report[@"menuABI"] = [self menuABIDiagnostic];', report)
+        self.assertNotIn('collect]', report)
+        self.assertNotIn('snapshot]', report)
+        diagnostic = panel.split('- (NSDictionary *)menuABIDiagnostic {', 1)[1].split('\n- (void)confirmMenuABIDiagnostic', 1)[0]
+        self.assertIn('lastSnapshot', diagnostic)
+        self.assertIn('@"not_run"', diagnostic)
+        self.assertIn('@"collected"', diagnostic)
+        for word in ('compatible', 'supported', 'passed'):
+            self.assertNotIn(word, diagnostic)
+
+    def test_reused_settings_cells_clear_accessibility_before_row_branches(self):
+        source = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        # Scope to the settings panel implementation and its path-based method so
+        # the earlier SRPicker data source cannot satisfy these assertions.
+        panel = source.split('@implementation SRPanel', 1)[1].split('@implementation SREntry', 1)[0]
+        method = panel.split(
+            '- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {', 1)[1]
+        body = method.split('- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:', 1)[0]
+        self.assertEqual(body.count('cell.accessibilityLabel = nil;'), 1)
+        self.assertEqual(body.count('cell.accessibilityValue = nil;'), 1)
+        self.assertLess(body.index('cell.accessibilityLabel = nil;'), body.index('if (section == 0) {'))
+        self.assertLess(body.index('cell.accessibilityValue = nil;'), body.index('if (section == 0) {'))
+        # Only the source-time and menu ABI rows set a custom voice afterwards.
+        self.assertEqual(body.count('cell.accessibilityLabel ='), 3)
+        self.assertEqual(body.count('cell.accessibilityValue ='), 3)
+        self.assertIn(u'cell.accessibilityLabel = @"\u6765\u6e90\u65f6\u95f4\u91c7\u6837";', body)
+        self.assertIn(u'cell.accessibilityLabel = @"\u83dc\u5355 ABI \u8bca\u65ad";', body)
+
 
 if __name__ == '__main__':
     unittest.main()

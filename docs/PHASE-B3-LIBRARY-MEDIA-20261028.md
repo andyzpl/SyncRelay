@@ -132,6 +132,27 @@ Python 侧只做源码契约（`tests/phase_b3_media_contract_test.py`）：生�
 - `libraryMenuEntryEnabled` 是独立的 `NSUserDefaults` 偏好，默认关闭；本快照没有在
   设置页显示一个会让用户误以为菜单已接通的开关，也没有安装 `MSHookMessageEx`。
   因而微信长按菜单目前仍不会出现「SR 入库」，这不是宿主 ABI 或真机通过的证据。
-- 新增的原生菜单/入库测试已注册到 macOS CI，但本机 Windows 未编译、链接或执行；菜单
-  ABI、UIKit、真实宿主共存和真机行为仍待验证。Python 全量为 **379 项**，只代表源码
-  契约层通过。
+- 新增的原生菜单/入库测试已注册到 macOS CI；本机 Windows 仍未编译、链接或执行，原生结论
+  以 CI 为准（见下方补记）。菜单 ABI、UIKit、真实宿主共存和真机行为仍待验证。Python 全量为
+  **379 项**，只代表源码契约层通过。
+
+### 2026-10-30 原生验证补记
+
+- 修复提交 `40c679c9085ce1261fe07c37ce82b363485e7688`；CI
+  [run 40914744388](https://github.com/andyzpl/SyncRelay/actions/runs/40914744388)：
+  `workflow_dispatch`、attempt 1、`build_deb=false`、结论 `success`。
+- 四个原生目标（`library-intake-test`、`library-intake-lifecycle-test`、
+  `message-menu-hook-test`、`menu-abi-probe-test`）各完整 PASS 三次，`for pass in 1 2 3`
+  三轮门禁跑满；Python 379 项在该步骤内只执行一次。
+- resolver 改为用非拥有输出参数交付类（`SRMenuABIResolver`：`void (^)(NSString *,
+  __unsafe_unretained Class _Nullable *)`），不再让 `Class` 经函数或 block 返回。`EntryFor`
+  与 fresh 探针保留原有 `initialize / resolveInstance / resolveClass / calls` 零副作用断言，
+  本轮全部为 0；`fresh-pool-after` 同样为 0，仅表示该作用域排空后计数未变，不等于探针已销毁。
+  此前被 abort 挡住的整数编码、异常编码和参数上限用例本轮全部执行并通过。
+- 隔离对照 A（`Class` 经 block 返回）仍能复现一次 `+initialize`。这只证明该形态可独立复现，
+  **不能**据此认定 `objc_retain` 或 autorelease 回退是 libobjc 内部的根因。
+- 打包相关步骤（install build tools、pinned toolchain、Build DEB、Verify package、
+  upload-artifact）全部 `skipped`：没有新安装包、没有安装动作、没有设备结果。
+- 菜单 hook 仍未安装（无 `MSHookMessageEx`），设置开关未接，微信长按菜单不会出现
+  「SR 入库」，库内转发仍关闭；真实宿主 ABI、UIKit、插件共存和真机均未验收。
+- 本次只关闭「resolver 初始化副作用」这一 macOS 回归故障项，不代表 B-3 或其他阶段整体验收。

@@ -138,6 +138,15 @@ static void SRReturnStage(const char *stage) {
     fflush(stderr);
 }
 
+/* Explicit collect versus read-only latest: the resolver must not run on init,
+ * on a read, or when the stored result is serialized. */
+static NSUInteger gCollectResolverCalls = 0;
+static void SRCollectStage(const char *stage, NSUInteger entries) {
+    fprintf(stderr, "[probe-collect] %-20s resolverCalls=%lu entries=%lu\n",
+            stage, (unsigned long)gCollectResolverCalls, (unsigned long)entries);
+    fflush(stderr);
+}
+
 
 /* Every stand-in counts its own invocations: the probe must never call them. */
 @interface ProbeMenuController : NSObject
@@ -382,6 +391,48 @@ int main(void) {
         BOOL defaultLookupFoundClass = defaultSnapshot.count == 3 &&
                                        [defaultSnapshot[0][@"classStatus"] isEqual:@"present"];
         SRCounterStage("resolver-probes-done");
+
+        // Explicit collect versus read-only latest. The resolver must not run on
+        // init, on a read, or when the stored result is serialized; a second
+        // collect replaces the first and never accumulates history.
+        gCollectResolverCalls = 0;
+        SRMenuABIProbe *collectProbe = [[SRMenuABIProbe alloc] initWithResolver:^(NSString *name,
+                                                                                 __unsafe_unretained Class _Nullable * _Nonnull resolvedClass) {
+            gCollectResolverCalls++;
+            if ([name isEqual:@"MMMenuController"]) *resolvedClass = ProbeMenuController.class;
+        }];
+        SRCollectStage("init", 0);
+        BOOL noResolveOnInit = (collectProbe.lastSnapshot == nil && gCollectResolverCalls == 0);
+        NSArray *readBeforeCollect = collectProbe.lastSnapshot;
+        BOOL noResolveOnRead = (readBeforeCollect == nil && gCollectResolverCalls == 0);
+        [collectProbe collect];
+        NSUInteger callsAfterFirst = gCollectResolverCalls;
+        SRCollectStage("collected", collectProbe.lastSnapshot.count);
+        BOOL firstCollectionFixed = (collectProbe.lastSnapshot.count == 3 && callsAfterFirst == 3);
+        NSArray *readAfterCollect = collectProbe.lastSnapshot;
+        BOOL noResolveOnReread = (readAfterCollect.count == 3 && gCollectResolverCalls == callsAfterFirst);
+        [collectProbe collect];
+        BOOL secondCollectionReplaced = (collectProbe.lastSnapshot.count == 3 &&
+                                         gCollectResolverCalls == callsAfterFirst * 2);
+        SRCollectStage("recollected", collectProbe.lastSnapshot.count);
+
+        SRMenuABIProbe *missingProbe = [[SRMenuABIProbe alloc] initWithResolver:^(NSString *name,
+                                                                                 __unsafe_unretained Class _Nullable * _Nonnull resolvedClass) {
+            (void)name;
+            (void)resolvedClass;
+        }];
+        [missingProbe collect];
+        NSDictionary *missingEntry = missingProbe.lastSnapshot.firstObject;
+        BOOL missingStaysMissing = ([missingEntry[@"classStatus"] isEqual:@"missing"] &&
+                                    [missingEntry[@"returnToken"] isEqual:@"unknown"] &&
+                                    [missingEntry[@"argumentTokens"] count] == 0);
+        NSData *missingJSON = [NSJSONSerialization dataWithJSONObject:missingProbe.lastSnapshot options:0 error:NULL];
+        NSString *missingText = missingJSON ? [[NSString alloc] initWithData:missingJSON encoding:NSUTF8StringEncoding] : nil;
+        BOOL missingExportsSafely = (missingText.length > 0 &&
+                                     [missingText rangeOfString:@"compatible"].location == NSNotFound &&
+                                     [missingText rangeOfString:@"supported"].location == NSNotFound &&
+                                     [missingText rangeOfString:@"passed"].location == NSNotFound);
+        SRCollectStage("missing-export", missingProbe.lastSnapshot.count);
 
         // A class that resolves missing methods must not be asked to. The two
         // groups below measure different paths and never share a class, so the
@@ -642,6 +693,14 @@ int main(void) {
         CHECK(resolverWroteNil);
         CHECK(resolverWroteNothing);
         CHECK(defaultLookupFoundClass);
+        SRCollectStage("assert", collectProbe.lastSnapshot.count);
+        CHECK(noResolveOnInit);
+        CHECK(noResolveOnRead);
+        CHECK(firstCollectionFixed);
+        CHECK(noResolveOnReread);
+        CHECK(secondCollectionReplaced);
+        CHECK(missingStaysMissing);
+        CHECK(missingExportsSafely);
         CHECK(retAReceivedIsClass);
         CHECK(retDReceivedIsClass);
         CHECK(gInitialize == 0 && gResolveInstance == 0 && gResolveClass == 0);

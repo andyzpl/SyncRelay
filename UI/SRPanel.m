@@ -26,6 +26,7 @@
 #import "Adapter/SRWeChatTextSendAdapter.h"
 #import "Adapter/SRWeChatTextSendHost.h"
 #import "Adapter/SRWeChatSettingsEntry.h"
+#import "Adapter/SRMenuABIProbe.h"
 #import "SRPlanScreens.h"
 #import "SRSettingsFallback.h"
 #import "SRNativeStyle.h"
@@ -169,6 +170,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
+/* Process-level read-only metadata probe, owned by the entry assembly object and
+ * handed to every panel. Creating it never collects; only an explicit, confirmed
+ * action does. */
+@property(nonatomic, strong) SRMenuABIProbe *menuABIProbe;
 @property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, strong) NSMutableDictionary *draft;
 @property(nonatomic, copy) NSString *account;
@@ -347,7 +352,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     section = SRPanelSection(section);
-    if (section == 0) return 10;
+    if (section == 0) return 11;
     if (section == 1) return 4;
     if (section == 2) return 1;
     if (section == 4) return 8;
@@ -374,6 +379,10 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     cell.accessoryView = nil; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
     cell.detailTextLabel.text = nil; cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    /* Cells are reused, so a previous row's accessibility text must not survive
+     * into this one. Only rows that set their own voice (source time, menu ABI)
+     * announce a custom name or value. */
+    cell.accessibilityLabel = nil; cell.accessibilityValue = nil;
     if (section == 0) {
         if (path.row == 0) { cell.textLabel.text = @"微信版本"; cell.detailTextLabel.text = self.reader.version; cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleNone; }
         if (path.row == 1) { cell.textLabel.text = @"重新读取配置"; cell.detailTextLabel.text = self.ready ? @"已连接" : @"待核对"; }
@@ -410,6 +419,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %lu/16", state, (unsigned long)sampleCount];
             cell.accessibilityLabel = @"来源时间采样";
             cell.accessibilityValue = [NSString stringWithFormat:@"%@，%lu/16", state, (unsigned long)sampleCount];
+        }
+        /* Process-level metadata diagnostic: reads the latest explicit collection
+         * only, and is never bound to an account or a message. */
+        if (path.row == 10) {
+            cell.textLabel.text = @"菜单 ABI 诊断";
+            cell.detailTextLabel.text = [self menuABIStatusText];
+            cell.accessibilityLabel = @"菜单 ABI 诊断";
+            cell.accessibilityValue = [self menuABIStatusText];
         }
     } else if (section == 1) {
         if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"未选择"; }
@@ -742,6 +759,37 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
+/* Menu ABI diagnostics are process-level metadata, not an account, message or
+ * task capability: opening the panel, refreshing it, lifecycle changes and
+ * configuration reads never collect. The value shown and exported is always the
+ * latest explicit, confirmed collection. */
+- (NSString *)menuABIStatusText {
+    NSArray<NSDictionary *> *last = [self.menuABIProbe lastSnapshot];
+    if (!last) return @"未采集";
+    return [NSString stringWithFormat:@"已采集 · %lu 项", (unsigned long)last.count];
+}
+- (NSDictionary *)menuABIDiagnostic {
+    NSArray<NSDictionary *> *last = [self.menuABIProbe lastSnapshot];
+    if (!last) return @{@"state": @"not_run"};
+    return @{@"state": @"collected", @"candidates": last};
+}
+- (void)confirmMenuABIDiagnostic {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"菜单 ABI 诊断"
+        message:@"仅读取三个固定候选方法的 runtime 元数据：不安装菜单 hook，不创建菜单项，不调用候选宿主方法；不读取消息内容，不入库、不发送、不准备或下载媒体。方法存在或签名可读，不代表兼容或功能可用。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"执行一次只读诊断" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        SRPanel *panel = weakSelf;
+        if (!panel || !NSThread.isMainThread) return;
+        if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+        if (!panel.viewIfLoaded.window || panel.isBeingDismissed || panel.isMovingFromParentViewController) return;
+        if (panel.navigationController.topViewController != panel) return;
+        [panel.menuABIProbe collect];
+        [panel.tableView reloadData];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
 - (NSDictionary *)diagnosticDraft {
     BOOL includesSelf = NO;
     for (NSDictionary *sender in self.draft[@"senders"]) if ([sender[@"id"] isEqual:self.account]) includesSelf = YES;
@@ -767,6 +815,9 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     report[@"floatingEntryEnabled"] = @(self.entryPreferences.floatingEntryEnabled);
     report[@"receiveCandidate"] = self.receiver.diagnostics;
     report[@"sourceTimeProbe"] = self.sourceTimeProbe.diagnostics ?: @{@"state": @"unavailable"};
+    /* Fixed field, read-only: it reflects the latest explicit collection and
+     * never triggers one while viewing or exporting the report. */
+    report[@"menuABI"] = [self menuABIDiagnostic];
     report[@"imageSource"] = self.imageSource.diagnostics ?: @{};
     report[@"imageSendPreparation"] = self.imageSendProbe.diagnostics ?: @{};
     report[@"sourceCapture"] = self.capture.diagnostics ?: @{@"state": @"unavailable"};
@@ -1202,6 +1253,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (path.row == 5) [self showUsage];
         if (path.row == 6) [self exportDiagnosticFromController:self];
         if (path.row == 9) [self toggleSourceTimeProbe];
+        if (path.row == 10) [self confirmMenuABIDiagnostic];
         return;
     }
     if (![self checkAccount]) return;
@@ -1246,6 +1298,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SRWeChatReader *identityReader;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
+@property(nonatomic, strong) SRMenuABIProbe *menuABIProbe;
 @property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, weak) UINavigationController *presented;
 @property(nonatomic) CGFloat floatingEntryUnitX;
@@ -1736,6 +1789,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     panel.imageSendHost = self.imageSendHost;
     panel.smallGroupSession = self.smallGroupSession;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
+    panel.menuABIProbe = self.menuABIProbe;
     panel.settingsFooterActive = self.settingsFooterActive;
     /* The settings panel keeps its own save, close and unsaved-draft guard. It
      * is pushed onto the home's navigation stack, so closing it returns to the
@@ -1766,6 +1820,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     panel.imageSendHost = self.imageSendHost;
     panel.smallGroupSession = self.smallGroupSession;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
+    panel.menuABIProbe = self.menuABIProbe;
     panel.settingsFooterActive = self.settingsFooterActive;
     __weak typeof(self) weakSelf = self;
     panel.didClose = ^{ weakSelf.presented = nil; [weakSelf install]; };
@@ -1812,6 +1867,10 @@ void SRInstallPanelEntry(SRStore *store) {
     if (entry) return;
     entry = [[SREntry alloc] init]; entry.store = store;
     entry.entryPreferences = [[SREntryPreferences alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+    /* One process-level probe per entry. Construction never scans; both panel
+     * paths receive this same instance so the shown and exported result cannot
+     * diverge, and no second authority is stored. */
+    entry.menuABIProbe = [[SRMenuABIProbe alloc] initWithResolver:nil];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     __weak SREntry *weakEntry = entry;
     entry.settingsEntry = [[SRWeChatSettingsEntry alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }

@@ -10,6 +10,9 @@ static NSString *const SRMenuTokenUnknown = @"unknown";
 
 @interface SRMenuABIProbe ()
 @property(nonatomic, copy, nullable) SRMenuABIResolver resolver;
+/* Only the latest collection is kept; -collect replaces it and nothing else
+ * writes it. Reading it is a plain property read with no scan behind it. */
+@property(nonatomic, copy, nullable) NSArray<NSDictionary *> *lastSnapshot;
 @end
 
 @implementation SRMenuABIProbe
@@ -20,6 +23,10 @@ static NSString *const SRMenuTokenUnknown = @"unknown";
         _resolver = [resolver copy];
     }
     return self;
+}
+
+- (void)collect {
+    self.lastSnapshot = [self snapshot];
 }
 
 /* Skips leading type qualifiers only. Nothing else is ignored. */
