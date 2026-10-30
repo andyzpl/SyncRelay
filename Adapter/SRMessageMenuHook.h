@@ -109,4 +109,71 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
 
 - (nullable SRMenuMessageContext *)contextForOwnItem:(nullable id)item;
 @end
+
+/* Interceptor state. `installed` means the three IMPs are replaced and every
+ * call is forwarded; `sampling` means the session is still recording. Stopping
+ * a session never claims the interceptors were removed. */
+typedef NS_ENUM(NSUInteger, SRMenuCallObserverState) {
+    SRMenuCallObserverIdle = 0,
+    SRMenuCallObserverInstalled = 1,
+    SRMenuCallObserverSampling = 2,
+    SRMenuCallObserverStopped = 3,
+};
+
+/* Observation-only interception of the three verified menu methods.
+ *
+ * This is NOT the read-only metadata scan: it replaces the three IMPs for one
+ * explicit session and forwards every call to the original implementation once,
+ * unchanged. It never installs itself, never restarts, never adds a menu item,
+ * never calls the intake, store, network or media, and never reads a body.
+ * `-install...` and `-beginSampling...` are separate, so "interceptors placed"
+ * and "recording" are distinct facts.
+ *
+ * The caller must have obtained an explicit user confirmation before
+ * -beginSampling...; this class cannot start a session on its own.
+ *
+ * Every exported value is a fixed label, integer or boolean. Object references
+ * are used only for in-session identity comparison and are never exported.
+ * The events are a bounded observation, not a business generation. */
+@interface SRMenuCallObserver : NSObject
+/* Test seam only: the production path uses the wall clock. */
+- (instancetype)initWithClock:(NSTimeInterval (^)(void))clock;
+
+@property(nonatomic, readonly) BOOL installed;
+@property(nonatomic, readonly) BOOL sampling;
+@property(nonatomic, readonly) SRMenuCallObserverState state;
+/* YES when -uninstall found that a later hook had already replaced one of the
+ * trampolines: the originals were not written back, the interceptors stay in
+ * place and keep forwarding lazily, and `installed` stays YES. */
+@property(nonatomic, readonly) BOOL restoreRefused;
+
+/* One-time placement of the observers. Fails closed if a candidate method is
+ * missing, already installed, or the pair is invalid. Places interceptors only;
+ * nothing is recorded until -beginSampling... succeeds. */
+- (BOOL)installOnMenuClass:(nullable Class)menuClass itemClass:(nullable Class)itemClass
+                     error:(NSError **)error;
+
+/* Starts one bounded session. Requires an explicit caller confirmation, an
+ * installed observer, and no active session. `timeout` is a hard wall-clock
+ * deadline; `eventBudget` caps all recorded events. */
+- (BOOL)beginSamplingWithTimeout:(NSTimeInterval)timeout eventBudget:(NSUInteger)eventBudget
+                           error:(NSError **)error;
+
+/* Stops recording. The interceptors stay placed and keep forwarding, so a
+ * stopped session is never reported as uninstalled. */
+- (void)stopSampling;
+/* Same as -stopSampling, with a fixed "lifecycle" reason (foreground exit). */
+- (void)stopForLifecycle;
+
+/* Restores the original IMPs only when all three are still this observer's
+ * trampolines. If a later hook replaced any of them, nothing is written back:
+ * the interceptors stay installed, keep forwarding lazily, and
+ * -restoreRefused reports YES instead of claiming an uninstall. */
+- (void)uninstall;
+
+/* Fixed keys only: state, installed, sampling, stopReason, counts, budget and
+ * the bounded event list. No object, class name, address, account, body or
+ * message identity is included. */
+- (NSDictionary *)diagnostics;
+@end
 NS_ASSUME_NONNULL_END

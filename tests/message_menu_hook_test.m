@@ -154,6 +154,114 @@ static void SRNeverCalled4(id self, SEL command, id first, id second) {
 @implementation SRForeignItem
 @end
 
+/* --- observation-only menu call observer fixtures ----------------------- */
+@interface SRObservedMenu : NSObject
+@property(nonatomic) NSUInteger setCalls;
+@property(nonatomic) NSUInteger selectCalls;
+@property(nonatomic) BOOL raiseOnSet;
+@property(nonatomic, strong) NSArray *lastItems;
+@property(nonatomic, strong) id lastItem;
+@property(nonatomic, strong) id lastView;
+- (void)observeAction:(id)item;
+@end
+@implementation SRObservedMenu
+- (void)setMenuItems:(NSArray *)items {
+    self.setCalls++;
+    self.lastItems = items;
+    if (self.raiseOnSet) @throw [NSException exceptionWithName:@"SRTestHost" reason:@"host" userInfo:nil];
+}
+- (void)onMenuItemSelected:(id)item itemView:(id)view {
+    self.selectCalls++; self.lastItem = item; self.lastView = view;
+}
+- (void)observeAction:(id)item { (void)item; }
+@end
+
+@interface SRObservedItem : NSObject
+- (instancetype)initWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action;
+@end
+/* The original implementation's behaviour is switched here so the init-family
+ * ownership cases can all use the one allowed class pair. 0 = self,
+ * 1 = nil, 2 = replacement object. */
+static NSInteger gItemInitMode = 0;
+@implementation SRObservedItem
+- (instancetype)initWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action {
+    (void)title; (void)icon; (void)target; (void)action;
+    if (gItemInitMode == 1) return nil;
+    if (gItemInitMode == 2) return (id)[NSObject new];
+    self = [super init];
+    return self;
+}
+@end
+
+/* Inherits all three candidate methods: not a direct declaration, so the
+ * observer must refuse rather than replace a superclass IMP. */
+@interface SRInheritedMenuController : SRFakeMenuController
+@end
+@implementation SRInheritedMenuController
+@end
+
+/* Distinct objects that compare equal and share a hash. The observer's weak set
+ * must use pointer identity and never call -hash / -isEqual. */
+static NSUInteger gTwinHashCalls = 0;
+static NSUInteger gTwinEqualCalls = 0;
+@interface SRTwinItem : NSObject
+@end
+@implementation SRTwinItem
+- (NSUInteger)hash { gTwinHashCalls++; return 4242; }
+- (BOOL)isEqual:(id)object { gTwinEqualCalls++; return [object isKindOfClass:SRTwinItem.class]; }
+@end
+
+/* A legal NSArray subclass that reenters the observer while it is enumerated. */
+@interface SRReentrantArray : NSArray
+@property(nonatomic, copy) void (^onAccess)(void);
+@property(nonatomic, strong) NSArray *storage;
+@property(nonatomic) BOOL fired;
+@end
+@implementation SRReentrantArray
+- (NSUInteger)count { [self fireOnce]; return self.storage.count; }
+- (id)objectAtIndex:(NSUInteger)index { [self fireOnce]; return self.storage[index]; }
+- (void)fireOnce {
+    if (self.fired) return;
+    self.fired = YES;
+    if (self.onAccess) self.onAccess();
+}
+@end
+
+/* Counts every host-container access, so a refused build can be proven not to
+ * have read the container at all. `onAccess` fires once, on the first read. */
+static NSUInteger gArrayCountCalls = 0;
+static NSUInteger gArrayIndexCalls = 0;
+@interface SRCountingArray : NSArray
+@property(nonatomic, strong) NSArray *storage;
+@property(nonatomic, copy) void (^onAccess)(void);
+@property(nonatomic) BOOL fired;
+@end
+@implementation SRCountingArray
+- (NSUInteger)count {
+    gArrayCountCalls++;
+    if (!self.fired && self.onAccess) { self.fired = YES; self.onAccess(); }
+    return self.storage.count;
+}
+- (id)objectAtIndex:(NSUInteger)index { gArrayIndexCalls++; return self.storage[index]; }
+@end
+
+/* Fails while being read; the host call must still run exactly once. */
+@interface SRThrowingArray : NSArray
+@property(nonatomic, strong) NSArray *storage;
+@end
+@implementation SRThrowingArray
+- (NSUInteger)count { @throw [NSException exceptionWithName:@"SRTestArray" reason:@"read" userInfo:nil]; }
+- (id)objectAtIndex:(NSUInteger)index { (void)index; return nil; }
+@end
+
+/* A later hook installed on top of the observer's trampoline. */
+static NSUInteger gExternalHookCalls = 0;
+static IMP gExternalHookNext;
+static void SRTestExternalHook(id self, SEL command, id items) {
+    gExternalHookCalls++;
+    if (gExternalHookNext) ((void (*)(id, SEL, id))gExternalHookNext)(self, command, items);
+}
+
 static NSDictionary *context(NSString *account, NSString *body, NSString *identity) {
     NSMutableDictionary *value = [NSMutableDictionary dictionary];
     value[@"account"] = account; value[@"body"] = body; value[@"identity"] = identity;
@@ -367,10 +475,382 @@ int main(void) {
             CHECK(class_getInstanceMethod(SRMenuCurrentIdentity.class, NSSelectorFromString(setter)) == NULL);
         }
 
+        // --- observation-only menu call observer ---
+        // (1) install gate: missing, inherited and wrong signatures are refused
+        // before any IMP changes.
+        IMP initBefore = method_getImplementation(class_getInstanceMethod(SRFakeMenuItem.class,
+            @selector(initWithTitle:icon:target:action:)));
+        SRMenuCallObserver *gateObserver = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 0; }];
+        CHECK(![gateObserver installOnMenuClass:SRIncompleteMenuController.class itemClass:SRFakeMenuItem.class error:NULL]);
+        CHECK(![gateObserver installOnMenuClass:SRInheritedMenuController.class itemClass:SRFakeMenuItem.class error:NULL]);
+        CHECK(![gateObserver installOnMenuClass:SRWrongReturnController.class itemClass:SRFakeMenuItem.class error:NULL]);
+        CHECK(![gateObserver installOnMenuClass:SRObservedMenu.class itemClass:nil error:NULL]);
+        IMP initAfter = method_getImplementation(class_getInstanceMethod(SRFakeMenuItem.class,
+            @selector(initWithTitle:icon:target:action:)));
+        CHECK(initBefore == initAfter);
+        CHECK(!gateObserver.installed);
+
+        // (2) one installer per process.
+        __block NSTimeInterval observedNow = 1000;
+        __block BOOL clockThrows = NO;
+        SRMenuCallObserver *observer = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval {
+            if (clockThrows) @throw [NSException exceptionWithName:@"SRTestClock" reason:@"clock" userInfo:nil];
+            return observedNow;
+        }];
+        CHECK(!observer.installed);
+        CHECK(!observer.sampling);
+        CHECK(observer.state == SRMenuCallObserverIdle);
+        CHECK(!observer.restoreRefused);
+        SRObservedMenu *observedMenu = [SRObservedMenu new];
+        [observedMenu setMenuItems:@[]];
+        CHECK(observedMenu.setCalls == 1);
+        CHECK([(NSArray *)observer.diagnostics[@"events"] count] == 0);
+
+        CHECK([observer installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        CHECK(observer.installed && !observer.sampling);
+        SRMenuCallObserver *conflictingObserver = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 0; }];
+        CHECK(![conflictingObserver installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        CHECK(![conflictingObserver installOnMenuClass:SRFakeMenuController.class itemClass:SRFakeMenuItem.class error:NULL]);
+        CHECK(!conflictingObserver.installed);
+        [observedMenu setMenuItems:@[]];
+        CHECK(observedMenu.setCalls == 2);
+        CHECK([(NSArray *)observer.diagnostics[@"events"] count] == 0);
+
+        // (5) unsupported session parameters are refused before anything runs.
+        CHECK(![observer beginSamplingWithTimeout:0 eventBudget:8 error:NULL]);
+        CHECK(![observer beginSamplingWithTimeout:NAN eventBudget:8 error:NULL]);
+        CHECK(![observer beginSamplingWithTimeout:INFINITY eventBudget:8 error:NULL]);
+        CHECK(![observer beginSamplingWithTimeout:301 eventBudget:8 error:NULL]);
+        CHECK(![observer beginSamplingWithTimeout:30 eventBudget:4 error:NULL]);
+        CHECK(![observer beginSamplingWithTimeout:30 eventBudget:257 error:NULL]);
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:24 error:NULL]);
+        CHECK(observer.sampling && observer.state == SRMenuCallObserverSampling);
+
+        // Session A: construction, build, selections, truncation, twins.
+        SRObservedItem *ownItem = [[SRObservedItem alloc] initWithTitle:@"canary-title" icon:nil
+            target:observedMenu action:@selector(observeAction:)];
+        CHECK(ownItem != nil);
+        SRForeignItem *otherItem = [SRForeignItem new];
+        NSArray *menuItems = @[otherItem, ownItem];
+        [observedMenu setMenuItems:menuItems];
+        CHECK(observedMenu.setCalls == 3);
+        CHECK(observedMenu.lastItems == menuItems);
+        [observedMenu onMenuItemSelected:ownItem itemView:otherItem];
+        [observedMenu onMenuItemSelected:otherItem itemView:otherItem];
+        [observedMenu onMenuItemSelected:nil itemView:nil];
+        CHECK(observedMenu.selectCalls == 3);
+
+        NSDictionary *observed = observer.diagnostics;
+        NSArray *events = observed[@"events"];
+        CHECK(events.count == 5);
+        CHECK([events[0][@"kind"] isEqual:@"init"]);
+        CHECK([events[0][@"titleNull"] boolValue] == NO);
+        CHECK([events[0][@"iconNull"] boolValue] == YES);
+        CHECK([events[0][@"targetIsMenuClass"] boolValue] == YES);
+        CHECK([events[0][@"actionDeclared"] boolValue] == YES);
+        CHECK([events[0][@"actionArgs"] unsignedIntegerValue] == 3);
+        CHECK([events[0][@"resultNull"] boolValue] == NO);
+        CHECK([events[1][@"kind"] isEqual:@"build"]);
+        CHECK([events[1][@"items"] unsignedIntegerValue] == 2);
+        CHECK([events[1][@"inspected"] unsignedIntegerValue] == 2);
+        CHECK([events[1][@"coverage"] isEqual:@"complete"]);
+        CHECK([events[1][@"known"] unsignedIntegerValue] == 1);
+        CHECK([events[1][@"foreign"] unsignedIntegerValue] == 1);
+        // A foreign object that really was in the array is `seen`, not `not_seen`.
+        CHECK([events[2][@"itemPresence"] isEqual:@"seen"]);
+        CHECK([events[2][@"viewPresence"] isEqual:@"seen"]);
+        CHECK([events[2][@"itemKnown"] boolValue] == YES);
+        CHECK([events[2][@"viewKnown"] boolValue] == NO);
+        CHECK([events[3][@"itemPresence"] isEqual:@"seen"]);
+        CHECK([events[3][@"sameObject"] boolValue] == YES);
+        CHECK([events[4][@"itemPresence"] isEqual:@"unknown"]);
+        CHECK([events[4][@"viewPresence"] isEqual:@"unknown"]);
+        CHECK([events[4][@"itemNull"] boolValue] == YES);
+
+        // (6) an object beyond the 64-item cap is unobserved, not denied.
+        NSMutableArray *tail = [NSMutableArray array];
+        for (NSUInteger index = 0; index < 64; index++) [tail addObject:[SRForeignItem new]];
+        [tail addObject:ownItem];
+        [observedMenu setMenuItems:tail];
+        SRForeignItem *notInArray = [SRForeignItem new];
+        [observedMenu onMenuItemSelected:ownItem itemView:notInArray];
+        observed = observer.diagnostics;
+        events = observed[@"events"];
+        NSDictionary *capped = events[5];
+        CHECK([capped[@"kind"] isEqual:@"build"]);
+        CHECK([capped[@"items"] unsignedIntegerValue] == 65);
+        CHECK([capped[@"inspected"] unsignedIntegerValue] == 64);
+        CHECK([capped[@"truncated"] boolValue] == YES);
+        CHECK([capped[@"coverage"] isEqual:@"truncated"]);
+        CHECK([events[6][@"itemPresence"] isEqual:@"unknown"]);   // own item is the tail
+        CHECK([events[6][@"viewPresence"] isEqual:@"unknown"]);   // never inspected
+
+        // Twins: pointer identity inside a complete build.
+        SRTwinItem *twinA = [SRTwinItem new];
+        SRTwinItem *twinB = [SRTwinItem new];
+        gTwinHashCalls = 0; gTwinEqualCalls = 0;
+        [observedMenu setMenuItems:@[twinA]];
+        [observedMenu onMenuItemSelected:twinB itemView:twinA];
+        observed = observer.diagnostics;
+        events = observed[@"events"];
+        CHECK([events[7][@"coverage"] isEqual:@"complete"]);
+        CHECK([events[8][@"itemPresence"] isEqual:@"not_seen"]);  // twinB never appeared
+        CHECK([events[8][@"viewPresence"] isEqual:@"seen"]);      // twinA did
+        CHECK(gTwinHashCalls == 0 && gTwinEqualCalls == 0);
+
+        // (3) a legal NSArray subclass that reenters the observer mid-build.
+        SRReentrantArray *reentrant = [SRReentrantArray new];
+        reentrant.storage = @[ownItem];
+        reentrant.onAccess = ^{ [observedMenu onMenuItemSelected:ownItem itemView:nil]; };
+        NSUInteger forwardsBeforeReentry = observedMenu.setCalls;
+        NSUInteger hostSelectsBeforeReentry = observedMenu.selectCalls;
+        NSUInteger observedSelectsBeforeReentry =
+            [observer.diagnostics[@"counts"][@"select"] unsignedIntegerValue];
+        [observedMenu setMenuItems:reentrant];
+        // Exactly one host forward, and exactly one extra observation from the
+        // single reentrant call: no invented calls to make the numbers match.
+        CHECK(observedMenu.setCalls == forwardsBeforeReentry + 1);
+        CHECK(observedMenu.selectCalls == hostSelectsBeforeReentry + 1);
+        observed = observer.diagnostics;
+        CHECK([observed[@"counts"][@"build"] unsignedIntegerValue] == 4);
+        CHECK([observed[@"counts"][@"select"] unsignedIntegerValue] == observedSelectsBeforeReentry + 1);
+
+        // (4) redaction on a snapshot that really holds all three kinds.
+        NSMutableSet *kinds = [NSMutableSet set];
+        for (NSDictionary *event in (NSArray *)observed[@"events"]) [kinds addObject:event[@"kind"]];
+        CHECK([kinds containsObject:@"init"] && [kinds containsObject:@"build"] &&
+              [kinds containsObject:@"select"]);
+        NSData *observedJSON = [NSJSONSerialization dataWithJSONObject:observed options:0 error:NULL];
+        NSString *observedText = observedJSON ? [[NSString alloc] initWithData:observedJSON
+                                                                     encoding:NSUTF8StringEncoding] : nil;
+        CHECK(observedText.length > 0);
+        CHECK([observedText rangeOfString:@"canary-title"].location == NSNotFound);
+        CHECK([observedText rangeOfString:@"SRObserved"].location == NSNotFound);
+        CHECK([observedText rangeOfString:@"SRTwin"].location == NSNotFound);
+        CHECK([observedText rangeOfString:@"account"].location == NSNotFound);
+
+        // (3) an unreadable build invalidates the previous association.
+        [observedMenu setMenuItems:@[ownItem]];
+        [observedMenu onMenuItemSelected:ownItem itemView:nil];
+        observed = observer.diagnostics;
+        events = observed[@"events"];
+        CHECK([events.lastObject[@"itemPresence"] isEqual:@"seen"]);
+        [observedMenu setMenuItems:(NSArray *)[NSObject new]];   // not an NSArray
+        [observedMenu onMenuItemSelected:ownItem itemView:nil];
+        observed = observer.diagnostics;
+        events = observed[@"events"];
+        CHECK([events.lastObject[@"itemPresence"] isEqual:@"unknown"]);
+        CHECK([events.lastObject[@"coverage"] isEqual:@"stale"]);
+
+        SRThrowingArray *throwing = [SRThrowingArray new];
+        NSUInteger hostBeforeThrowing = observedMenu.setCalls;
+        [observedMenu setMenuItems:throwing];
+        // The container threw while being read; the host call still ran once.
+        CHECK(observedMenu.setCalls == hostBeforeThrowing + 1);
+        [observedMenu onMenuItemSelected:ownItem itemView:nil];
+        observed = observer.diagnostics;
+        events = observed[@"events"];
+        CHECK([events.lastObject[@"itemPresence"] isEqual:@"unknown"]);
+
+        // (5) the deadline is enforced by the observed call itself.
+        NSUInteger beforeTimeout = [(NSArray *)observer.diagnostics[@"events"] count];
+        SRCountingArray *countingAfterTimeout = [SRCountingArray new];
+        countingAfterTimeout.storage = @[ownItem];
+        gArrayCountCalls = 0; gArrayIndexCalls = 0;
+        NSUInteger hostBeforeTimeoutCall = observedMenu.setCalls;
+        observedNow += 31;
+        [observedMenu setMenuItems:countingAfterTimeout];
+        // Refused before the container is read; the host call still ran once.
+        CHECK(gArrayCountCalls == 0 && gArrayIndexCalls == 0);
+        CHECK(observedMenu.setCalls == hostBeforeTimeoutCall + 1);
+        NSDictionary *afterTimeout = observer.diagnostics;
+        CHECK([(NSArray *)afterTimeout[@"events"] count] == beforeTimeout);
+        CHECK(!observer.sampling);
+        CHECK(observer.state == SRMenuCallObserverStopped);
+        CHECK([afterTimeout[@"stopReason"] isEqual:@"timeout"]);
+
+        // The container is read outside the lock; a deadline crossed during that
+        // read must not commit the build event or its association.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        SRCountingArray *countingSlow = [SRCountingArray new];
+        countingSlow.storage = @[ownItem];
+        countingSlow.onAccess = ^{ observedNow += 31; };
+        NSUInteger hostBeforeSlow = observedMenu.setCalls;
+        [observedMenu setMenuItems:countingSlow];
+        CHECK(observedMenu.setCalls == hostBeforeSlow + 1);   // host call still exactly once
+        observed = observer.diagnostics;
+        CHECK(!observer.sampling);
+        CHECK([observed[@"stopReason"] isEqual:@"timeout"]);
+        CHECK([observed[@"counts"][@"build"] unsignedIntegerValue] == 0);
+        CHECK([observed[@"counts"][@"buildRefs"] unsignedIntegerValue] == 0);
+        CHECK([(NSArray *)observed[@"events"] count] == 0);
+
+        // (6) a skipped build makes later presence unknown, not not_seen.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:14 error:NULL]);
+        for (NSUInteger index = 0; index < 8; index++) [observedMenu setMenuItems:@[ownItem]];
+        CHECK([observer.diagnostics[@"counts"][@"build"] unsignedIntegerValue] == 8);
+        SRCountingArray *countingRejected = [SRCountingArray new];
+        countingRejected.storage = @[ownItem];
+        gArrayCountCalls = 0; gArrayIndexCalls = 0;
+        NSUInteger hostBeforeRejected = observedMenu.setCalls;
+        [observedMenu setMenuItems:countingRejected];       // build limit reached
+        // Refused before the container is read; the host call still ran once.
+        CHECK(gArrayCountCalls == 0 && gArrayIndexCalls == 0);
+        CHECK(observedMenu.setCalls == hostBeforeRejected + 1);
+        [observedMenu onMenuItemSelected:ownItem itemView:nil];
+        observed = observer.diagnostics;
+        events = observed[@"events"];
+        CHECK([observed[@"counts"][@"build"] unsignedIntegerValue] == 8);
+        CHECK([events.lastObject[@"coverage"] isEqual:@"stale"]);
+        CHECK([events.lastObject[@"itemPresence"] isEqual:@"unknown"]);
+
+        // The skipped build only marked the association stale; the session is
+        // still running, so stop it explicitly before starting the next one.
+        CHECK(observer.sampling);
+        [observer stopSampling];
+        CHECK(!observer.sampling);
+
+        // Budget too small for another build: also refused before any read.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:5 error:NULL]);
+        [observedMenu setMenuItems:@[ownItem]];             // one build fits
+        SRCountingArray *countingBudget = [SRCountingArray new];
+        countingBudget.storage = @[ownItem];
+        gArrayCountCalls = 0; gArrayIndexCalls = 0;
+        NSUInteger hostBeforeBudget = observedMenu.setCalls;
+        [observedMenu setMenuItems:countingBudget];
+        CHECK(gArrayCountCalls == 0 && gArrayIndexCalls == 0);
+        CHECK(observedMenu.setCalls == hostBeforeBudget + 1);
+
+        // That session is still running as well: stop it before the lifecycle one.
+        CHECK(observer.sampling);
+        [observer stopSampling];
+        CHECK(!observer.sampling);
+
+        // Lifecycle stop keeps the interceptors and clears weak references.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        [observedMenu setMenuItems:@[ownItem]];
+        CHECK([observer.diagnostics[@"counts"][@"buildRefs"] unsignedIntegerValue] == 1);
+        [observer stopForLifecycle];
+        CHECK(!observer.sampling);
+        CHECK(observer.installed);
+        CHECK([observer.diagnostics[@"stopReason"] isEqual:@"lifecycle"]);
+        CHECK([observer.diagnostics[@"counts"][@"buildRefs"] unsignedIntegerValue] == 0);
+
+        // (4) the host's own exception propagates unchanged.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        observedMenu.raiseOnSet = YES;
+        BOOL raised = NO;
+        @try { [observedMenu setMenuItems:@[]]; }
+        @catch (NSException *exception) { raised = [exception.name isEqual:@"SRTestHost"]; }
+        observedMenu.raiseOnSet = NO;
+        CHECK(raised);
+        [observer stopSampling];
+
+        // (4) an observation-side failure never skips the host call.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        clockThrows = YES;
+        NSUInteger forwardBefore = observedMenu.setCalls;
+        [observedMenu setMenuItems:@[]];
+        CHECK(observedMenu.setCalls == forwardBefore + 1);
+        clockThrows = NO;
+        [observer stopSampling];
+
+        // (2) a cached trampoline keeps using its own original after restore.
+        Method setter = class_getInstanceMethod(SRObservedMenu.class, @selector(setMenuItems:));
+        IMP cachedTrampoline = method_getImplementation(setter);
+        [observer uninstall];
+        CHECK(!observer.installed);
+        CHECK(!observer.restoreRefused);          // cleared by a successful restore
+        NSUInteger beforeCached = observedMenu.setCalls;
+        ((void (*)(id, SEL, id))cachedTrampoline)(observedMenu, @selector(setMenuItems:), @[]);
+        CHECK(observedMenu.setCalls == beforeCached + 1);
+
+        // A different class pair may never reuse the same IMP slots.
+        SRMenuCallObserver *crossPair = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 0; }];
+        CHECK(![crossPair installOnMenuClass:SRFakeMenuController.class itemClass:SRFakeMenuItem.class error:NULL]);
+        CHECK(!crossPair.installed);
+
+        // The exact same pair may be installed again after a clean restore.
+        SRMenuCallObserver *reinstall = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 8000; }];
+        CHECK([reinstall installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        [reinstall uninstall];
+        CHECK(!reinstall.installed);
+
+        // (3) a later hook is not overwritten; a clean later restore clears the flag.
+        SRMenuCallObserver *restoreObserver = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 8500; }];
+        CHECK([restoreObserver installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        Method restoreSetter = class_getInstanceMethod(SRObservedMenu.class, @selector(setMenuItems:));
+        IMP restoreTrampoline = method_getImplementation(restoreSetter);
+        gExternalHookNext = restoreTrampoline;
+        method_setImplementation(restoreSetter, (IMP)SRTestExternalHook);
+        NSUInteger hostBeforeRefusal = observedMenu.setCalls;
+        [restoreObserver uninstall];
+        CHECK(restoreObserver.installed);
+        CHECK(restoreObserver.restoreRefused);
+        [observedMenu setMenuItems:@[]];
+        CHECK(gExternalHookCalls == 1);
+        CHECK(observedMenu.setCalls == hostBeforeRefusal + 1);
+        // Remove the foreign hook, then the observer can restore cleanly.
+        method_setImplementation(restoreSetter, restoreTrampoline);
+        gExternalHookNext = NULL;
+        [restoreObserver uninstall];
+        CHECK(!restoreObserver.installed);
+        CHECK(!restoreObserver.restoreRefused);
+        [observedMenu setMenuItems:@[]];
+        CHECK(observedMenu.setCalls == hostBeforeRefusal + 2);
+
+        // (1b) initialization ownership through the one allowed pair.
+        SRMenuCallObserver *initObserver = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 9000; }];
+        CHECK([initObserver installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        gItemInitMode = 2;
+        id replaced = [[SRObservedItem alloc] initWithTitle:nil icon:nil target:nil action:NULL];
+        CHECK(replaced != nil && ![replaced isKindOfClass:SRObservedItem.class]);
+        gItemInitMode = 1;
+        id nilResult = [[SRObservedItem alloc] initWithTitle:nil icon:nil target:nil action:NULL];
+        CHECK(nilResult == nil);
+        gItemInitMode = 0;
+        __weak SRObservedItem *weakOwned = nil;
+        @autoreleasepool {
+            SRObservedItem *owned = [[SRObservedItem alloc] initWithTitle:@"ownership-title" icon:nil
+                target:nil action:NULL];
+            CHECK(owned != nil);
+            weakOwned = owned;
+        }
+        CHECK(weakOwned == nil);
+        [initObserver uninstall];
+        CHECK(!initObserver.installed);
+
+        // (1) a same-pair reinstall is refused when a foreign hook now fronts the
+        // cached trampoline: rebinding would build T -> H -> T recursion.
+        SRMenuCallObserver *loopObserver = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 9500; }];
+        CHECK([loopObserver installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        Method loopSetter = class_getInstanceMethod(SRObservedMenu.class, @selector(setMenuItems:));
+        Method loopInitializer = class_getInstanceMethod(SRObservedItem.class,
+            @selector(initWithTitle:icon:target:action:));
+        IMP loopTrampoline = method_getImplementation(loopSetter);
+        [loopObserver uninstall];
+        CHECK(!loopObserver.installed);
+        gExternalHookNext = loopTrampoline;
+        method_setImplementation(loopSetter, (IMP)SRTestExternalHook);
+        IMP setterBeforeRefusal = method_getImplementation(loopSetter);
+        IMP initBeforeRefusal = method_getImplementation(loopInitializer);
+        SRMenuCallObserver *rebindObserver = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 9600; }];
+        CHECK(![rebindObserver installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        CHECK(!rebindObserver.installed);
+        // The refusal moved no IMP at all.
+        CHECK(method_getImplementation(loopSetter) == setterBeforeRefusal);
+        CHECK(method_getImplementation(loopInitializer) == initBeforeRefusal);
+        NSUInteger hookBefore = gExternalHookCalls;
+        NSUInteger hostBeforeLoop = observedMenu.setCalls;
+        [observedMenu setMenuItems:@[]];
+        CHECK(gExternalHookCalls == hookBefore + 1);
+        CHECK(observedMenu.setCalls == hostBeforeLoop + 1);   // H -> cached T -> original, once
+
         [defaults removePersistentDomainForName:@"andyz.syncrelay.menutest"];
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: the menu adapter follows its own display switch, appends one owned item, keeps "
-             "foreign items and non-own clicks, refuses stale contexts and saves one intent per operation");
+             "foreign items and non-own clicks, refuses stale contexts and saves one intent per operation; "
+             "the call observer is bounded, transparent and never overwrites a later hook");
     }
     return 0;
 }

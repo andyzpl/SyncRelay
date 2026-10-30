@@ -324,3 +324,637 @@ static BOOL SRImplicitParametersMatch(Method method) {
 }
 
 @end
+
+/* -------------------------------------------------------------------------
+ * Observation-only menu call observer.
+ *
+ * One installer per process. The three IMPs are replaced only after the direct
+ * method declarations are fully validated; every host call is forwarded to the
+ * original implementation exactly once, and observation failures are isolated
+ * from that forwarding. Only fixed labels, integers and booleans are exported.
+ * ---------------------------------------------------------------------- */
+
+#include <mach/mach_time.h>
+#include <math.h>
+
+typedef id (*SRMenuObserverInitIMP)(id, SEL, id, id, id, SEL) __attribute__((ns_returns_retained));
+
+static NSObject *SRMenuObserverGlobalLock;
+static dispatch_once_t SRMenuObserverGlobalOnce;
+/* The single owner of the process-wide interception. Non-nil means the three
+ * trampolines are installed by that observer and still forward. */
+static SRMenuCallObserver *SRMenuObserverOwner;
+static IMP SRMenuObserverMenuSetIMP;
+static IMP SRMenuObserverMenuSelectIMP;
+static IMP SRMenuObserverItemInitIMP;
+/* Cached trampolines from an earlier install keep reading the same three IMP
+ * slots, so a later install may only reuse the exact class pair. A different
+ * pair would make an old entry call another class's original. */
+static Class SRMenuObserverInstalledMenuClass;
+static Class SRMenuObserverInstalledItemClass;
+static BOOL SRMenuObserverEverInstalled;
+
+static const NSTimeInterval SRMenuObserverMaxTimeout = 300;
+static const NSUInteger SRMenuObserverMaxBudget = 256;
+/* Slots kept free so construction/build events can never starve a selection. */
+static const NSUInteger SRMenuObserverSelectReserve = 4;
+static const NSUInteger SRMenuObserverInitLimit = 8;
+static const NSUInteger SRMenuObserverBuildLimit = 8;
+static const NSUInteger SRMenuObserverSelectLimit = 16;
+/* One build event inspects at most this many items. */
+static const NSUInteger SRMenuObserverItemCap = 64;
+
+/* buildState values, exported as fixed strings. Only `complete` allows a
+ * definite not_seen answer. */
+static const NSInteger SRMenuObserverBuildNone = 0;
+static const NSInteger SRMenuObserverBuildComplete = 1;
+static const NSInteger SRMenuObserverBuildTruncated = 2;
+static const NSInteger SRMenuObserverBuildStale = 3;
+
+static NSObject *SRMenuObserverLock(void) {
+    dispatch_once(&SRMenuObserverGlobalOnce, ^{ SRMenuObserverGlobalLock = [NSObject new]; });
+    return SRMenuObserverGlobalLock;
+}
+
+/* Monotonic seconds; wall-clock jumps cannot extend or shorten a session. */
+static NSTimeInterval SRMenuObserverMonotonic(void) {
+    static mach_timebase_info_data_t timebase;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ mach_timebase_info(&timebase); });
+    return (NSTimeInterval)mach_absolute_time() * (NSTimeInterval)timebase.numer /
+        (NSTimeInterval)timebase.denom / 1e9;
+}
+
+@interface SRMenuCallObserver (SRRecording)
+- (void)recordBuildWithItems:(id)items;
+- (void)recordSelectionItem:(id)item itemView:(id)view;
+- (void)recordInitWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action result:(id)result;
+@end
+
+/* Trampolines read the published context under the global lock, isolate the
+ * observation, and forward exactly once. Exceptions from the original
+ * implementation are never caught here. */
+static void SRMenuObserverSetItems(id self, SEL command, id items) {
+    IMP original; SRMenuCallObserver *observer;
+    @synchronized(SRMenuObserverLock()) {
+        original = SRMenuObserverMenuSetIMP;
+        observer = SRMenuObserverOwner;
+    }
+    if (observer) @try {
+        [observer recordBuildWithItems:items];
+    } @catch (__unused NSException *exception) {
+        // An observation failure must never replace or skip the host call.
+    }
+    if (original) ((void (*)(id, SEL, id))original)(self, command, items);
+}
+
+static void SRMenuObserverSelect(id self, SEL command, id item, id view) {
+    IMP original; SRMenuCallObserver *observer;
+    @synchronized(SRMenuObserverLock()) {
+        original = SRMenuObserverMenuSelectIMP;
+        observer = SRMenuObserverOwner;
+    }
+    if (observer) @try {
+        [observer recordSelectionItem:item itemView:view];
+    } @catch (__unused NSException *exception) {
+    }
+    if (original) ((void (*)(id, SEL, id, id))original)(self, command, item, view);
+}
+
+static id SRMenuObserverInit(id self, SEL command, id title, id icon, id target, SEL action)
+    __attribute__((ns_returns_retained)) {
+    IMP original; SRMenuCallObserver *observer;
+    @synchronized(SRMenuObserverLock()) {
+        original = SRMenuObserverItemInitIMP;
+        observer = SRMenuObserverOwner;
+    }
+    if (!original) return nil;
+    id result = ((SRMenuObserverInitIMP)original)(self, command, title, icon, target, action);
+    if (observer) @try {
+        [observer recordInitWithTitle:title icon:icon target:target action:action result:result];
+    } @catch (__unused NSException *exception) {
+    }
+    return result;
+}
+
+/* Directly declared method on this exact class: no superclass walk (an
+ * inherited method is not ours to replace) and no dynamic resolution. */
+static Method SRMenuDirectMethod(Class cls, SEL selector) {
+    if (!cls) return NULL;
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    if (!methods) return NULL;
+    Method found = NULL;
+    for (unsigned int index = 0; index < count; index++) {
+        if (method_getName(methods[index]) != selector) continue;
+        found = methods[index];
+        break;
+    }
+    free(methods);
+    return found;
+}
+
+static BOOL SRMenuObserverArgumentIsObject(Method method, unsigned int index) {
+    char *type = method_copyArgumentType(method, index);
+    BOOL matches = SRObjectType(type);
+    free(type);
+    return matches;
+}
+static BOOL SRMenuObserverArgumentIsSEL(Method method, unsigned int index) {
+    char *type = method_copyArgumentType(method, index);
+    BOOL matches = SRSELType(type);
+    free(type);
+    return matches;
+}
+static BOOL SRMenuObserverReturnIsVoid(Method method) {
+    char *type = method_copyReturnType(method);
+    BOOL matches = SRVoidType(type);
+    free(type);
+    return matches;
+}
+static BOOL SRMenuObserverReturnIsObject(Method method) {
+    char *type = method_copyReturnType(method);
+    BOOL matches = SRObjectType(type);
+    free(type);
+    return matches;
+}
+
+/* void (self, _cmd, object[, object]) with an object self and SEL _cmd. */
+static BOOL SRMenuObserverValidateMenuMethod(Method method, unsigned int argumentCount) {
+    if (!method || method_getNumberOfArguments(method) != argumentCount) return NO;
+    if (!SRMenuObserverReturnIsVoid(method)) return NO;
+    if (!SRMenuObserverArgumentIsObject(method, 0)) return NO;
+    if (!SRMenuObserverArgumentIsSEL(method, 1)) return NO;
+    for (unsigned int index = 2; index < argumentCount; index++) {
+        if (!SRMenuObserverArgumentIsObject(method, index)) return NO;
+    }
+    return YES;
+}
+
+/* object (self, _cmd, object, object, object, SEL). */
+static BOOL SRMenuObserverValidateInitializer(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 6) return NO;
+    if (!SRMenuObserverReturnIsObject(method)) return NO;
+    if (!SRMenuObserverArgumentIsObject(method, 0)) return NO;
+    if (!SRMenuObserverArgumentIsSEL(method, 1)) return NO;
+    for (unsigned int index = 2; index <= 4; index++) {
+        if (!SRMenuObserverArgumentIsObject(method, index)) return NO;
+    }
+    return SRMenuObserverArgumentIsSEL(method, 5);
+}
+
+/* Declared-method metadata only: walks the real method list of the observed
+ * target's class. It never calls the action and never asks the runtime to
+ * resolve anything. */
+static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCount) {
+    if (!target || !action) return NO;
+    for (Class current = object_getClass(target); current != Nil; current = class_getSuperclass(current)) {
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(current, &count);
+        if (!methods) continue;
+        BOOL found = NO;
+        for (unsigned int index = 0; index < count; index++) {
+            if (method_getName(methods[index]) != action) continue;
+            if (argumentCount) *argumentCount = method_getNumberOfArguments(methods[index]);
+            found = YES;
+            break;
+        }
+        free(methods);
+        if (found) return YES;
+    }
+    return NO;
+}
+
+@interface SRMenuCallObserver ()
+@property(nonatomic, copy, nonnull) NSTimeInterval (^clock)(void);
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *events;
+/* Pointer identity only: no -hash or -isEqual is sent to observed objects. */
+@property(nonatomic, strong) NSHashTable *buildItems;
+@property(nonatomic, strong) NSObject *lock;
+/* Session token: a snapshot taken before touching host code is only committed
+ * if the session is still the same when the lock is taken again. */
+@property(nonatomic) NSUInteger session;
+/* How much of the last build array was actually inspected:
+ * none = no build yet, complete = every element, truncated = cap reached,
+ * stale = the last build was skipped or the container was rejected. */
+@property(nonatomic) NSInteger buildState;
+@property(nonatomic) BOOL installed;
+@property(nonatomic) BOOL sampling;
+@property(nonatomic) BOOL restoreRefused;
+@property(nonatomic) SRMenuCallObserverState state;
+@property(nonatomic, copy) NSString *stopReason;
+@property(nonatomic) NSTimeInterval deadline;
+@property(nonatomic) NSUInteger budget;
+@property(nonatomic) NSUInteger initCount;
+@property(nonatomic) NSUInteger buildCount;
+@property(nonatomic) NSUInteger selectCount;
+@property(nonatomic) NSUInteger droppedCount;
+@property(nonatomic) Method setterMethod;
+@property(nonatomic) Method selectionMethod;
+@property(nonatomic) Method initializerMethod;
+@property(nonatomic) Class menuClass;
+@property(nonatomic) Class itemClass;
+@end
+
+@implementation SRMenuCallObserver
+
+- (instancetype)init {
+    return [self initWithClock:^NSTimeInterval { return SRMenuObserverMonotonic(); }];
+}
+
+- (instancetype)initWithClock:(NSTimeInterval (^)(void))clock {
+    self = [super init];
+    if (self) {
+        _clock = [clock copy];
+        _events = [NSMutableArray array];
+        _buildItems = [NSHashTable hashTableWithOptions:
+            (NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)];
+        _lock = [NSObject new];
+        _stopReason = @"";
+        _state = SRMenuCallObserverIdle;
+    }
+    return self;
+}
+
+- (BOOL)installed { return _installed; }
+- (BOOL)restoreRefused { return _restoreRefused; }
+- (SRMenuCallObserverState)state { return _state; }
+
+- (BOOL)sampling {
+    if (!_sampling) return NO;
+    NSTimeInterval now = self.clock();
+    if (isfinite(now) && now < _deadline) return YES;
+    [self stopBecause:@"timeout"];
+    return NO;
+}
+
+- (NSError *)errorWithCode:(NSInteger)code message:(NSString *)message {
+    return [NSError errorWithDomain:@"SyncRelay.MenuObserver" code:code
+                            userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+
+- (BOOL)installOnMenuClass:(Class)menuClass itemClass:(Class)itemClass error:(NSError **)error {
+    @synchronized(SRMenuObserverLock()) {
+        // One installer per process: a second instance cannot overwrite the
+        // file-static originals or publish a conflicting context.
+        if (SRMenuObserverOwner || _installed) {
+            if (error) *error = [self errorWithCode:1 message:@"A menu observer is already installed"];
+            return NO;
+        }
+        // A trampoline cached by an earlier install still reads the same three
+        // IMP slots. Reusing those slots for another class pair would make the
+        // old entry call the wrong class's original, so a different pair is
+        // refused permanently.
+        if (SRMenuObserverEverInstalled &&
+            (menuClass != SRMenuObserverInstalledMenuClass || itemClass != SRMenuObserverInstalledItemClass)) {
+            if (error) *error = [self errorWithCode:7 message:@"A different class pair cannot reuse the observer"];
+            return NO;
+        }
+        Method setter = SRMenuDirectMethod(menuClass, NSSelectorFromString(@"setMenuItems:"));
+        Method selection = SRMenuDirectMethod(menuClass, NSSelectorFromString(@"onMenuItemSelected:itemView:"));
+        Method initializer = SRMenuDirectMethod(itemClass, NSSelectorFromString(@"initWithTitle:icon:target:action:"));
+        // Nothing is mutated until all three direct declarations validate.
+        if (!SRMenuObserverValidateMenuMethod(setter, 3) ||
+            !SRMenuObserverValidateMenuMethod(selection, 4) ||
+            !SRMenuObserverValidateInitializer(initializer)) {
+            if (error) *error = [self errorWithCode:2 message:@"A candidate method is missing, inherited or has the wrong signature"];
+            return NO;
+        }
+        // Re-installing rebinds the published forwarding context. If the
+        // current chain is no longer the originals we restored, a foreign hook
+        // is in front of a cached trampoline; installing again would create a
+        // loop (T -> H -> T). Refuse before touching any IMP.
+        if (SRMenuObserverEverInstalled &&
+            (method_getImplementation(setter) != SRMenuObserverMenuSetIMP ||
+             method_getImplementation(selection) != SRMenuObserverMenuSelectIMP ||
+             method_getImplementation(initializer) != SRMenuObserverItemInitIMP)) {
+            if (error) *error = [self errorWithCode:8 message:@"The current chain changed; refusing to rebind"];
+            return NO;
+        }
+        // The displaced IMP comes from the same call that installs ours, so the
+        // saved chain is exactly what was replaced.
+        SRMenuObserverMenuSetIMP = method_setImplementation(setter, (IMP)SRMenuObserverSetItems);
+        SRMenuObserverMenuSelectIMP = method_setImplementation(selection, (IMP)SRMenuObserverSelect);
+        SRMenuObserverItemInitIMP = method_setImplementation(initializer, (IMP)SRMenuObserverInit);
+        self.setterMethod = setter;
+        self.selectionMethod = selection;
+        self.initializerMethod = initializer;
+        self.menuClass = menuClass;
+        self.itemClass = itemClass;
+        SRMenuObserverInstalledMenuClass = menuClass;
+        SRMenuObserverInstalledItemClass = itemClass;
+        SRMenuObserverEverInstalled = YES;
+        SRMenuObserverOwner = self;
+        _installed = YES;
+        _restoreRefused = NO;
+        _state = SRMenuCallObserverInstalled;
+        return YES;
+    }
+}
+
+- (BOOL)beginSamplingWithTimeout:(NSTimeInterval)timeout eventBudget:(NSUInteger)eventBudget
+                           error:(NSError **)error {
+    // Lock order is always global then instance, so install, stop, uninstall and
+    // the published forwarding context cannot interleave with a session start.
+    @synchronized(SRMenuObserverLock()) {
+        if (!_installed) {
+            if (error) *error = [self errorWithCode:3 message:@"Menu observer is not installed"];
+            return NO;
+        }
+        @synchronized(self.lock) {
+            if (_sampling) {
+                if (error) *error = [self errorWithCode:4 message:@"A menu observation session is already running"];
+                return NO;
+            }
+            // Unsupported configurations are refused instead of silently clamped.
+            if (!isfinite(timeout) || timeout <= 0 || timeout > SRMenuObserverMaxTimeout) {
+                if (error) *error = [self errorWithCode:5 message:@"The timeout is not a supported finite value"];
+                return NO;
+            }
+            if (eventBudget < SRMenuObserverSelectReserve + 1 || eventBudget > SRMenuObserverMaxBudget) {
+                if (error) *error = [self errorWithCode:6 message:@"The event budget is not supported"];
+                return NO;
+            }
+            [self.events removeAllObjects];
+            [self.buildItems removeAllObjects];
+            self.session++;
+            self.buildState = SRMenuObserverBuildNone;
+            self.deadline = self.clock() + timeout;
+            self.budget = eventBudget;
+            self.initCount = 0; self.buildCount = 0; self.selectCount = 0; self.droppedCount = 0;
+            self.stopReason = @"";
+            _sampling = YES;
+            _state = SRMenuCallObserverSampling;
+        }
+    }
+    return YES;
+}
+
+- (void)stopLocked:(NSString *)reason {
+    // Caller holds the instance lock.
+    if (!_sampling) return;
+    _sampling = NO;
+    _state = SRMenuCallObserverStopped;
+    _stopReason = [reason copy];
+    [self.buildItems removeAllObjects];
+}
+
+- (void)stopBecause:(NSString *)reason {
+    @synchronized(self.lock) { [self stopLocked:reason]; }
+}
+
+- (void)stopSampling { [self stopBecause:@"manual"]; }
+- (void)stopForLifecycle { [self stopBecause:@"lifecycle"]; }
+
+- (void)uninstall {
+    @synchronized(SRMenuObserverLock()) {
+        if (!_installed) return;
+        @synchronized(self.lock) { [self stopLocked:@"manual"]; }
+        // Restore only while all three IMPs are still our trampolines. The
+        // comparison runs under our own lock only: another plugin can replace an
+        // IMP at any instant, so this is a best-effort refusal, not an atomic
+        // claim. If a later hook replaced any of them, keep the lazy forwarding
+        // intact instead of overwriting that hook with a stale IMP.
+        BOOL ours = self.setterMethod && method_getImplementation(self.setterMethod) == (IMP)SRMenuObserverSetItems &&
+            self.selectionMethod && method_getImplementation(self.selectionMethod) == (IMP)SRMenuObserverSelect &&
+            self.initializerMethod && method_getImplementation(self.initializerMethod) == (IMP)SRMenuObserverInit;
+        if (!ours) {
+            _restoreRefused = YES;
+            _state = SRMenuCallObserverStopped;
+            return;
+        }
+        method_setImplementation(self.setterMethod, SRMenuObserverMenuSetIMP);
+        method_setImplementation(self.selectionMethod, SRMenuObserverMenuSelectIMP);
+        method_setImplementation(self.initializerMethod, SRMenuObserverItemInitIMP);
+        if (SRMenuObserverOwner == self) SRMenuObserverOwner = nil;
+        _installed = NO;
+        _restoreRefused = NO;
+        _state = SRMenuCallObserverIdle;
+        self.menuClass = Nil;
+        self.itemClass = Nil;
+    }
+}
+
+/* Admission runs inside the recording lock and checks the deadline itself, so
+ * an expired session stops on the next observed call, not on a read. */
+- (BOOL)admitKind:(NSString *)kind limit:(NSUInteger)limit used:(NSUInteger)used now:(NSTimeInterval)now {
+    if (!_sampling) return NO;
+    if (!isfinite(now) || now >= self.deadline) { [self stopLocked:@"timeout"]; return NO; }
+    if (used >= limit) { _droppedCount++; return NO; }
+    BOOL selection = [kind isEqual:@"select"];
+    NSUInteger reserved = selection ? 0 : SRMenuObserverSelectReserve;
+    if (_events.count + reserved >= _budget) {
+        if (selection) [self stopLocked:@"budget"]; else _droppedCount++;
+        return NO;
+    }
+    return YES;
+}
+
+- (NSString *)coverageName {
+    switch (self.buildState) {
+        case SRMenuObserverBuildComplete: return @"complete";
+        case SRMenuObserverBuildTruncated: return @"truncated";
+        case SRMenuObserverBuildStale: return @"stale";
+        default: return @"none";
+    }
+}
+
+/* Presence is a definite `not_seen` only when the whole array was inspected.
+ * A stale or missing build cannot answer for the current array, so it stays
+ * `unknown` even if an older set still contains the object. */
+- (NSString *)presenceForObject:(id)object {
+    if (!object) return @"unknown";
+    if (self.buildState != SRMenuObserverBuildComplete &&
+        self.buildState != SRMenuObserverBuildTruncated) return @"unknown";
+    if ([self.buildItems containsObject:object]) return @"seen";
+    return self.buildState == SRMenuObserverBuildComplete ? @"not_seen" : @"unknown";
+}
+
+/* A build that is refused or cannot be read invalidates the previous set; the
+ * old association must not survive into the next selection. */
+- (void)markBuildStaleLocked {
+    self.buildState = SRMenuObserverBuildStale;
+    [self.buildItems removeAllObjects];
+}
+
+- (void)markBuildStaleForSession:(NSUInteger)session {
+    @synchronized(self.lock) {
+        if (session != self.session) return;
+        [self markBuildStaleLocked];
+    }
+}
+
+/* Build admission runs before the host container is touched: a call that is
+ * already refused must not call -count or -objectAtIndex:. */
+- (BOOL)precheckBuildLocked:(NSTimeInterval)now {
+    if (!isfinite(now) || now >= self.deadline) {
+        [self stopLocked:@"timeout"];
+        [self markBuildStaleLocked];
+        return NO;
+    }
+    if (self.buildCount >= SRMenuObserverBuildLimit) {
+        _droppedCount++;
+        [self markBuildStaleLocked];
+        return NO;
+    }
+    if (self.events.count + SRMenuObserverSelectReserve >= self.budget) {
+        _droppedCount++;
+        [self markBuildStaleLocked];
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)canCommitBuildLocked {
+    return self.buildCount < SRMenuObserverBuildLimit &&
+        self.events.count + SRMenuObserverSelectReserve < self.budget;
+}
+
+- (void)recordBuildWithItems:(id)items {
+    NSUInteger session;
+    @synchronized(self.lock) {
+        if (!_sampling) return;
+        if (![self precheckBuildLocked:self.clock()]) return;
+        session = self.session;
+    }
+    // Host container work runs outside the observer lock: a custom NSArray may
+    // reenter the observer from its own -count / -objectAtIndex:.
+    BOOL valid = [items isKindOfClass:NSArray.class];
+    NSUInteger total = 0, inspected = 0;
+    BOOL truncated = NO;
+    NSMutableArray *snapshot = [NSMutableArray array];
+    if (valid) {
+        @try {
+            total = [(NSArray *)items count];
+            inspected = MIN(total, SRMenuObserverItemCap);
+            truncated = total > SRMenuObserverItemCap;
+            for (NSUInteger index = 0; index < inspected; index++) [snapshot addObject:items[index]];
+        } @catch (NSException *exception) {
+            // The container failed mid-read: the old association is unusable.
+            [self markBuildStaleForSession:session];
+            @throw;
+        }
+    }
+
+    @synchronized(self.lock) {
+        // Stop or a new session between the snapshot and the commit drops this
+        // observation instead of writing it into the wrong session.
+        if (session != self.session || !_sampling) return;
+        // The container read happened outside the lock; re-read the clock so a
+        // deadline crossed during that read cannot commit an event.
+        NSTimeInterval commitNow = self.clock();
+        if (!isfinite(commitNow) || commitNow >= self.deadline) {
+            [self stopLocked:@"timeout"];
+            [self markBuildStaleLocked];
+            return;
+        }
+        if (![self canCommitBuildLocked]) { [self markBuildStaleLocked]; return; }
+        if (!valid) {
+            [self markBuildStaleLocked];
+            self.buildCount++;
+            [self.events addObject:@{@"kind": @"build",
+                @"main": @(NSThread.isMainThread),
+                @"null": @(items == nil),
+                @"items": @(0),
+                @"inspected": @(0),
+                @"truncated": @(NO),
+                @"coverage": [self coverageName],
+                @"known": @(0),
+                @"foreign": @(0)}];
+            return;
+        }
+        NSUInteger known = 0, foreign = 0;
+        [self.buildItems removeAllObjects];
+        for (id item in snapshot) {
+            if (self.itemClass && object_getClass(item) == self.itemClass) known++;
+            else foreign++;
+            // Every inspected object is remembered by pointer identity, not just
+            // the candidate class: presence and class recognition are separate.
+            [self.buildItems addObject:item];
+        }
+        self.buildState = truncated ? SRMenuObserverBuildTruncated : SRMenuObserverBuildComplete;
+        self.buildCount++;
+        [self.events addObject:@{@"kind": @"build",
+            @"main": @(NSThread.isMainThread),
+            @"null": @(items == nil),
+            @"items": @(total),
+            @"inspected": @(inspected),
+            @"truncated": @(truncated),
+            @"coverage": [self coverageName],
+            @"known": @(known),
+            @"foreign": @(foreign)}];
+    }
+}
+
+- (void)recordSelectionItem:(id)item itemView:(id)view {
+    @synchronized(self.lock) {
+        if (!_sampling) return;
+        NSTimeInterval now = self.clock();
+        if (![self admitKind:@"select" limit:SRMenuObserverSelectLimit used:self.selectCount now:now]) return;
+        BOOL itemKnown = item && self.itemClass && object_getClass(item) == self.itemClass;
+        BOOL viewKnown = view && self.itemClass && object_getClass(view) == self.itemClass;
+        self.selectCount++;
+        [self.events addObject:@{@"kind": @"select",
+            @"main": @(NSThread.isMainThread),
+            @"itemNull": @(item == nil),
+            @"viewNull": @(view == nil),
+            @"itemKnown": @(itemKnown),
+            @"viewKnown": @(viewKnown),
+            @"itemPresence": [self presenceForObject:item],
+            @"viewPresence": [self presenceForObject:view],
+            @"coverage": [self coverageName],
+            @"sameObject": @(item != nil && item == view)}];
+    }
+}
+
+- (void)recordInitWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action result:(id)result {
+    @synchronized(self.lock) {
+        NSTimeInterval now = self.clock();
+        if (![self admitKind:@"init" limit:SRMenuObserverInitLimit used:self.initCount now:now]) return;
+        NSUInteger argumentCount = 0;
+        BOOL declared = SRMenuDeclaredMethod(target, action, &argumentCount);
+        self.initCount++;
+        [self.events addObject:@{@"kind": @"init",
+            @"main": @(NSThread.isMainThread),
+            @"titleNull": @(title == nil),
+            @"iconNull": @(icon == nil),
+            @"targetNull": @(target == nil),
+            @"actionNull": @(action == NULL),
+            @"targetIsMenuClass": @(target && self.menuClass && object_getClass(target) == self.menuClass),
+            @"actionDeclared": @(declared),
+            @"actionArgs": @(argumentCount),
+            @"resultNull": @(result == nil)}];
+    }
+}
+
+- (NSString *)stateName {
+    switch (_state) {
+        case SRMenuCallObserverIdle: return @"idle";
+        case SRMenuCallObserverInstalled: return @"installed";
+        case SRMenuCallObserverSampling: return @"sampling";
+        case SRMenuCallObserverStopped: return @"stopped";
+    }
+    return @"idle";
+}
+
+- (NSDictionary *)diagnostics {
+    BOOL sampling = self.sampling;
+    @synchronized(self.lock) {
+        return @{@"state": [self stateName],
+                 @"installed": @(_installed),
+                 @"sampling": @(sampling),
+                 @"restoreRefused": @(_restoreRefused),
+                 @"stopReason": _stopReason ?: @"",
+                 @"events": [self eventsCopyLocked],
+                 @"counts": @{@"init": @(self.initCount), @"build": @(self.buildCount),
+                              @"select": @(self.selectCount), @"dropped": @(self.droppedCount),
+                              @"buildRefs": @(self.buildItems.count)},
+                 @"budget": @{@"events": @(self.budget), @"used": @(self.events.count)}};
+    }
+}
+
+- (NSArray<NSDictionary *> *)eventsCopyLocked {
+    return [self.events copy] ?: @[];
+}
+
+@end
