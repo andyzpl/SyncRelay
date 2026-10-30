@@ -364,6 +364,13 @@ static const NSUInteger SRMenuObserverSelectLimit = 16;
 /* One build event inspects at most this many items. */
 static const NSUInteger SRMenuObserverItemCap = 64;
 
+/* Bounded metadata caps: entries, retained init results, one symbol length and
+ * the number of declared arguments copied into a signature token. */
+static const NSUInteger SRMenuObserverMetadataCap = 12;
+static const NSUInteger SRMenuObserverInitLinkCap = 4;
+static const NSUInteger SRMenuObserverTokenCap = 48;
+static const NSUInteger SRMenuObserverSignatureArgCap = 8;
+
 /* buildState values, exported as fixed strings. Only `complete` allows a
  * definite not_seen answer. */
 static const NSInteger SRMenuObserverBuildNone = 0;
@@ -386,10 +393,78 @@ static NSTimeInterval SRMenuObserverMonotonic(void) {
 }
 
 @interface SRMenuCallObserver (SRRecording)
-- (void)recordBuildWithItems:(id)items;
-- (void)recordSelectionItem:(id)item itemView:(id)view;
+- (void)recordBuildWithItems:(id)items receiver:(id)receiver;
+- (void)recordSelectionItem:(id)item itemView:(id)view receiver:(id)receiver;
 - (void)recordInitWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action result:(id)result;
 @end
+
+/* Sanitized runtime symbol: letters, digits, '_', '.', '$' and ':' only. An
+ * empty value, a value over the cap, or one with stripped characters becomes an
+ * explicit marker instead of a truncated symbol, so no decision rests on a
+ * clipped name. */
+static NSString *SRMenuMetadataToken(NSString *value) {
+    if (!value) return @"<nil>";
+    if (![value isKindOfClass:NSString.class] || value.length == 0) return @"<missing>";
+    if (value.length > SRMenuObserverTokenCap) return @"<truncated>";
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.$:"];
+    for (NSUInteger index = 0; index < value.length; index++) {
+        if (![allowed characterIsMember:[value characterAtIndex:index]]) return @"<truncated>";
+    }
+    return value;
+}
+
+/* Normalized type token. Only the first encoding character is classified; the
+ * full encoding is never exported. */
+static NSString *SRMenuTypeToken(const char *type) {
+    if (!type || !type[0]) return @"<missing>";
+    switch (type[0]) {
+        case '@': return type[1] == '?' ? @"block" : @"object";
+        case '#': return @"class";
+        case ':': return @"sel";
+        case 'v': return @"void";
+        case 'c': return @"char";
+        case 'i': return @"int";
+        case 's': return @"short";
+        case 'l': return @"long";
+        case 'q': return @"longlong";
+        case 'C': return @"uchar";
+        case 'I': return @"uint";
+        case 'S': return @"ushort";
+        case 'L': return @"ulong";
+        case 'Q': return @"ulonglong";
+        case 'f': return @"float";
+        case 'd': return @"double";
+        case 'B': return @"bool";
+        case '*': return @"charptr";
+        case '^': return @"pointer";
+        case '[': return @"array";
+        case '{': return @"struct";
+        case '(': return @"union";
+        case 'b': return @"bitfield";
+        default: return @"unknown";
+    }
+}
+
+/* Declared signature of the action, as normalized tokens, from the Method that
+ * the direct method-list walk already returned. Metadata only: the action is
+ * never called, no getter is invoked and no resolver is triggered. */
+static NSString *SRMenuMetadataSignature(Method method) {
+    if (!method) return @"<undeclared>";
+    char *returnType = method_copyReturnType(method);
+    NSMutableString *text = [NSMutableString stringWithFormat:@"ret=%@;args=", SRMenuTypeToken(returnType)];
+    free(returnType);
+    NSUInteger count = method_getNumberOfArguments(method);
+    NSUInteger limit = MIN(count, SRMenuObserverSignatureArgCap);
+    for (NSUInteger index = 0; index < limit; index++) {
+        char *argument = method_copyArgumentType(method, index);
+        if (index) [text appendString:@","];
+        [text appendString:SRMenuTypeToken(argument)];
+        free(argument);
+    }
+    if (count > limit) [text appendString:@",<overflow>"];
+    return text;
+}
 
 /* Trampolines read the published context under the global lock, isolate the
  * observation, and forward exactly once. Exceptions from the original
@@ -401,7 +476,7 @@ static void SRMenuObserverSetItems(id self, SEL command, id items) {
         observer = SRMenuObserverOwner;
     }
     if (observer) @try {
-        [observer recordBuildWithItems:items];
+        [observer recordBuildWithItems:items receiver:self];
     } @catch (__unused NSException *exception) {
         // An observation failure must never replace or skip the host call.
     }
@@ -415,7 +490,7 @@ static void SRMenuObserverSelect(id self, SEL command, id item, id view) {
         observer = SRMenuObserverOwner;
     }
     if (observer) @try {
-        [observer recordSelectionItem:item itemView:view];
+        [observer recordSelectionItem:item itemView:view receiver:self];
     } @catch (__unused NSException *exception) {
     }
     if (original) ((void (*)(id, SEL, id, id))original)(self, command, item, view);
@@ -504,32 +579,43 @@ static BOOL SRMenuObserverValidateInitializer(Method method) {
 }
 
 /* Declared-method metadata only: walks the real method list of the observed
- * target's class. It never calls the action and never asks the runtime to
- * resolve anything. */
-static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCount) {
-    if (!target || !action) return NO;
+ * target's class and its superclasses. It never calls the action, never asks the
+ * runtime to resolve anything and never triggers +resolveInstanceMethod:. The
+ * declared Method itself is returned so the signature and the argument count
+ * both come from the same walk. */
+static Method SRMenuDeclaredMethodInfo(id target, SEL action, NSUInteger *argumentCount) {
+    if (!target || !action) return NULL;
     for (Class current = object_getClass(target); current != Nil; current = class_getSuperclass(current)) {
         unsigned int count = 0;
         Method *methods = class_copyMethodList(current, &count);
         if (!methods) continue;
-        BOOL found = NO;
         for (unsigned int index = 0; index < count; index++) {
             if (method_getName(methods[index]) != action) continue;
-            if (argumentCount) *argumentCount = method_getNumberOfArguments(methods[index]);
-            found = YES;
-            break;
+            Method found = methods[index];
+            if (argumentCount) *argumentCount = method_getNumberOfArguments(found);
+            free(methods);
+            return found;
         }
         free(methods);
-        if (found) return YES;
     }
-    return NO;
+    return NULL;
 }
+
 
 @interface SRMenuCallObserver ()
 @property(nonatomic, copy, nonnull) NSTimeInterval (^clock)(void);
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *events;
 /* Pointer identity only: no -hash or -isEqual is sent to observed objects. */
 @property(nonatomic, strong) NSHashTable *buildItems;
+/* Bounded metadata area, separate from the event list. */
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *metadata;
+/* Weak, identity-only construction link: result object -> metadata index.
+ * No -hash/-isEqual is sent to a host object and nothing is retained. */
+@property(nonatomic, strong) NSMapTable *constructedIndex;
+/* Constructions whose metadata index did not fit the metadata cap. */
+@property(nonatomic, strong) NSHashTable *droppedConstructs;
+@property(nonatomic) NSUInteger metadataDropped;
+@property(nonatomic) BOOL initLinksTruncated;
 @property(nonatomic, strong) NSObject *lock;
 /* Session token: a snapshot taken before touching host code is only committed
  * if the session is still the same when the lock is taken again. */
@@ -568,6 +654,12 @@ static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCoun
         _clock = [clock copy];
         _events = [NSMutableArray array];
         _buildItems = [NSHashTable hashTableWithOptions:
+            (NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)];
+        _metadata = [NSMutableArray array];
+        _constructedIndex = [NSMapTable mapTableWithKeyOptions:
+                (NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
+            valueOptions:NSPointerFunctionsStrongMemory];
+        _droppedConstructs = [NSHashTable hashTableWithOptions:
             (NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)];
         _lock = [NSObject new];
         _stopReason = @"";
@@ -677,6 +769,11 @@ static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCoun
             }
             [self.events removeAllObjects];
             [self.buildItems removeAllObjects];
+            [self.metadata removeAllObjects];
+            [self.constructedIndex removeAllObjects];
+            [self.droppedConstructs removeAllObjects];
+            self.metadataDropped = 0;
+            self.initLinksTruncated = NO;
             self.session++;
             self.buildState = SRMenuObserverBuildNone;
             self.deadline = self.clock() + timeout;
@@ -842,7 +939,13 @@ static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCoun
         self.events.count + SRMenuObserverSelectReserve < self.budget;
 }
 
-- (void)recordBuildWithItems:(id)items {
+- (NSInteger)appendMetadataLocked:(NSDictionary *)entry {
+    if (self.metadata.count >= SRMenuObserverMetadataCap) { _metadataDropped++; return NSNotFound; }
+    [self.metadata addObject:entry];
+    return (NSInteger)self.metadata.count - 1;
+}
+
+- (void)recordBuildWithItems:(id)items receiver:(id)receiver {
     NSUInteger session;
     @synchronized(self.lock) {
         if (!_sampling) return;
@@ -881,6 +984,8 @@ static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCoun
             return;
         }
         if (![self canCommitBuildLocked]) { [self markBuildStaleLocked]; return; }
+        [self appendMetadataLocked:@{@"kind": @"build",
+            @"receiver": SRMenuMetadataToken(NSStringFromClass(object_getClass(receiver)))}];
         if (!valid) {
             [self markBuildStaleLocked];
             self.buildCount++;
@@ -918,13 +1023,29 @@ static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCoun
     }
 }
 
-- (void)recordSelectionItem:(id)item itemView:(id)view {
+- (void)recordSelectionItem:(id)item itemView:(id)view receiver:(id)receiver {
     @synchronized(self.lock) {
         if (!_sampling) return;
         NSTimeInterval now = self.clock();
         if (![self admitKind:@"select" limit:SRMenuObserverSelectLimit used:self.selectCount now:now]) return;
         BOOL itemKnown = item && self.itemClass && object_getClass(item) == self.itemClass;
         BOOL viewKnown = view && self.itemClass && object_getClass(view) == self.itemClass;
+        /* In-session construction link: identity only, never a business message
+         * identity. `init` is the metadata index of this exact constructed
+         * object, or an explicit reason why it cannot be named. */
+        id initValue = @"<none>";
+        NSString *link = @"none";
+        if (self.initCount > 0) {
+            NSNumber *index = item ? [self.constructedIndex objectForKey:item] : nil;
+            if (index) { initValue = index; link = @"matched"; }
+            else if (item && [self.droppedConstructs containsObject:item]) { initValue = @"<overflow>"; link = @"unmatched"; }
+            else { initValue = @"<unmatched>"; link = @"unmatched"; }
+        }
+        [self appendMetadataLocked:@{@"kind": @"select",
+            @"receiver": SRMenuMetadataToken(NSStringFromClass(object_getClass(receiver))),
+            @"view": SRMenuMetadataToken(NSStringFromClass(object_getClass(view))),
+            @"link": link,
+            @"init": initValue}];
         self.selectCount++;
         [self.events addObject:@{@"kind": @"select",
             @"main": @(NSThread.isMainThread),
@@ -944,8 +1065,30 @@ static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCoun
         NSTimeInterval now = self.clock();
         if (![self admitKind:@"init" limit:SRMenuObserverInitLimit used:self.initCount now:now]) return;
         NSUInteger argumentCount = 0;
-        BOOL declared = SRMenuDeclaredMethod(target, action, &argumentCount);
+        Method declaredMethod = SRMenuDeclaredMethodInfo(target, action, &argumentCount);
+        BOOL declared = declaredMethod != NULL;
         self.initCount++;
+        NSInteger metaIndex = [self appendMetadataLocked:@{@"kind": @"init",
+            @"target": SRMenuMetadataToken(target ? NSStringFromClass(object_getClass(target)) : nil),
+            @"action": SRMenuMetadataToken(action ? NSStringFromSelector(action) : nil),
+            @"icon": SRMenuMetadataToken(icon ? NSStringFromClass(object_getClass(icon)) : nil),
+            @"result": SRMenuMetadataToken(result ? NSStringFromClass(object_getClass(result)) : nil),
+            @"signature": (target && action) ? SRMenuMetadataSignature(declaredMethod) : @"<missing>",
+            @"declared": @(declared)}];
+        if (result) {
+            if (metaIndex == NSNotFound) {
+                if (self.droppedConstructs.count < SRMenuObserverInitLinkCap) [self.droppedConstructs addObject:result];
+                else self.initLinksTruncated = YES;
+            } else if (self.constructedIndex.count < SRMenuObserverInitLinkCap) {
+                [self.constructedIndex setObject:@(metaIndex) forKey:result];
+            } else {
+                // The link table is full: keep the fact that this exact object
+                // could not be indexed, so a later click reports overflow rather
+                // than a fabricated match.
+                if (self.droppedConstructs.count < SRMenuObserverInitLinkCap) [self.droppedConstructs addObject:result];
+                self.initLinksTruncated = YES;
+            }
+        }
         [self.events addObject:@{@"kind": @"init",
             @"main": @(NSThread.isMainThread),
             @"titleNull": @(title == nil),
@@ -981,7 +1124,10 @@ static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCoun
                  @"counts": @{@"init": @(self.initCount), @"build": @(self.buildCount),
                               @"select": @(self.selectCount), @"dropped": @(self.droppedCount),
                               @"buildRefs": @(self.buildItems.count)},
-                 @"budget": @{@"events": @(self.budget), @"used": @(self.events.count)}};
+                 @"budget": @{@"events": @(self.budget), @"used": @(self.events.count)},
+                 @"menuCallMetadata": @{@"entries": [self.metadata copy] ?: @[],
+                                        @"dropped": @(self.metadataDropped),
+                                        @"linksTruncated": @(self.initLinksTruncated)}};
     }
 }
 

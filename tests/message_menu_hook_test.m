@@ -254,6 +254,22 @@ static NSUInteger gArrayIndexCalls = 0;
 - (id)objectAtIndex:(NSUInteger)index { (void)index; return nil; }
 @end
 
+/* Declares its action, so the signature is read from a real method list. */
+@interface SRSecondaryTarget : NSObject
+- (void)otherAction:(id)sender;
+@end
+@implementation SRSecondaryTarget
+- (void)otherAction:(__unused id)sender {}
+@end
+
+/* Must never be asked to resolve: the observer reads declared methods only. */
+static NSUInteger gResolverCalls = 0;
+@interface SRUnresolvedTarget : NSObject
+@end
+@implementation SRUnresolvedTarget
++ (BOOL)resolveInstanceMethod:(__unused SEL)selector { gResolverCalls++; return NO; }
+@end
+
 /* A later hook installed on top of the observer's trampoline. */
 static NSUInteger gExternalHookCalls = 0;
 static IMP gExternalHookNext;
@@ -567,6 +583,35 @@ int main(void) {
         CHECK([events[4][@"viewPresence"] isEqual:@"unknown"]);
         CHECK([events[4][@"itemNull"] boolValue] == YES);
 
+        // (7) bounded runtime metadata: real classes, the one action selector and
+        // normalized declared type tokens, all read from the same arguments.
+        NSDictionary *metadata = observed[@"menuCallMetadata"];
+        NSArray *metadataEntries = metadata[@"entries"];
+        CHECK(metadataEntries.count == 5);
+        CHECK([metadataEntries[0][@"kind"] isEqual:@"init"]);
+        CHECK([metadataEntries[0][@"target"] isEqual:@"SRObservedMenu"]);
+        CHECK([metadataEntries[0][@"action"] isEqual:@"observeAction:"]);
+        CHECK([metadataEntries[0][@"icon"] isEqual:@"<nil>"]);
+        CHECK([metadataEntries[0][@"result"] isEqual:@"SRObservedItem"]);
+        CHECK([metadataEntries[0][@"signature"] isEqual:@"ret=void;args=object,sel,object"]);
+        CHECK([metadataEntries[0][@"declared"] boolValue] == YES);
+        CHECK([metadataEntries[1][@"kind"] isEqual:@"build"]);
+        CHECK([metadataEntries[1][@"receiver"] isEqual:@"SRObservedMenu"]);
+        // The construction link is identity-only and matched to this session's init.
+        CHECK([metadataEntries[2][@"view"] isEqual:@"SRForeignItem"]);
+        CHECK([metadataEntries[2][@"link"] isEqual:@"matched"]);
+        CHECK([metadataEntries[2][@"init"] unsignedIntegerValue] == 0);
+        CHECK([metadataEntries[3][@"link"] isEqual:@"unmatched"]);
+        CHECK([metadataEntries[3][@"init"] isEqual:@"<unmatched>"]);
+        CHECK([metadataEntries[4][@"init"] isEqual:@"<unmatched>"]);
+        CHECK([metadata[@"dropped"] unsignedIntegerValue] == 0);
+        CHECK([metadata[@"linksTruncated"] boolValue] == NO);
+        NSData *metadataJSON = [NSJSONSerialization dataWithJSONObject:metadata options:0 error:NULL];
+        NSString *metadataText = [[NSString alloc] initWithData:metadataJSON encoding:NSUTF8StringEncoding];
+        CHECK([metadataText rangeOfString:@"0x"].location == NSNotFound);
+        CHECK([metadataText rangeOfString:@"<SRObserved"].location == NSNotFound);
+        CHECK([metadataText rangeOfString:@"canary-title"].location == NSNotFound);
+
         // (6) an object beyond the 64-item cap is unobserved, not denied.
         NSMutableArray *tail = [NSMutableArray array];
         for (NSUInteger index = 0; index < 64; index++) [tail addObject:[SRForeignItem new]];
@@ -625,8 +670,12 @@ int main(void) {
                                                                      encoding:NSUTF8StringEncoding] : nil;
         CHECK(observedText.length > 0);
         CHECK([observedText rangeOfString:@"canary-title"].location == NSNotFound);
-        CHECK([observedText rangeOfString:@"SRObserved"].location == NSNotFound);
-        CHECK([observedText rangeOfString:@"SRTwin"].location == NSNotFound);
+        // Class names are allowed only in the separate metadata area; the event
+        // list still exports none of them.
+        NSData *eventsJSON = [NSJSONSerialization dataWithJSONObject:(NSArray *)observed[@"events"] options:0 error:NULL];
+        NSString *eventsText = [[NSString alloc] initWithData:eventsJSON encoding:NSUTF8StringEncoding];
+        CHECK([eventsText rangeOfString:@"SRObserved"].location == NSNotFound);
+        CHECK([eventsText rangeOfString:@"SRTwin"].location == NSNotFound);
         CHECK([observedText rangeOfString:@"account"].location == NSNotFound);
 
         // (3) an unreadable build invalidates the previous association.
@@ -720,9 +769,86 @@ int main(void) {
         [observedMenu setMenuItems:countingBudget];
         CHECK(gArrayCountCalls == 0 && gArrayIndexCalls == 0);
         CHECK(observedMenu.setCalls == hostBeforeBudget + 1);
-
-        // That session is still running as well: stop it before the lifecycle one.
+        // The small-budget session is still recording; close it explicitly.
         CHECK(observer.sampling);
+        [observer stopSampling];
+        CHECK(!observer.sampling);
+
+        // A click whose construction was not observed is reported as none.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        [observedMenu onMenuItemSelected:ownItem itemView:nil];
+        NSDictionary *unconstructed = observer.diagnostics;
+        NSArray *unconstructedEntries = unconstructed[@"menuCallMetadata"][@"entries"];
+        CHECK([unconstructedEntries.lastObject[@"link"] isEqual:@"none"]);
+        CHECK([unconstructedEntries.lastObject[@"init"] isEqual:@"<none>"]);
+        CHECK([unconstructed[@"menuCallMetadata"][@"linksTruncated"] boolValue] == NO);
+        [observer stopSampling];
+
+        // Metadata is capped independently of the event budget.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:24 error:NULL]);
+        for (NSUInteger index = 0; index < 8; index++) [observedMenu setMenuItems:@[ownItem]];
+        for (NSUInteger index = 0; index < 16; index++) [observedMenu onMenuItemSelected:ownItem itemView:nil];
+        NSDictionary *cappedMetadata = observer.diagnostics[@"menuCallMetadata"];
+        CHECK([(NSArray *)cappedMetadata[@"entries"] count] == 12);
+        CHECK([cappedMetadata[@"dropped"] unsignedIntegerValue] > 0);
+        NSUInteger cappedCount = [(NSArray *)cappedMetadata[@"entries"] count];
+        [observer stopSampling];
+        [observedMenu setMenuItems:@[ownItem]];
+        [observedMenu onMenuItemSelected:ownItem itemView:nil];
+        CHECK([(NSArray *)observer.diagnostics[@"menuCallMetadata"][@"entries"] count] == cappedCount);
+        CHECK(!observer.sampling);
+
+        // The link table is bounded: a construction beyond it cannot be named.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:12 error:NULL]);
+        NSMutableArray *linkItems = [NSMutableArray array];
+        for (NSUInteger index = 0; index < 5; index++) {
+            SRObservedItem *item = [[SRObservedItem alloc] initWithTitle:@"link" icon:nil
+                target:observedMenu action:@selector(observeAction:)];
+            [linkItems addObject:item];
+        }
+        [observedMenu onMenuItemSelected:linkItems.lastObject itemView:nil];
+        NSDictionary *overflowMetadata = observer.diagnostics[@"menuCallMetadata"];
+        CHECK([overflowMetadata[@"linksTruncated"] boolValue] == YES);
+        NSArray *overflowEntries = overflowMetadata[@"entries"];
+        CHECK([overflowEntries.lastObject[@"init"] isEqual:@"<overflow>"]);
+        [observer stopSampling];
+        CHECK(!observer.sampling);
+
+        // Two constructions with different target/action are individually locatable.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        SRSecondaryTarget *secondary = [SRSecondaryTarget new];
+        SRObservedItem *secondItem = [[SRObservedItem alloc] initWithTitle:@"b" icon:nil
+            target:secondary action:@selector(otherAction:)];
+        SRObservedItem *firstItem = [[SRObservedItem alloc] initWithTitle:@"a" icon:nil
+            target:observedMenu action:@selector(observeAction:)];
+        [observedMenu onMenuItemSelected:secondItem itemView:nil];
+        NSArray *linkedEntries = observer.diagnostics[@"menuCallMetadata"][@"entries"];
+        NSUInteger secondSelectIndex = [linkedEntries.lastObject[@"init"] unsignedIntegerValue];
+        NSDictionary *secondInit = linkedEntries[secondSelectIndex];
+        CHECK([secondInit[@"target"] isEqual:@"SRSecondaryTarget"]);
+        CHECK([secondInit[@"action"] isEqual:@"otherAction:"]);
+        [observedMenu onMenuItemSelected:firstItem itemView:nil];
+        NSArray *linkedEntries2 = observer.diagnostics[@"menuCallMetadata"][@"entries"];
+        NSUInteger firstSelectIndex = [linkedEntries2.lastObject[@"init"] unsignedIntegerValue];
+        NSDictionary *firstInit = linkedEntries2[firstSelectIndex];
+        CHECK([firstInit[@"target"] isEqual:@"SRObservedMenu"]);
+        CHECK([firstInit[@"action"] isEqual:@"observeAction:"]);
+        CHECK(firstSelectIndex != secondSelectIndex);
+        [observer stopSampling];
+        CHECK(!observer.sampling);
+
+        // An undeclared action is reported without asking the runtime to resolve it.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        gResolverCalls = 0;
+        SRUnresolvedTarget *unresolved = [SRUnresolvedTarget new];
+        SRObservedItem *unresolvedItem = [[SRObservedItem alloc] initWithTitle:@"u" icon:nil
+            target:unresolved action:NSSelectorFromString(@"missingAction:")];
+        (void)unresolvedItem;
+        NSArray *resolverEntries = observer.diagnostics[@"menuCallMetadata"][@"entries"];
+        NSDictionary *resolverInit = resolverEntries.lastObject;
+        CHECK([resolverInit[@"declared"] boolValue] == NO);
+        CHECK([resolverInit[@"signature"] isEqual:@"<undeclared>"]);
+        CHECK(gResolverCalls == 0);
         [observer stopSampling];
         CHECK(!observer.sampling);
 

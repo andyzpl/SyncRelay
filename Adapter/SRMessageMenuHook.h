@@ -132,8 +132,12 @@ typedef NS_ENUM(NSUInteger, SRMenuCallObserverState) {
  * The caller must have obtained an explicit user confirmation before
  * -beginSampling...; this class cannot start a session on its own.
  *
- * Every exported value is a fixed label, integer or boolean. Object references
- * are used only for in-session identity comparison and are never exported.
+ * The event list holds only fixed labels, integers and booleans. Object
+ * references are used only for in-session identity comparison and are never
+ * exported. A separate, independently bounded metadata area carries sanitized
+ * class names, one action selector name and normalized type tokens taken from
+ * the same trampoline arguments; it never carries addresses, descriptions,
+ * bodies, accounts, group or message identifiers, or media tokens.
  * The events are a bounded observation, not a business generation. */
 @interface SRMenuCallObserver : NSObject
 /* Test seam only: the production path uses the wall clock. */
@@ -191,9 +195,10 @@ typedef NS_ENUM(NSUInteger, SRMenuCallObserverState) {
 /* Same as above with the fixed "timeout" reason for the deadline path. */
 - (BOOL)finishSessionForDeadlineToken:(NSUInteger)token;
 
-/* Fixed keys only: state, installed, sampling, stopReason, counts, budget and
- * the bounded event list. No object, class name, address, account, body or
- * message identity is included. */
+/* Fixed keys only: state, installed, sampling, restoreRefused, stopReason,
+ * counts, budget, the bounded event list and `menuCallMetadata` (bounded class
+ * and selector tokens plus normalized type tokens). No address, description,
+ * account, body, message identity, group, path or media token is included. */
 - (NSDictionary *)diagnostics;
 @end
 NS_ASSUME_NONNULL_END
