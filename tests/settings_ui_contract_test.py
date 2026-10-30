@@ -129,7 +129,7 @@ class SettingsUIContractTests(unittest.TestCase):
 
     def test_menu_abi_row_is_appended_without_an_account_gate(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
-        self.assertIn('if (section == 0) return 11;', panel)
+        self.assertIn('if (section == 0) return 12;', panel)
         self.assertIn('if (path.row == 10) [self confirmMenuABIDiagnostic];', panel)
         # "more settings" is the logical section 0; the new row is handled before
         # the account gate, so it never touches identity or storage.
@@ -182,11 +182,189 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertEqual(body.count('cell.accessibilityValue = nil;'), 1)
         self.assertLess(body.index('cell.accessibilityLabel = nil;'), body.index('if (section == 0) {'))
         self.assertLess(body.index('cell.accessibilityValue = nil;'), body.index('if (section == 0) {'))
-        # Only the source-time and menu ABI rows set a custom voice afterwards.
-        self.assertEqual(body.count('cell.accessibilityLabel ='), 3)
-        self.assertEqual(body.count('cell.accessibilityValue ='), 3)
+        # Only the source-time, menu ABI and menu-call rows set their own voice.
+        self.assertEqual(body.count('cell.accessibilityLabel ='), 4)
+        self.assertEqual(body.count('cell.accessibilityValue ='), 4)
         self.assertIn(u'cell.accessibilityLabel = @"\u6765\u6e90\u65f6\u95f4\u91c7\u6837";', body)
         self.assertIn(u'cell.accessibilityLabel = @"\u83dc\u5355 ABI \u8bca\u65ad";', body)
+        self.assertIn(u'cell.accessibilityLabel = @"\u83dc\u5355\u8c03\u7528\u89c2\u5bdf\uff08\u4e34\u65f6\uff09";', body)
+
+    def test_menu_call_observation_row_shares_one_observer_and_never_self_starts(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertIn('if (section == 0) return 12;', panel)
+        self.assertIn('if (path.row == 11) [self confirmMenuCallObservation];', panel)
+        self.assertIn(u'@"\u83dc\u5355\u8c03\u7528\u89c2\u5bdf\uff08\u4e34\u65f6\uff09"', panel)
+        # One observer, created by the entry assembly and injected into both paths.
+        self.assertEqual(panel.count('entry.menuCallObserver = [[SRMenuCallObserver alloc] init];'), 1)
+        self.assertEqual(panel.count('panel.menuCallObserver = self.menuCallObserver;'), 2)
+        # Cell configuration never installs or starts the observer.
+        cell = panel.split(
+            '- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {', 1)[1]
+        cell = cell.split('\n- (', 1)[0]
+        self.assertNotIn('installOnMenuClass', cell)
+        self.assertNotIn('beginSampling', cell)
+        # The report only projects the bounded diagnostics.
+        report = panel.split('- (NSDictionary *)diagnosticReport {', 1)[1]
+        report = report.split('- (void)exportDiagnosticFromController:', 1)[0]
+        self.assertIn('report[@"menuCallObservation"] = self.menuCallObserver.diagnostics', report)
+        self.assertNotIn('installOnMenuClass', report)
+        self.assertNotIn('beginSampling', report)
+
+    def test_menu_call_observation_control_lives_in_the_entry(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        panel_body = panel.split('@implementation SRPanel', 1)[1].split('@implementation SREntry', 1)[0]
+        for forbidden in ('installOnMenuClass', 'beginSamplingWithTimeout', 'scheduleMenuCallDeadline',
+                          'stopForLifecycle', 'finishSessionWithToken'):
+            self.assertNotIn(forbidden, panel_body, forbidden)
+        self.assertEqual(panel_body.count('self.menuCallObservationAction(self, action, observer, token)'), 1)
+        entry = panel.split('@implementation SREntry', 1)[1]
+        for token in ('menuCallObservationActionFromPanel:', 'finishMenuCallObservationWithToken:',
+                      'scheduleMenuCallDeadline:', 'NSClassFromString(@"MMMenuController")',
+                      'NSClassFromString(@"MMMenuItem")',
+                      'installOnMenuClass:menuClass itemClass:itemClass error:&error',
+                      'beginSamplingWithTimeout:30 eventBudget:24',
+                      'finishSessionForDeadlineToken:token'):
+            self.assertIn(token, entry, token)
+        # The deadline timer captures the entry, never the panel.
+        deadline = entry.split('- (void)scheduleMenuCallDeadline:(NSUInteger)token {', 1)[1]
+        deadline = deadline.split('\n- (', 1)[0]
+        self.assertIn('dispatch_after', deadline)
+        self.assertIn('__weak typeof(self) weakSelf = self;', deadline)
+        self.assertIn('finishMenuCallObservationWithToken:token deadline:YES', deadline)
+        self.assertNotIn('SRPanel *panel', deadline)
+        # Background stops recording and then attempts the safe restore.
+        background = entry.split('- (void)enteredBackground:', 1)[1].split('\n- (void)', 1)[0]
+        self.assertIn('[self.menuCallObserver stopForLifecycle];', background)
+        self.assertIn('finishMenuCallObservationWithToken:menuToken deadline:NO', background)
+
+    def test_menu_call_observation_actions_are_fixed_at_confirmation(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        confirm = panel.split('- (void)confirmMenuCallObservation {', 1)[1].split('\n- (', 1)[0]
+        # The action, the observer and its session token are captured while the
+        # alert is built, not re-derived when the button is tapped.
+        self.assertIn('SRMenuCallAction action = running ? SRMenuCallActionStop', confirm)
+        self.assertIn('SRMenuCallActionRestore : SRMenuCallActionStart', confirm)
+        self.assertIn('NSUInteger token = observer.sessionToken;', confirm)
+        self.assertIn('submitMenuCallAction:action observer:observer token:token', confirm)
+        entry = panel.split('@implementation SREntry', 1)[1]
+        dispatch = entry.split('- (void)menuCallObservationActionFromPanel:', 1)[1].split('\n- (', 1)[0]
+        self.assertIn('if (observer != self.menuCallObserver) return;', dispatch)
+        # Each confirmed action reaches exactly one branch and never falls through
+        # into another action.
+        for case, call in (('SRMenuCallActionStart', 'beginMenuCallObservationFromPanel'),
+                           ('SRMenuCallActionStop', 'finishMenuCallObservationWithToken:token'),
+                           ('SRMenuCallActionRestore', 'restoreMenuCallObservationFromPanel')):
+            segment = dispatch.split('case %s:' % case, 1)[1].split('break;', 1)[0]
+            self.assertIn(call, segment, case)
+        self.assertEqual(dispatch.count('break;'), 3)
+        # A start confirmed before a session appeared is refused, not converted.
+        begin = entry.split('- (void)beginMenuCallObservationFromPanel:', 1)[1].split('\n- (', 1)[0]
+        self.assertIn('if (self.menuCallObserver.sampling || self.menuCallObserver.installed)', begin)
+        # A stale stop only closes the confirmed session token.
+        self.assertIn('finishMenuCallObservationWithToken:token deadline:NO', dispatch)
+        # A stale restore never uninstalls a running session.
+        restore = entry.split('- (void)restoreMenuCallObservationFromPanel:', 1)[1].split('\n- (', 1)[0]
+        self.assertIn('if (observer.sampling || !observer.installed)', restore)
+        # The deadline stays in the entry and matches the 30 s session.
+        deadline = entry.split('- (void)scheduleMenuCallDeadline:(NSUInteger)token {', 1)[1]
+        deadline = deadline.split('\n- (', 1)[0]
+        self.assertIn('30 * NSEC_PER_SEC', deadline)
+        self.assertNotIn('31 * NSEC_PER_SEC', panel)
+
+    def test_menu_call_observation_stale_confirmations_never_switch_actions(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        entry = panel.split('@implementation SREntry', 1)[1]
+        dispatch = entry.split('- (void)menuCallObservationActionFromPanel:', 1)[1].split('\n- (', 1)[0]
+        branches = {}
+        for case in ('SRMenuCallActionStart', 'SRMenuCallActionStop', 'SRMenuCallActionRestore'):
+            branches[case] = dispatch.split('case %s:' % case, 1)[1].split('break;', 1)[0]
+        # start never stops or restores an existing session.
+        self.assertIn('beginMenuCallObservationFromPanel', branches['SRMenuCallActionStart'])
+        self.assertNotIn('finishMenuCallObservationWithToken', branches['SRMenuCallActionStart'])
+        self.assertNotIn('restoreMenuCallObservationFromPanel', branches['SRMenuCallActionStart'])
+        # stop only closes the confirmed token; it never starts or restores.
+        self.assertIn('finishMenuCallObservationWithToken:token deadline:NO', branches['SRMenuCallActionStop'])
+        self.assertNotIn('beginMenuCallObservationFromPanel', branches['SRMenuCallActionStop'])
+        self.assertNotIn('restoreMenuCallObservationFromPanel', branches['SRMenuCallActionStop'])
+        # restore only restores; it never starts.
+        self.assertIn('restoreMenuCallObservationFromPanel', branches['SRMenuCallActionRestore'])
+        self.assertNotIn('beginMenuCallObservationFromPanel', branches['SRMenuCallActionRestore'])
+        self.assertNotIn('finishMenuCallObservationWithToken', branches['SRMenuCallActionRestore'])
+        # A session that appeared after the confirmation blocks the start branch.
+        begin = entry.split('- (void)beginMenuCallObservationFromPanel:', 1)[1].split('\n- (', 1)[0]
+        guard = begin.split('if (self.menuCallObserver.sampling || self.menuCallObserver.installed)', 1)[1]
+        guard = guard.split('return;', 1)[0]
+        self.assertNotIn('uninstall', guard)
+        self.assertNotIn('stopSampling', guard)
+        # An old restore never uninstalls a running session and is a no-op once
+        # the interceptors are already restored.
+        restore = entry.split('- (void)restoreMenuCallObservationFromPanel:', 1)[1].split('\n- (', 1)[0]
+        self.assertIn('if (observer.sampling || !observer.installed)', restore)
+        self.assertIn('[observer uninstall]', restore)
+
+    def test_menu_call_observation_rejects_stale_tokens_before_any_action(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        entry = panel.split('@implementation SREntry', 1)[1]
+        dispatch = entry.split('- (void)menuCallObservationActionFromPanel:', 1)[1].split('\n- (', 1)[0]
+        # The token guard sits after the identity check and before the switch.
+        self.assertLess(dispatch.index('if (observer != self.menuCallObserver) return;'),
+                        dispatch.index('if (token != observer.sessionToken)'))
+        self.assertLess(dispatch.index('if (token != observer.sessionToken)'),
+                        dispatch.index('switch (action)'))
+        guard = dispatch.split('if (token != observer.sessionToken)', 1)[1].split('switch (action)', 1)[0]
+        # Refusal only refreshes and returns: no side effect of any action.
+        for forbidden in ('installOnMenuClass', 'beginSampling', 'stopSampling',
+                          'uninstall', 'finishMenuCallObservation', 'restoreMenuCallObservation',
+                          'beginMenuCallObservation'):
+            self.assertNotIn(forbidden, guard, forbidden)
+        self.assertIn('return;', guard)
+        # Equality (not "token > 0") is what admits the first 0 == 0 start and a
+        # stopped-but-not-replaced session's own stop/restore.
+        self.assertIn('if (token != observer.sessionToken)', dispatch)
+        self.assertNotIn('token == 0', dispatch)
+        self.assertNotIn('token > 0', dispatch)
+        # The guard is token-based, so a newer session that already stopped but
+        # still holds the interceptors also rejects an old restore intent.
+        self.assertNotIn('sampling', guard)
+        # The three fixed branches are still isolated behind the guard.
+        for case in ('SRMenuCallActionStart', 'SRMenuCallActionStop', 'SRMenuCallActionRestore'):
+            self.assertIn('case %s:' % case, dispatch, case)
+        self.assertEqual(dispatch.count('break;'), 3)
+
+    def test_menu_call_observation_restore_path_and_safe_start_failure(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        entry = panel.split('@implementation SREntry', 1)[1]
+        restore = entry.split('- (void)restoreMenuCallObservationFromPanel:', 1)[1].split('\n- (', 1)[0]
+        self.assertIn('observer != self.menuCallObserver', restore)
+        self.assertIn('[observer uninstall]', restore)
+        self.assertIn(u'\u62e6\u622a\u5c1a\u672a\u6062\u590d', restore)
+        begin = entry.split('- (void)beginMenuCallObservationFromPanel:', 1)[1]
+        begin = begin.split('\n- (void)finishMenuCallObservationWithToken', 1)[0]
+        # A failed begin only cleans an idle installation of ours.
+        self.assertIn('if (!self.menuCallObserver.sampling) [self.menuCallObserver uninstall];', begin)
+        self.assertIn('menuCallPanelIsCurrent', begin)
+
+    def test_menu_observation_and_other_work_are_mutually_exclusive(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        allowed = panel.split('- (BOOL)menuCallObservationAllowed {', 1)[1]
+        allowed = allowed.split('\n- (', 1)[0]
+        for token in ('sourceTimeProbe.active', 'smallGroupSession.busy', 'textCountdown',
+                      'imageCountdown', 'singleTextSendEnabled', 'singleImageSendEnabled',
+                      'sendProbe.diagnostics', 'capture.status'):
+            self.assertIn(token, allowed, token)
+        for method in ('- (void)beginCapture {', '- (void)toggleSourceTimeProbe {',
+                       '- (void)beginSendProbe {', '- (BOOL)allowLegacyExperiment {'):
+            body = panel.split(method, 1)[1].split('\n- (', 1)[0]
+            self.assertIn('menuCallObservationActive', body, method)
+        self.assertGreaterEqual(panel.count('!panel.menuCallObservationActive'), 1)
+        self.assertGreaterEqual(panel.count('!entry.menuCallObservationActive'), 3)
+
+    def test_menu_call_observation_does_not_touch_the_intake_hook(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertNotIn('initWithIntake:', panel)
+        self.assertNotIn('SRMessageMenuHook alloc', panel)
+        self.assertNotIn('libraryMenuEntryEnabled = YES', panel)
+        self.assertNotIn('MSHookMessageEx', panel)
 
 
 if __name__ == '__main__':

@@ -122,7 +122,11 @@ class IntakeContracts(unittest.TestCase):
                      "Adapter/SRMessageMenuHook.m"):
             self.assertNotIn("MSHookMessageEx", read(path), path)
         for path in ("Tweak/SRBootstrap.m", "UI/SRPanel.m"):
-            self.assertNotIn("SRMessageMenuHook", read(path), path)
+            # The settings panel may reference the separate call observer that
+            # shares this header, but the intake hook itself is never wired here.
+            text = read(path)
+            self.assertNotIn("initWithIntake:", text, path)
+            self.assertNotIn("SRMessageMenuHook alloc", text, path)
 
     def test_menu_click_rechecks_an_independent_identity(self):
         header = read("Adapter/SRMessageMenuHook.h")

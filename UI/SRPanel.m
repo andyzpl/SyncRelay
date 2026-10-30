@@ -27,6 +27,7 @@
 #import "Adapter/SRWeChatTextSendHost.h"
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "Adapter/SRMenuABIProbe.h"
+#import "Adapter/SRMessageMenuHook.h"
 #import "SRPlanScreens.h"
 #import "SRSettingsFallback.h"
 #import "SRNativeStyle.h"
@@ -155,6 +156,15 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 }
 @end
 
+/* The confirmed action is fixed when the alert is built. The entry executes
+ * exactly that action; a state change between confirmation and tap must never
+ * turn a stop into a start (or the reverse). */
+typedef NS_ENUM(NSInteger, SRMenuCallAction) {
+    SRMenuCallActionStart = 0,
+    SRMenuCallActionStop = 1,
+    SRMenuCallActionRestore = 2,
+};
+
 @interface SRPanel : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRWeChatReader *reader;
@@ -174,6 +184,12 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
  * handed to every panel. Creating it never collects; only an explicit, confirmed
  * action does. */
 @property(nonatomic, strong) SRMenuABIProbe *menuABIProbe;
+/* The one temporary call observer, owned by the entry assembly object. It is
+ * only created here; installing or sampling stays behind an explicit action. */
+@property(nonatomic, strong) SRMenuCallObserver *menuCallObserver;
+/* Stable entry point provided by SREntry, which owns the only observer and its
+ * deadline. The panel never installs, samples, uninstalls or schedules timers. */
+@property(nonatomic, copy, nullable) void (^menuCallObservationAction)(SRPanel *panel, SRMenuCallAction action, SRMenuCallObserver *observer, NSUInteger token);
 @property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, strong) NSMutableDictionary *draft;
 @property(nonatomic, copy) NSString *account;
@@ -210,7 +226,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         currentAccount:^NSString * { SRPanel *panel = weakSelf; return panel && [panel.reader connect:NULL] ? panel.reader.accountID : nil; }
         environmentAllowed:^BOOL {
             SRPanel *panel = weakSelf;
-            return panel && !panel.sourceTimeProbe.active && panel.singleTextSendEnabled && UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+            return panel && !panel.menuCallObservationActive && !panel.sourceTimeProbe.active && panel.singleTextSendEnabled && UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
         }
         operation:^(NSDictionary *request, SRSendCompletion completion) {
             SRPanel *panel = weakSelf;
@@ -352,7 +368,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     section = SRPanelSection(section);
-    if (section == 0) return 11;
+    if (section == 0) return 12;
     if (section == 1) return 4;
     if (section == 2) return 1;
     if (section == 4) return 8;
@@ -427,6 +443,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             cell.detailTextLabel.text = [self menuABIStatusText];
             cell.accessibilityLabel = @"菜单 ABI 诊断";
             cell.accessibilityValue = [self menuABIStatusText];
+        }
+        /* Temporary observation of the three verified host calls. The cell only
+         * projects the observer's own bounded state; it never installs or starts. */
+        if (path.row == 11) {
+            cell.textLabel.text = @"菜单调用观察（临时）";
+            cell.detailTextLabel.text = [self menuCallObservationText];
+            cell.accessibilityLabel = @"菜单调用观察（临时）";
+            cell.accessibilityValue = [self menuCallObservationText];
         }
     } else if (section == 1) {
         if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"未选择"; }
@@ -790,6 +814,62 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
+/* Temporary observation of the three verified host menu calls. Unlike the ABI
+ * diagnostic above, this replaces the three IMPs for a bounded session and
+ * forwards every original call; it is not a read-only scan. */
+- (NSString *)menuCallObservationText {
+    SRMenuCallObserver *observer = self.menuCallObserver;
+    if (!observer.installed && !observer.sampling) {
+        return observer.state == SRMenuCallObserverStopped ? @"已停止记录 · 已恢复" : @"未开启";
+    }
+    if (observer.sampling) return @"记录中 · 30 秒 / 24 条事件";
+    if (observer.restoreRefused) return @"已停止记录 · 拦截尚未恢复";
+    return @"已停止记录";
+}
+- (BOOL)menuCallObservationActive {
+    // Shared observer is the only authority; no parallel sampling flag here.
+    return self.menuCallObserver.sampling || self.menuCallObserver.installed;
+}
+- (BOOL)menuCallObservationAllowed {
+    if (self.sourceTimeProbe.active) return NO;
+    NSString *captureState = self.capture.status[@"state"];
+    if (captureState && ![captureState isEqual:@"idle"]) return NO;
+    if (self.smallGroupSession.busy) return NO;
+    if (self.ownsIdleTimer || self.textCountdown || self.imageCountdown) return NO;
+    if (self.singleTextSendEnabled || self.singleImageSendEnabled) return NO;
+    if ([self.sendProbe.diagnostics[@"armed"] boolValue]) return NO;
+    if ([self.imageSendProbe.diagnostics[@"armed"] boolValue]) return NO;
+    return YES;
+}
+- (void)confirmMenuCallObservation {
+    SRMenuCallObserver *observer = self.menuCallObserver;
+    BOOL running = observer.sampling;
+    BOOL installed = observer.installed;
+    // Fix the action and the session it belongs to now, while the alert is built.
+    SRMenuCallAction action = running ? SRMenuCallActionStop
+        : (installed ? SRMenuCallActionRestore : SRMenuCallActionStart);
+    NSUInteger token = observer.sessionToken;
+    NSString *message = running
+        ? @"停止记录并尝试恢复被替换的方法。若已有其他插件接管同一方法，拦截会保留并继续转发，不会覆盖它。"
+        : (installed
+            ? @"当前没有记录中的会话，但拦截仍未恢复。将尝试恢复被替换的方法；若已有其他插件接管，则保留其接管与惰性转发。"
+            : @"会临时替换三个已确认菜单方法的实现，每次调用原样转发；不创建菜单项、不调用 action、不读正文或身份、不开启发送。30 秒或 24 条事件后自动停止，也可随时手动停止。");
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"菜单调用观察（临时）"
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    NSString *title = running ? @"停止观察" : (installed ? @"尝试恢复拦截" : @"开始一次观察");
+    [alert addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *alertAction) {
+        [weakSelf submitMenuCallAction:action observer:observer token:token];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)submitMenuCallAction:(SRMenuCallAction)action observer:(SRMenuCallObserver *)observer token:(NSUInteger)token {
+    // Control (install, sample, deadline, restore) belongs to the entry that owns
+    // the only observer; the panel submits the action fixed at confirmation time
+    // together with the observer and session it was confirmed for.
+    if (self.menuCallObservationAction) self.menuCallObservationAction(self, action, observer, token);
+}
 - (NSDictionary *)diagnosticDraft {
     BOOL includesSelf = NO;
     for (NSDictionary *sender in self.draft[@"senders"]) if ([sender[@"id"] isEqual:self.account]) includesSelf = YES;
@@ -818,6 +898,9 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     /* Fixed field, read-only: it reflects the latest explicit collection and
      * never triggers one while viewing or exporting the report. */
     report[@"menuABI"] = [self menuABIDiagnostic];
+    /* Fixed, read-only projection of the bounded call observation. Viewing,
+     * refreshing or exporting the report never installs or starts it. */
+    report[@"menuCallObservation"] = self.menuCallObserver.diagnostics ?: @{@"state": @"unavailable"};
     report[@"imageSource"] = self.imageSource.diagnostics ?: @{};
     report[@"imageSendPreparation"] = self.imageSendProbe.diagnostics ?: @{};
     report[@"sourceCapture"] = self.capture.diagnostics ?: @{@"state": @"unavailable"};
@@ -893,6 +976,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.navigationController pushViewController:viewer animated:YES];
 }
 - (void)beginSendProbe {
+    if ([self menuCallObservationActive]) { SRAlert(self, @"菜单观察进行中", @"先停止菜单调用观察，再开始发送观察。"); return; }
     if (self.sourceTimeProbe.active) { SRAlert(self, @"请先停止来源时间采样", @"来源时间与发送观察分轮验证，不叠加监听或发送。"); return; }
     if (self.smallGroupSession.busy) { SRAlert(self, @"请先暂停并结束小群测试", @"只读观察与真实规则执行分开进行。"); return; }
     if ([self.sendProbe.diagnostics[@"armed"] boolValue]) { [self.sendProbe stop]; return; }
@@ -960,6 +1044,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account, [self planVerifier], self.smallGroupSession) animated:YES];
 }
 - (BOOL)allowLegacyExperiment {
+    if ([self menuCallObservationActive]) { SRAlert(self, @"菜单观察进行中", @"先停止菜单调用观察，再开启发送实验。"); return NO; }
     if (self.sourceTimeProbe.active) { SRAlert(self, @"请先停止来源时间采样", @"只读采样期间不开放发送实验。"); return NO; }
     if (!self.smallGroupSession.busy && !self.smallGroupSession.usedNativeHost) return YES;
     SRAlert(self, @"本次请使用小群规则测试", @"小群执行与旧单群实验互斥。请在内容计划中暂停、继续或结束；本进程用过小群发送后不再开启旧单群实验。"); return NO;
@@ -1179,6 +1264,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]]; return alert;
 }
 - (void)beginCapture {
+        if ([self menuCallObservationActive]) { SRAlert(self, @"菜单观察进行中", @"先停止菜单调用观察，再开始新的捕获。"); return; }
     if (self.sourceTimeProbe.active) { SRAlert(self, @"请先停止来源时间采样", @"时间采样与源消息预览共用同一接收器，不能同时开始。"); return; }
     if (self.smallGroupSession.busy) { SRAlert(self, @"当前有小群批次", @"现有规则继续使用已经确认的源消息；请先完成或结束它，再等待新内容。"); return; }
     [SRRuntimeLog.shared record:@"capture_attempt" facts:[self diagnosticDraft]];
@@ -1214,6 +1300,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     SRPresentAlert(self, alert);
 }
 - (void)toggleSourceTimeProbe {
+    if ([self menuCallObservationActive]) { SRAlert(self, @"菜单观察进行中", @"先停止菜单调用观察，再开启来源时间采样。"); return; }
     if (self.sourceTimeProbe.active) {
         [self.sourceTimeProbe stopForReason:SRSourceTimeProbeUserStopped]; [self refresh]; return;
     }
@@ -1254,6 +1341,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         if (path.row == 6) [self exportDiagnosticFromController:self];
         if (path.row == 9) [self toggleSourceTimeProbe];
         if (path.row == 10) [self confirmMenuABIDiagnostic];
+        if (path.row == 11) [self confirmMenuCallObservation];
         return;
     }
     if (![self checkAccount]) return;
@@ -1299,6 +1387,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
 @property(nonatomic, strong) SRMenuABIProbe *menuABIProbe;
+@property(nonatomic, strong) SRMenuCallObserver *menuCallObserver;
 @property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, weak) UINavigationController *presented;
 @property(nonatomic) CGFloat floatingEntryUnitX;
@@ -1307,6 +1396,101 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
 @property(nonatomic) BOOL floatingEntryDragging;
 @end
 @implementation SREntry
+- (BOOL)menuCallObservationActive {
+    // The shared observer is the only authority; there is no second flag here.
+    return self.menuCallObserver.sampling || self.menuCallObserver.installed;
+}
+- (BOOL)menuCallPanelIsCurrent:(SRPanel *)panel {
+    if (!panel || !NSThread.isMainThread) return NO;
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return NO;
+    if (!panel.viewIfLoaded.window || panel.isBeingDismissed || panel.isMovingFromParentViewController) return NO;
+    if (panel.navigationController.topViewController != panel) return NO;
+    return YES;
+}
+/* The entry owns the only observer: start, stop, restore and the 30 s deadline
+ * live here, so closing the panel cannot cancel a running session. */
+- (void)menuCallObservationActionFromPanel:(SRPanel *)panel action:(SRMenuCallAction)action
+                                      observer:(SRMenuCallObserver *)observer token:(NSUInteger)token {
+    if (![self menuCallPanelIsCurrent:panel]) return;
+    // Only the observer that was on screen at confirmation is a valid target.
+    if (observer != self.menuCallObserver) return;
+    // The session token is part of the confirmed identity. A stale confirmation
+    // (a later session, or a session that has since been replaced) is refused
+    // before any action runs: no install, start, stop or uninstall. Equal tokens
+    // - including the first 0 == 0 - still proceed, and a stopped session keeps
+    // its token until the next begin, so its own stop/restore still closes it.
+    if (token != observer.sessionToken) {
+        [panel.tableView reloadData];
+        return;
+    }
+    switch (action) {
+        case SRMenuCallActionStart:
+            [self beginMenuCallObservationFromPanel:panel];
+            break;
+        case SRMenuCallActionStop:
+            [self finishMenuCallObservationWithToken:token deadline:NO];
+            break;
+        case SRMenuCallActionRestore:
+            [self restoreMenuCallObservationFromPanel:panel observer:observer];
+            break;
+    }
+}
+- (void)restoreMenuCallObservationFromPanel:(SRPanel *)panel observer:(SRMenuCallObserver *)observer {
+    if (observer != self.menuCallObserver) return;
+    // A running session owns the interceptors: an old restore intent must never
+    // uninstall it, and an already restored observer is a safe no-op.
+    if (observer.sampling || !observer.installed) { [panel.tableView reloadData]; return; }
+    [observer uninstall];
+    [panel.tableView reloadData];
+    if (observer.installed) {
+        SRAlert(panel, @"拦截尚未恢复", @"已有其他插件接管同一方法；未覆盖它，可稍后重试恢复。");
+    }
+}
+- (void)beginMenuCallObservationFromPanel:(SRPanel *)panel {
+    if (![self menuCallPanelIsCurrent:panel]) return;
+    // The state changed after confirmation: refuse the start, never convert it
+    // into a stop or a restore, and never touch the session holding the chain.
+    if (self.menuCallObserver.sampling || self.menuCallObserver.installed) {
+        [panel.tableView reloadData];
+        return;
+    }
+    if (![panel menuCallObservationAllowed]) {
+        SRAlert(panel, @"无法开始观察", @"先停止当前捕获、来源时间采样、发送观察、发送实验与小群执行，再开启菜单调用观察。");
+        return;
+    }
+    NSError *error = nil;
+    Class menuClass = NSClassFromString(@"MMMenuController");
+    Class itemClass = NSClassFromString(@"MMMenuItem");
+    if (![self.menuCallObserver installOnMenuClass:menuClass itemClass:itemClass error:&error]) {
+        SRAlert(panel, @"菜单调用观察未开启", @"当前微信版本没有通过方法门禁，未替换任何方法。");
+        return;
+    }
+    if (![self.menuCallObserver beginSamplingWithTimeout:30 eventBudget:24 error:&error]) {
+        // Only clean an idle installation of ours; another session is untouched.
+        if (!self.menuCallObserver.sampling) [self.menuCallObserver uninstall];
+        SRAlert(panel, @"菜单调用观察未开始", @"会话未能启动，已尝试恢复原方法。");
+        [panel.tableView reloadData];
+        return;
+    }
+    [self scheduleMenuCallDeadline:self.menuCallObserver.sessionToken];
+    [panel.tableView reloadData];
+}
+- (void)finishMenuCallObservationWithToken:(NSUInteger)token deadline:(BOOL)deadline {
+    BOOL finished = deadline ? [self.menuCallObserver finishSessionForDeadlineToken:token]
+                             : [self.menuCallObserver finishSessionWithToken:token];
+    if (!finished) return;   // a newer session exists: never clean it
+    SRPanel *panel = [self presentedSettingsPanel];
+    if (panel) [panel.tableView reloadData];
+}
+- (void)scheduleMenuCallDeadline:(NSUInteger)token {
+    // The timer captures the entry, not the panel: closing or releasing the
+    // panel must not cancel the deadline, and the token check keeps it harmless
+    // for any later session.
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf finishMenuCallObservationWithToken:token deadline:YES];
+    });
+}
 /* Locates the real settings panel inside the presented navigation stack.
  * The stack shape depends on how the settings were reached: the standalone
  * settings entry has the panel as its root, while the operations home has the
@@ -1428,7 +1612,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
-            return entry && !entry.sourceTimeProbe.active && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+            return entry && !entry.menuCallObservationActive && !entry.sourceTimeProbe.active && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
                 ![entry.imageSendHost.diagnostics[@"attemptConsumed"] boolValue];
@@ -1441,7 +1625,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
             SRPanel *panel = [entry presentedSettingsPanel];
-            return entry && !entry.sourceTimeProbe.active && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled &&
+            return entry && !entry.menuCallObservationActive && !entry.sourceTimeProbe.active && [panel isKindOfClass:SRPanel.class] && panel.singleImageSendEnabled &&
                 !entry.smallGroupSession.busy && !entry.smallGroupSession.usedNativeHost &&
                 panel.viewIfLoaded.window && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !panel.dirty && ![entry.capture.status[@"state"] isEqual:@"waiting"] &&
@@ -1456,7 +1640,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
             return entry && [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
         } environmentAllowed:^BOOL {
             SREntry *entry = weakSelf;
-            return entry && !entry.sourceTimeProbe.active && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+            return entry && !entry.menuCallObservationActive && !entry.sourceTimeProbe.active && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
                 !entry.smallGroupSession.busy &&
                 ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
                 ![entry.textSendHost.diagnostics[@"observing"] boolValue] && ![entry.imageSendHost.diagnostics[@"observing"] boolValue];
@@ -1468,7 +1652,7 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
         SREntry *entry = weakSelf;
         SRPanel *panel = [entry presentedSettingsPanel];
         BOOL panelIdle = ![panel isKindOfClass:SRPanel.class] || (!panel.dirty && !panel.ownsIdleTimer && !panel.textCountdown && !panel.imageCountdown);
-        return entry && !entry.sourceTimeProbe.active && panelIdle && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+        return entry && !entry.menuCallObservationActive && !entry.sourceTimeProbe.active && panelIdle && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
             ![entry.capture.status[@"state"] isEqual:@"waiting"] && ![entry.sendProbe.diagnostics[@"armed"] boolValue] &&
             ![entry.textSendHost.diagnostics[@"submissionAttempted"] boolValue] && ![entry.imageSendHost.diagnostics[@"attemptConsumed"] boolValue];
     } targetAllowed:^BOOL(NSString *target) {
@@ -1790,6 +1974,11 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     panel.smallGroupSession = self.smallGroupSession;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
     panel.menuABIProbe = self.menuABIProbe;
+    panel.menuCallObserver = self.menuCallObserver;
+    __weak SREntry *menuEntry = self;
+    panel.menuCallObservationAction = ^(SRPanel *target, SRMenuCallAction action, SRMenuCallObserver *observer, NSUInteger token) {
+        [menuEntry menuCallObservationActionFromPanel:target action:action observer:observer token:token];
+    };
     panel.settingsFooterActive = self.settingsFooterActive;
     /* The settings panel keeps its own save, close and unsaved-draft guard. It
      * is pushed onto the home's navigation stack, so closing it returns to the
@@ -1821,6 +2010,11 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     panel.smallGroupSession = self.smallGroupSession;
     panel.entryPreferences = self.entryPreferences; panel.settingsEntry = self.settingsEntry;
     panel.menuABIProbe = self.menuABIProbe;
+    panel.menuCallObserver = self.menuCallObserver;
+    __weak SREntry *menuEntry = self;
+    panel.menuCallObservationAction = ^(SRPanel *target, SRMenuCallAction action, SRMenuCallObserver *observer, NSUInteger token) {
+        [menuEntry menuCallObservationActionFromPanel:target action:action observer:observer token:token];
+    };
     panel.settingsFooterActive = self.settingsFooterActive;
     __weak typeof(self) weakSelf = self;
     panel.didClose = ^{ weakSelf.presented = nil; [weakSelf install]; };
@@ -1854,6 +2048,14 @@ static NSInteger SRPanelSection(NSInteger displayedSection) {
     [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
 }
 - (void)enteredBackground:(__unused NSNotification *)notification {
+    // Leaving the foreground stops recording; the returned foreground does not
+    // start a new session.
+    // Leaving the foreground stops recording, then attempts the safe restore;
+    // a newer session (different token) is never touched, and returning to the
+    // foreground does not restart a session.
+    NSUInteger menuToken = self.menuCallObserver.sessionToken;
+    [self.menuCallObserver stopForLifecycle];
+    [self finishMenuCallObservationWithToken:menuToken deadline:NO];
     [self.sourceTimeProbe stopForReason:SRSourceTimeProbeInactive];
     [self.receiver stop];
     if ([self.capture.status[@"state"] isEqual:@"waiting"]) [self.capture cancel];
@@ -1871,6 +2073,9 @@ void SRInstallPanelEntry(SRStore *store) {
      * paths receive this same instance so the shown and exported result cannot
      * diverge, and no second authority is stored. */
     entry.menuABIProbe = [[SRMenuABIProbe alloc] initWithResolver:nil];
+    /* One process-level call observer for both panel paths. Creating it installs
+     * and samples nothing; the panel only starts it after an explicit action. */
+    entry.menuCallObserver = [[SRMenuCallObserver alloc] init];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     __weak SREntry *weakEntry = entry;
     entry.settingsEntry = [[SRWeChatSettingsEntry alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }

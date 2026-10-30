@@ -706,6 +706,38 @@ static BOOL SRMenuDeclaredMethod(id target, SEL action, NSUInteger *argumentCoun
 - (void)stopSampling { [self stopBecause:@"manual"]; }
 - (void)stopForLifecycle { [self stopBecause:@"lifecycle"]; }
 
+- (NSUInteger)sessionToken { return _session; }
+
+- (BOOL)stopForDeadlineToken:(NSUInteger)token {
+    @synchronized(self.lock) {
+        if (!_sampling || token != self.session) return NO;
+        [self stopLocked:@"timeout"];
+        return YES;
+    }
+}
+
+- (BOOL)finishSessionWithToken:(NSUInteger)token reason:(NSString *)reason {
+    @synchronized(SRMenuObserverLock()) {
+        // The token identifies the session, not just the recording state: a
+        // session that already stopped on its own is still closed here, while a
+        // newer session (different token) is never touched.
+        if (token == 0 || token != self.session) return NO;
+        @synchronized(self.lock) {
+            if (_sampling) [self stopLocked:reason];
+        }
+        [self uninstall];
+        return YES;
+    }
+}
+
+- (BOOL)finishSessionWithToken:(NSUInteger)token {
+    return [self finishSessionWithToken:token reason:@"manual"];
+}
+
+- (BOOL)finishSessionForDeadlineToken:(NSUInteger)token {
+    return [self finishSessionWithToken:token reason:@"timeout"];
+}
+
 - (void)uninstall {
     @synchronized(SRMenuObserverLock()) {
         if (!_installed) return;

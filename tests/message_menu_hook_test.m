@@ -755,6 +755,20 @@ int main(void) {
         clockThrows = NO;
         [observer stopSampling];
 
+        // A delayed stop must validate the session token: an old timer can never
+        // stop a newer session.
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        NSUInteger firstToken = observer.sessionToken;
+        [observer stopSampling];
+        CHECK([observer beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        NSUInteger secondToken = observer.sessionToken;
+        CHECK(secondToken != firstToken);
+        CHECK(![observer stopForDeadlineToken:firstToken]);
+        CHECK(observer.sampling);
+        CHECK([observer stopForDeadlineToken:secondToken]);
+        CHECK(!observer.sampling);
+        CHECK([observer.diagnostics[@"stopReason"] isEqual:@"timeout"]);
+
         // (2) a cached trampoline keeps using its own original after restore.
         Method setter = class_getInstanceMethod(SRObservedMenu.class, @selector(setMenuItems:));
         IMP cachedTrampoline = method_getImplementation(setter);
@@ -776,6 +790,26 @@ int main(void) {
         [reinstall uninstall];
         CHECK(!reinstall.installed);
 
+        // Closing a session with its own token still restores after an early
+        // stop, while a stale token never touches a newer session.
+        SRMenuCallObserver *finishObserver = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 8200; }];
+        CHECK([finishObserver installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        CHECK([finishObserver beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        NSUInteger finishFirst = finishObserver.sessionToken;
+        [finishObserver stopSampling];
+        CHECK(finishObserver.installed && !finishObserver.sampling);
+        CHECK([finishObserver finishSessionWithToken:finishFirst]);      // same session restores
+        CHECK(!finishObserver.installed);
+        CHECK(!finishObserver.restoreRefused);
+        CHECK(![finishObserver beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        CHECK([finishObserver installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);
+        CHECK([finishObserver beginSamplingWithTimeout:30 eventBudget:8 error:NULL]);
+        NSUInteger finishSecond = finishObserver.sessionToken;
+        CHECK(finishSecond != finishFirst);
+        CHECK(![finishObserver finishSessionWithToken:finishFirst]);     // stale token: no touch
+        CHECK(finishObserver.sampling && finishObserver.installed);
+        CHECK([finishObserver finishSessionForDeadlineToken:finishSecond]);
+        CHECK(!finishObserver.sampling && !finishObserver.installed);
         // (3) a later hook is not overwritten; a clean later restore clears the flag.
         SRMenuCallObserver *restoreObserver = [[SRMenuCallObserver alloc] initWithClock:^NSTimeInterval { return 8500; }];
         CHECK([restoreObserver installOnMenuClass:SRObservedMenu.class itemClass:SRObservedItem.class error:NULL]);

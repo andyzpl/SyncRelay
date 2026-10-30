@@ -171,6 +171,26 @@ typedef NS_ENUM(NSUInteger, SRMenuCallObserverState) {
  * -restoreRefused reports YES instead of claiming an uninstall. */
 - (void)uninstall;
 
+/* Current session token. It changes on every successful -beginSampling... and
+ * never changes while a session runs, so a delayed callback can prove it still
+ * belongs to the session it was scheduled for. */
+@property(nonatomic, readonly) NSUInteger sessionToken;
+
+/* Stops the running session only when `token` is still current, with the fixed
+ * "timeout" reason. A stale timer therefore cannot stop a later session.
+ * Returns YES only when it actually stopped the session. */
+- (BOOL)stopForDeadlineToken:(NSUInteger)token;
+
+/* Closes the session identified by `token`: stops recording if it is still
+ * sampling, then attempts the safe restore. Returns NO and touches nothing when
+ * `token` no longer identifies the current session, so a stale timer can never
+ * stop or uninstall a newer one. When the session already stopped on its own
+ * (budget, host call, status read) the same token still closes it and the
+ * restore is still attempted. */
+- (BOOL)finishSessionWithToken:(NSUInteger)token;
+/* Same as above with the fixed "timeout" reason for the deadline path. */
+- (BOOL)finishSessionForDeadlineToken:(NSUInteger)token;
+
 /* Fixed keys only: state, installed, sampling, stopReason, counts, budget and
  * the bounded event list. No object, class name, address, account, body or
  * message identity is included. */
