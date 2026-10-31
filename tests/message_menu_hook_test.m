@@ -985,6 +985,8 @@ int main(void) {
         SRMenuBuildHook *buildHook = [[SRMenuBuildHook alloc] initWithHook:hook
             menuClass:SRBuildMenuController.class coverClass:SRHostCoverView.class
             cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
+        Method hostSetterMethod = class_getInstanceMethod(SRBuildMenuController.class, @selector(setMenuItems:));
+        IMP hostSetterIMP = method_getImplementation(hostSetterMethod);
         CHECK([buildHook install:NULL]);
         CHECK(buildHook.installed && !buildHook.restoreRefused);
         [buildMenu setMenuItems:@[foreign]];
@@ -1017,7 +1019,7 @@ int main(void) {
         CHECK(!showHook.installed);
 
         // Remove the foreign hook, then restore cleanly.
-        method_setImplementation(buildSetter, buildTrampoline);
+        method_setImplementation(buildSetter, hostSetterIMP);
         gBuildForeignNext = NULL;
         [buildHook uninstall];
         CHECK(!buildHook.installed && !buildHook.restoreRefused);
