@@ -1002,6 +1002,12 @@ int main(void) {
         NSUInteger callsBeforeForeign = gBuildSetCalls;
         [buildMenu setMenuItems:@[foreign]];
         CHECK(gBuildSetCalls == callsBeforeForeign + 1);   // still forwarded once
+        // Remove the foreign hook, then restore cleanly through the trampoline so
+        // uninstall can put the original implementation back itself.
+        method_setImplementation(buildSetter, buildTrampoline);
+        gBuildForeignNext = NULL;
+        [buildHook uninstall];
+        CHECK(!buildHook.installed && !buildHook.restoreRefused);
         // A presentation refreshes the item even when the host kept a cached
         // array: the show interposer appends before the menu is displayed.
         SRBuildMenuController *showMenu = [SRBuildMenuController new];
@@ -1018,11 +1024,6 @@ int main(void) {
         [showHook uninstall];
         CHECK(!showHook.installed);
 
-        // Remove the foreign hook, then restore cleanly.
-        method_setImplementation(buildSetter, hostSetterIMP);
-        gBuildForeignNext = NULL;
-        [buildHook uninstall];
-        CHECK(!buildHook.installed && !buildHook.restoreRefused);
         // A rebuild within the same long-press keeps the item when the source is
         // momentarily unavailable; after the window it is dropped again.
         SRBuildMenuController *rebuildMenu = [SRBuildMenuController new];
@@ -1062,7 +1063,7 @@ int main(void) {
             cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
         CHECK(![changedChain install:NULL]);
         CHECK(method_getImplementation(buildSetter) == beforeRefusal);
-        method_setImplementation(buildSetter, buildTrampoline);
+        method_setImplementation(buildSetter, hostSetterIMP);
         gBuildForeignNext = NULL;
         // Re-installing on a different class after restore is refused.
         SRMenuBuildHook *crossClass = [[SRMenuBuildHook alloc] initWithHook:hook menuClass:SRHostMenu.class
