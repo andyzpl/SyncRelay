@@ -459,6 +459,11 @@ static IMP gBuildForeignNext;
 static void SRBuildForeignHook(id self, SEL command, id items) {
     if (gBuildForeignNext) ((void (*)(id, SEL, id))gBuildForeignNext)(self, command, items);
 }
+@interface SRMenuBuildHook (SRTestPublish)
+- (id)publishItems:(id)items menu:(id)menu;
+@property(nonatomic) NSTimeInterval reuseWindow;
+@end
+
 @interface SRBuildMenuController : NSObject
 @property(nonatomic, strong) id responder;
 @property(nonatomic, strong) NSArray *lastItems;
@@ -989,6 +994,25 @@ int main(void) {
         NSUInteger callsBeforeForeign = gBuildSetCalls;
         [buildMenu setMenuItems:@[foreign]];
         CHECK(gBuildSetCalls == callsBeforeForeign + 1);   // still forwarded once
+        // A rebuild within the same long-press keeps the item when the source is
+        // momentarily unavailable; after the window it is dropped again.
+        [buildHook uninstall];
+        CHECK(!buildHook.installed);
+        SRBuildMenuController *rebuildMenu = [SRBuildMenuController new];
+        rebuildMenu.responder = cover;
+        NSArray *firstPublish = [buildHook publishItems:@[] menu:rebuildMenu];
+        CHECK(firstPublish.count == 1 && [hook ownsItem:firstPublish.lastObject]);
+        NSArray *secondPublish = [buildHook publishItems:@[] menu:rebuildMenu];
+        CHECK(secondPublish.count == 1);
+        cover.delegate = nil;                       // source resolution fails
+        NSArray *reusedPublish = [buildHook publishItems:@[] menu:rebuildMenu];
+        CHECK(reusedPublish.count == 1 && [hook ownsItem:reusedPublish.lastObject]);
+        buildHook.reuseWindow = 0;
+        NSArray *droppedPublish = [buildHook publishItems:@[] menu:rebuildMenu];
+        CHECK(droppedPublish.count == 0);
+        cover.delegate = cell;
+        buildHook.reuseWindow = 3.0;
+
         // Remove the foreign hook, then restore cleanly.
         method_setImplementation(buildSetter, buildTrampoline);
         gBuildForeignNext = NULL;

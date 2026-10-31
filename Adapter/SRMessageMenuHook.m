@@ -1953,6 +1953,11 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
 @property(nonatomic) BOOL installed;
 @property(nonatomic) BOOL restoreRefused;
 @property(nonatomic) NSUInteger buildCounter;
+/* Last successful freeze for a menu, reused only for a rebuild within the same
+ * short long-press window (the host may rebuild the array several times). */
+@property(nonatomic, strong) NSMapTable *recentContexts;
+@property(nonatomic, strong) NSMapTable *recentBuildTimes;
+@property(nonatomic) NSTimeInterval reuseWindow;
 - (id)publishItems:(id)items menu:(id)menu;
 @end
 
@@ -1966,6 +1971,11 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
         _coverClass = coverClass;
         _cellClass = cellClass;
         _itemClass = itemClass;
+        _recentContexts = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
+                                                    valueOptions:NSPointerFunctionsStrongMemory capacity:0];
+        _recentBuildTimes = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
+                                                      valueOptions:NSPointerFunctionsStrongMemory capacity:0];
+        _reuseWindow = 3.0;
     }
     return self;
 }
@@ -1975,7 +1985,25 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     if (!self.hook.enabled || !self.hook.enabled()) return items;
     NSString *generation = [[NSString alloc] initWithFormat:@"build:%lu", (unsigned long)++self.buildCounter];
     SRMenuMessageContext *context = [self.hook contextForMenu:menu generation:generation];
-    if (!context) return items;
+    BOOL reused = NO;
+    if (!context) {
+        // The host rebuilds the array several times per long-press. If the
+        // source is momentarily unavailable, re-publish the freeze from this same
+        // menu within a short window instead of dropping our item from the menu.
+        SRMenuMessageContext *recent = [self.recentContexts objectForKey:menu];
+        NSTimeInterval builtAt = [[self.recentBuildTimes objectForKey:menu] doubleValue];
+        if (recent && builtAt > 0 && (CFAbsoluteTimeGetCurrent() - builtAt) <= self.reuseWindow) {
+            context = recent;
+            generation = recent.generation;
+            reused = YES;
+        } else {
+            return items;
+        }
+    } else {
+        [self.recentContexts setObject:context forKey:menu];
+        [self.recentBuildTimes setObject:@(CFAbsoluteTimeGetCurrent()) forKey:menu];
+    }
+    (void)reused;
     return [self.hook appendHostItemToItems:items menu:menu source:context
                                   itemClass:self.itemClass generation:generation];
 }
