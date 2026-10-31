@@ -43,11 +43,16 @@ static NSInteger gMenuItemInitMode = 0;
 /* Host-style dispatch: the host sends target/action with the item view as the
  * sender, never the item itself. */
 static void SRDispatchMenuAction(id item, id sender) {
+    // Only a published menu item may provide the dispatch channel; a fixture
+    // without target/action is a broken test input, not a silent no-op.
+    CHECK([item respondsToSelector:@selector(target)]);
+    CHECK([item respondsToSelector:@selector(action)]);
     id target = [item target];
     SEL action = [item action];
-    if (!target || !action) return;
+    CHECK(target != nil && action != NULL);
     IMP imp = [target methodForSelector:action];
-    if (imp) ((void (*)(id, SEL, id))imp)(target, action, sender);
+    CHECK(imp != NULL);
+    ((void (*)(id, SEL, id))imp)(target, action, sender);
 }
 
 @interface SRIncompleteMenuController : NSObject
@@ -784,10 +789,15 @@ int main(void) {
         CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
         preferences.libraryMenuEntryEnabled = YES;
 
-        // 7) a foreign item view is never ours.
+        // 7) a sender carrying a foreign item is refused by the entry itself:
+        // dispatch through our own published item, not the foreign one.
         SRFakeMenuItemView *foreignView = [SRFakeMenuItemView new];
         foreignView.menuItem = foreign;
-        SRDispatchMenuAction(foreignView.menuItem, foreignView);
+        CHECK([hook ownsItem:itemView.menuItem]);
+        CHECK(![hook ownsItem:foreignView.menuItem]);
+        gReadbackCalls = 0;
+        SRDispatchMenuAction(itemView.menuItem, foreignView);
+        CHECK(gReadbackCalls == 0);
         CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
 
         // 8) receiver epoch changed after the menu was built.
