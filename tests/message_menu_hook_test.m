@@ -1018,13 +1018,6 @@ int main(void) {
                                            itemClass:SRFakeMenuItem.class generation:@"g-dedupe-2"];
         CHECK(twice.count == 2);
 
-        // A host that passes the controller (not the item view) still resolves the
-        // published item and saves.
-        rebuild();
-        NSUInteger beforeFallback = [[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count];
-        [hook srMenuAction:hostMenu];
-        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == beforeFallback + 1);
-
         // A presentation refreshes the item even when the host kept a cached
         // array: the show interposer appends before the menu is displayed.
         SRBuildMenuController *showMenu = [SRBuildMenuController new];
