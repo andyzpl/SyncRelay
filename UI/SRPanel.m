@@ -2114,6 +2114,9 @@ void SRInstallPanelEntry(SRStore *store) {
                 return live && [live isEqual:value];
             }
             enabled:^BOOL { return weakEntry.entryPreferences.libraryMenuEntryEnabled; }];
+        if ([UIImage respondsToSelector:@selector(systemImageNamed:)]) {
+            [entry.libraryMenuHook configureMenuIcon:[UIImage systemImageNamed:@"tray.and.arrow.down"]];
+        }
         [entry.libraryMenuHook configureReadbackProvider:^id {
             // Verified 8.0.79 path: MMContext.currentContext -> getService: returns
             // the forwarding service proxy; never unwrap it or cache its IMP.

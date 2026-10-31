@@ -132,6 +132,8 @@
 @property(nonatomic, copy) id (^readbackProvider)(void);
 @property(nonatomic, copy) unsigned long long (^epochProvider)(void);
 @property(nonatomic, strong) NSMapTable *menuResponders;
+@property(nonatomic, strong) id menuIcon;
+@property(nonatomic, weak) id activeMenu;
 @end
 
 /* -------------------------------------------------------------------------
@@ -717,6 +719,10 @@ static BOOL SRImplicitParametersMatch(Method method) {
     return [[NSString alloc] initWithFormat:@"menu:%p", menu];
 }
 
+- (void)configureMenuIcon:(id)icon {
+    @synchronized(self.lock) { self.menuIcon = icon; }
+}
+
 - (void)rememberResponder:(id)responder forMenu:(id)menu {
     if (!responder || !menu) return;
     @synchronized(self.lock) { [self.menuResponders setObject:responder forKey:menu]; }
@@ -756,10 +762,12 @@ static BOOL SRImplicitParametersMatch(Method method) {
     Method initializer = SRMenuHookMethod(itemClass, NSSelectorFromString(@"initWithTitle:icon:target:action:"));
     if (!SRMenuHookInitializer(initializer)) return original;
     id item = nil;
+    id icon = nil;
+    @synchronized(self.lock) { icon = self.menuIcon; }
     @try {
         item = ((SRMenuHookInitIMP)method_getImplementation(initializer))(
             [itemClass alloc], NSSelectorFromString(@"initWithTitle:icon:target:action:"),
-            @"存入同步库", nil, self, NSSelectorFromString(@"srMenuAction:"));
+            @"存入同步库", icon, self, NSSelectorFromString(@"srMenuAction:"));
     } @catch (__unused NSException *exception) {
         return original;
     }
@@ -775,6 +783,7 @@ static BOOL SRImplicitParametersMatch(Method method) {
         [self.contexts setObject:frozen forKey:item];
         [self.menus setObject:menu forKey:item];
         self.activeGeneration = [generation copy];
+        self.activeMenu = menu;
         self.activeItem = item;
         NSMutableArray *published = [NSMutableArray arrayWithCapacity:original.count + 1];
         for (id existing in original) {
@@ -853,12 +862,24 @@ static BOOL SRImplicitParametersMatch(Method method) {
 /* The host invokes item.target/item.action with the menu item view as the
  * sender, so the item is read back from the view through its declared getter. */
 - (void)srMenuAction:(id)sender {
-    // The menu action must never leak an exception into the host.
+    // The menu action must never leak an exception into the host. Hosts differ in
+    // what they pass as the sender, so accept the item view, the item itself, or
+    // fall back to the item this menu last published.
     @try {
-        id item = SRMenuHookReadObject(sender, NSSelectorFromString(@"menuItem"));
+        id item = nil;
+        BOOL foreign = NO;
+        id senderItem = SRMenuHookReadObject(sender, NSSelectorFromString(@"menuItem"));
+        if (senderItem) {
+            if ([self ownsItem:senderItem]) item = senderItem;
+            else foreign = YES;
+        } else if ([self ownsItem:sender]) {
+            item = sender;
+        }
+        if (foreign) return;
+        if (!item) item = self.activeItem;
         if (!item || ![self ownsItem:item]) return;
         id menu = nil;
-        @synchronized(self.lock) { menu = [self.menus objectForKey:item]; }
+        @synchronized(self.lock) { menu = [self.menus objectForKey:item] ?: self.activeMenu; }
         [self handleSelection:item current:[self currentIdentityForMenu:menu]];
     } @catch (__unused NSException *exception) {
     }

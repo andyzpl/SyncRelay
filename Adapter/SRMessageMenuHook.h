@@ -134,6 +134,8 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
 - (nullable SRMenuMessageContext *)contextForMenu:(nullable id)menu generation:(nonnull NSString *)generation
                                         responder:(nullable id)responder;
 - (void)rememberResponder:(nullable id)responder forMenu:(nullable id)menu;
+/* Optional host icon object (UIImage) supplied by the UI layer. */
+- (void)configureMenuIcon:(nullable id)icon;
 - (nullable NSArray *)appendHostItemToItems:(nullable NSArray *)items menu:(nullable id)menu
                                      source:(nullable SRMenuMessageContext *)source
                                   itemClass:(nullable Class)itemClass generation:(nonnull NSString *)generation;
