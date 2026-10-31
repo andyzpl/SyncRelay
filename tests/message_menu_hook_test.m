@@ -1008,6 +1008,14 @@ int main(void) {
         gBuildForeignNext = NULL;
         [buildHook uninstall];
         CHECK(!buildHook.installed && !buildHook.restoreRefused);
+        // Re-publishing into an array that already carries our item keeps one copy.
+        NSArray *once = [hook appendHostItemToItems:@[foreign] menu:hostMenu source:hostContext
+                                          itemClass:SRFakeMenuItem.class generation:@"g-dedupe"];
+        CHECK(once.count == 2);
+        NSArray *twice = [hook appendHostItemToItems:once menu:hostMenu source:hostContext
+                                           itemClass:SRFakeMenuItem.class generation:@"g-dedupe-2"];
+        CHECK(twice.count == 2);
+
         // A host that passes the controller (not the item view) still resolves the
         // published item and saves.
         rebuild();

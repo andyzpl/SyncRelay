@@ -787,6 +787,11 @@ static BOOL SRImplicitParametersMatch(Method method) {
         self.activeItem = item;
         NSMutableArray *published = [NSMutableArray arrayWithCapacity:original.count + 1];
         for (id existing in original) {
+            // Drop every item that points back at this hook, not only the ones we
+            // registered: a host may hand us a cached array that already carries a
+            // previously appended item, which would otherwise duplicate.
+            id existingTarget = SRMenuHookReadObject(existing, NSSelectorFromString(@"target"));
+            if (existingTarget == self) continue;
             if (![self.contexts objectForKey:existing]) [published addObject:existing];
         }
         [published addObject:item];
