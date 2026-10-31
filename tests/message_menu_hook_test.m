@@ -727,12 +727,14 @@ int main(void) {
         SRFakeMenuItemView *itemView = [SRFakeMenuItemView new];
         NSUInteger savedBeforeHostClick = [[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count];
         __block NSUInteger hostGeneration = 0;
+        __block NSArray *lastPublished = nil;   // keeps the weak active item alive
         void (^rebuild)(void) = ^{
             hostGeneration++;
             NSString *gen = [NSString stringWithFormat:@"host-%lu", (unsigned long)hostGeneration];
             NSArray *items = [hook appendHostItemToItems:@[foreign] menu:hostMenu
                 source:[hook contextForMenu:hostMenu generation:gen]
                 itemClass:SRFakeMenuItem.class generation:gen];
+            lastPublished = items;
             itemView.menuItem = items.lastObject;
         };
         // Every rejection uses a fresh, unsaved operation and changes one field.
