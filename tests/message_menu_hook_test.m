@@ -994,10 +994,13 @@ int main(void) {
         NSUInteger callsBeforeForeign = gBuildSetCalls;
         [buildMenu setMenuItems:@[foreign]];
         CHECK(gBuildSetCalls == callsBeforeForeign + 1);   // still forwarded once
+        // Remove the foreign hook, then restore cleanly.
+        method_setImplementation(buildSetter, buildTrampoline);
+        gBuildForeignNext = NULL;
+        [buildHook uninstall];
+        CHECK(!buildHook.installed && !buildHook.restoreRefused);
         // A rebuild within the same long-press keeps the item when the source is
         // momentarily unavailable; after the window it is dropped again.
-        [buildHook uninstall];
-        CHECK(!buildHook.installed);
         SRBuildMenuController *rebuildMenu = [SRBuildMenuController new];
         rebuildMenu.responder = cover;
         NSArray *firstPublish = [buildHook publishItems:@[] menu:rebuildMenu];
@@ -1013,11 +1016,6 @@ int main(void) {
         cover.delegate = cell;
         buildHook.reuseWindow = 3.0;
 
-        // Remove the foreign hook, then restore cleanly.
-        method_setImplementation(buildSetter, buildTrampoline);
-        gBuildForeignNext = NULL;
-        [buildHook uninstall];
-        CHECK(!buildHook.installed && !buildHook.restoreRefused);
         // A call already inside the trampoline still forwards after a clean
         // uninstall; the captured original is not cleared.
         NSUInteger callsAfterRestore = gBuildSetCalls;
