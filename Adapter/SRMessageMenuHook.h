@@ -131,6 +131,9 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
 - (void)configureReadbackProvider:(nullable id (^)(void))provider;
 - (void)configureEpochProvider:(nullable unsigned long long (^)(void))provider;
 - (nullable SRMenuMessageContext *)contextForMenu:(nullable id)menu generation:(nonnull NSString *)generation;
+- (nullable SRMenuMessageContext *)contextForMenu:(nullable id)menu generation:(nonnull NSString *)generation
+                                        responder:(nullable id)responder;
+- (void)rememberResponder:(nullable id)responder forMenu:(nullable id)menu;
 - (nullable NSArray *)appendHostItemToItems:(nullable NSArray *)items menu:(nullable id)menu
                                      source:(nullable SRMenuMessageContext *)source
                                   itemClass:(nullable Class)itemClass generation:(nonnull NSString *)generation;

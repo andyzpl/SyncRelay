@@ -1,6 +1,7 @@
 #import "SRMessageMenuHook.h"
 #import "Core/SRLibraryIntake.h"
 #import "SRRuntime.h"
+#import <objc/message.h>
 #import <objc/runtime.h>
 #include <stdlib.h>
 
@@ -130,6 +131,7 @@
 /* Account-context manager instance and the receiver's generation token. */
 @property(nonatomic, copy) id (^readbackProvider)(void);
 @property(nonatomic, copy) unsigned long long (^epochProvider)(void);
+@property(nonatomic, strong) NSMapTable *menuResponders;
 @end
 
 /* -------------------------------------------------------------------------
@@ -362,6 +364,15 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
     return NO;
 }
 
+@interface SRMenuHostSource (SRResponderOverride)
++ (nullable instancetype)sourceForMenu:(nullable id)menu
+                             menuClass:(nullable Class)menuClass
+                            coverClass:(nullable Class)coverClass
+                             cellClass:(nullable Class)cellClass
+                               account:(nullable NSString *)account
+                             responder:(nullable id)responder;
+@end
+
 @implementation SRMenuHostSource {
     NSString *_messageIdentity;
     NSString *_body;
@@ -373,10 +384,17 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
 + (instancetype)sourceForMenu:(id)menu menuClass:(Class)menuClass
                    coverClass:(Class)coverClass cellClass:(Class)cellClass
                       account:(NSString *)account {
+    return [self sourceForMenu:menu menuClass:menuClass coverClass:coverClass cellClass:cellClass
+                       account:account responder:nil];
+}
+
++ (instancetype)sourceForMenu:(id)menu menuClass:(Class)menuClass
+                   coverClass:(Class)coverClass cellClass:(Class)cellClass
+                      account:(NSString *)account responder:(id)responder {
     if (!menu || !menuClass || !coverClass || !cellClass) return nil;
     // A KVO subclass (NSKVONotifying_<class>) is still the same host class.
     if (!SRMenuHookClassIsKindOf(object_getClass(menu), menuClass)) return nil;
-    id responder = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
+    if (!responder) responder = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
     if (!responder || !SRMenuHookClassIsKindOf(object_getClass(responder), coverClass)) return nil;
     id delegate = SRMenuHookReadObject(responder, NSSelectorFromString(@"delegate"));
     if (!delegate || !SRMenuHookClassIsKindOf(object_getClass(delegate), cellClass)) return nil;
@@ -437,6 +455,8 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
         _lock = [NSObject new];
         _menuGenerations = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                                      valueOptions:NSPointerFunctionsStrongMemory capacity:0];
+        _menuResponders = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
+                                                    valueOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality) capacity:0];
         _menus = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                            valueOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                                capacity:0];
@@ -697,14 +717,23 @@ static BOOL SRImplicitParametersMatch(Method method) {
     return [[NSString alloc] initWithFormat:@"menu:%p", menu];
 }
 
+- (void)rememberResponder:(id)responder forMenu:(id)menu {
+    if (!responder || !menu) return;
+    @synchronized(self.lock) { [self.menuResponders setObject:responder forKey:menu]; }
+}
+
 - (SRMenuMessageContext *)contextForMenu:(id)menu generation:(NSString *)generation {
+    return [self contextForMenu:menu generation:generation responder:nil];
+}
+
+- (SRMenuMessageContext *)contextForMenu:(id)menu generation:(NSString *)generation responder:(id)responder {
     if (!menu || !generation.length) return nil;
     if (!self.currentAccount) return nil;
     NSString *account = self.currentAccount();
     if (!account.length) return nil;
     SRMenuHostSource *source = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
                                                    coverClass:self.hostCoverClass cellClass:self.hostCellClass
-                                                      account:account];
+                                                      account:account responder:responder];
     if (!source || !source.isText || !source.body.length || !source.messageIdentity.length) return nil;
     NSString *owner = [self ownerTokenForMenu:menu];
     NSString *operationKey = [[NSString alloc] initWithFormat:@"menu:%@:%@:%@", owner, generation, source.messageIdentity];
@@ -760,9 +789,11 @@ static BOOL SRImplicitParametersMatch(Method method) {
     if (!menu) return nil;
     NSString *account = self.currentAccount ? self.currentAccount() : nil;
     if (!account.length) return nil;
+    id remembered = nil;
+    @synchronized(self.lock) { remembered = [self.menuResponders objectForKey:menu]; }
     SRMenuHostSource *source = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
                                                    coverClass:self.hostCoverClass cellClass:self.hostCellClass
-                                                      account:account];
+                                                      account:account responder:remembered];
     if (!source || !source.messageIdentity.length) return nil;
     // Independent second source: read the same message back through the declared
     // instance API of the account-context message manager.
@@ -1908,6 +1939,8 @@ static IMP SRMenuBuildOriginalIMP;
 static Method SRMenuBuildSetterMethod;
 static Class SRMenuBuildInstalledClass;
 static BOOL SRMenuBuildEverInstalled;
+static IMP SRMenuBuildShowOriginalIMP;
+static Method SRMenuBuildShowMethod;
 
 static BOOL SRMenuBuildSetterShape(Method method) {
     if (!method || method_getNumberOfArguments(method) != 3) return NO;
@@ -1926,7 +1959,36 @@ static BOOL SRMenuBuildSetterShape(Method method) {
 
 @interface SRMenuBuildHook (SRForward)
 - (id)publishItems:(id)items menu:(id)menu;
+- (void)prepareMenu:(id)menu responder:(id)responder;
 @end
+
+/* Runs before each menu presentation: the host may keep its item array cached
+ * across long-presses, so appending only when the array is built is not enough. */
+static void SRMenuBuildShowForward(id self, SEL command, BOOL visible, id responder, BOOL animated) {
+    IMP original = NULL;
+    SRMenuBuildHook *hook = nil;
+    @synchronized(SRMenuBuildGlobalLock()) {
+        original = SRMenuBuildShowOriginalIMP;
+        hook = SRMenuBuildOwner;
+    }
+    if (hook && visible) @try {
+        [hook prepareMenu:self responder:responder];
+    } @catch (__unused NSException *exception) {
+    }
+    if (original) ((void (*)(id, SEL, BOOL, id, BOOL))original)(self, command, visible, responder, animated);
+}
+
+static BOOL SRMenuBuildShowShape(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 5) return NO;
+    char *ret = method_copyReturnType(method);
+    char *a2 = method_copyArgumentType(method, 2);
+    char *a3 = method_copyArgumentType(method, 3);
+    char *a4 = method_copyArgumentType(method, 4);
+    BOOL ok = ret && ret[0] == 'v' && a2 && (a2[0] == 'c' || a2[0] == 'B') &&
+        a3 && a3[0] == '@' && a4 && (a4[0] == 'c' || a4[0] == 'B');
+    free(ret); free(a2); free(a3); free(a4);
+    return ok;
+}
 
 static void SRMenuBuildForward(id self, SEL command, id items) {
     IMP original = NULL;
@@ -2007,6 +2069,22 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     return [self.hook appendHostItemToItems:items menu:menu source:context
                                   itemClass:self.itemClass generation:generation];
 }
+- (void)prepareMenu:(id)menu responder:(id)responder {
+    if (!self.hook || !menu) return;
+    if (!self.hook.enabled || !self.hook.enabled()) return;
+    if (responder) [self.hook rememberResponder:responder forMenu:menu];
+    id items = SRMenuHookReadObject(menu, NSSelectorFromString(@"currentMenuItems"));
+    if (![items isKindOfClass:NSArray.class]) return;
+    NSString *generation = [[NSString alloc] initWithFormat:@"show:%lu", (unsigned long)++self.buildCounter];
+    SRMenuMessageContext *context = [self.hook contextForMenu:menu generation:generation responder:responder];
+    if (!context) return;
+    NSArray *published = [self.hook appendHostItemToItems:items menu:menu source:context
+                                                itemClass:self.itemClass generation:generation];
+    if (published != items && [menu respondsToSelector:NSSelectorFromString(@"setMenuItems:")]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(menu, NSSelectorFromString(@"setMenuItems:"), published);
+    }
+}
+
 - (BOOL)install:(NSError **)error {
     @synchronized(SRMenuBuildGlobalLock()) {
         if (self.installed) return NO;
@@ -2037,6 +2115,11 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
         }
         [self.hook configureHostClasses:self.menuClass coverClass:self.coverClass cellClass:self.cellClass];
         SRMenuBuildOriginalIMP = method_setImplementation(setter, (IMP)SRMenuBuildForward);
+        Method show = SRMenuHookMethod(self.menuClass, @selector(setMenuVisible:responder:animated:));
+        if (SRMenuBuildShowShape(show)) {
+            SRMenuBuildShowMethod = show;
+            SRMenuBuildShowOriginalIMP = method_setImplementation(show, (IMP)SRMenuBuildShowForward);
+        }
         SRMenuBuildSetterMethod = setter;
         SRMenuBuildInstalledClass = self.menuClass;
         SRMenuBuildEverInstalled = YES;
@@ -2058,6 +2141,12 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
             return;
         }
         method_setImplementation(SRMenuBuildSetterMethod, SRMenuBuildOriginalIMP);
+        if (SRMenuBuildShowMethod &&
+            method_getImplementation(SRMenuBuildShowMethod) == (IMP)SRMenuBuildShowForward) {
+            method_setImplementation(SRMenuBuildShowMethod, SRMenuBuildShowOriginalIMP);
+        }
+        SRMenuBuildShowMethod = NULL;
+        SRMenuBuildShowOriginalIMP = NULL;
         if (SRMenuBuildOwner == self) SRMenuBuildOwner = nil;
         // A call already inside the trampoline still needs the original this
         // installation captured; keep both until the next install replaces them.

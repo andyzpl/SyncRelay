@@ -467,10 +467,16 @@ static void SRBuildForeignHook(id self, SEL command, id items) {
 @interface SRBuildMenuController : NSObject
 @property(nonatomic, strong) id responder;
 @property(nonatomic, strong) NSArray *lastItems;
+@property(nonatomic, strong) NSArray *currentMenuItems;
+@property(nonatomic) NSUInteger showCalls;
 - (void)setMenuItems:(NSArray *)items;
+- (void)setMenuVisible:(BOOL)visible responder:(id)responder animated:(BOOL)animated;
 @end
 @implementation SRBuildMenuController
-- (void)setMenuItems:(NSArray *)items { gBuildSetCalls++; self.lastItems = items; }
+- (void)setMenuItems:(NSArray *)items { gBuildSetCalls++; self.lastItems = items; self.currentMenuItems = items; }
+- (void)setMenuVisible:(__unused BOOL)visible responder:(__unused id)responder animated:(__unused BOOL)animated {
+    self.showCalls++;
+}
 @end
 
 /* A later hook installed on top of the observer's trampoline. */
@@ -994,6 +1000,22 @@ int main(void) {
         NSUInteger callsBeforeForeign = gBuildSetCalls;
         [buildMenu setMenuItems:@[foreign]];
         CHECK(gBuildSetCalls == callsBeforeForeign + 1);   // still forwarded once
+        // A presentation refreshes the item even when the host kept a cached
+        // array: the show interposer appends before the menu is displayed.
+        SRBuildMenuController *showMenu = [SRBuildMenuController new];
+        showMenu.responder = cover;
+        showMenu.currentMenuItems = @[foreign];
+        SRMenuBuildHook *showHook = [[SRMenuBuildHook alloc] initWithHook:hook
+            menuClass:SRBuildMenuController.class coverClass:SRHostCoverView.class
+            cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
+        CHECK([showHook install:NULL]);
+        [showMenu setMenuVisible:YES responder:cover animated:NO];
+        CHECK(showMenu.showCalls == 1);
+        CHECK(showMenu.currentMenuItems.count == 2);
+        CHECK([hook ownsItem:showMenu.currentMenuItems.lastObject]);
+        [showHook uninstall];
+        CHECK(!showHook.installed);
+
         // Remove the foreign hook, then restore cleanly.
         method_setImplementation(buildSetter, buildTrampoline);
         gBuildForeignNext = NULL;
