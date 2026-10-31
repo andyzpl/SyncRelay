@@ -23,10 +23,17 @@ typedef NS_ENUM(NSUInteger, SRMenuGateStatus) {
 @property(nonatomic, copy, readonly) NSString *ownerToken;
 /* Stable identity of the selected message as reported by the host adapter. */
 @property(nonatomic, copy, readonly) NSString *messageIdentity;
+/* Session/chat, numeric message type and host creation time as frozen text. */
+@property(nonatomic, copy, readonly) NSString *session;
+@property(nonatomic, copy, readonly) NSString *messageType;
+@property(nonatomic, copy, readonly) NSString *createdAt;
+/* Receiver generation token captured with this menu. */
+@property(nonatomic, copy, readonly) NSString *epoch;
 @property(nonatomic, copy, readonly) NSString *operationKey;
 - (instancetype)initWithAccount:(NSString *)account body:(NSString *)body generation:(NSString *)generation
                      ownerToken:(NSString *)ownerToken messageIdentity:(NSString *)messageIdentity
-                operationKey:(NSString *)operationKey;
+                        session:(NSString *)session messageType:(NSString *)messageType
+                      createdAt:(NSString *)createdAt epoch:(NSString *)epoch operationKey:(NSString *)operationKey;
 @end
 
 /* Identity observed again when the host dispatches a menu click. This is a
@@ -37,8 +44,15 @@ typedef NS_ENUM(NSUInteger, SRMenuGateStatus) {
 @property(nonatomic, copy, readonly) NSString *ownerToken;
 @property(nonatomic, copy, readonly) NSString *generation;
 @property(nonatomic, copy, readonly) NSString *messageIdentity;
+@property(nonatomic, copy, readonly) NSString *session;
+@property(nonatomic, copy, readonly) NSString *messageType;
+@property(nonatomic, copy, readonly) NSString *createdAt;
+@property(nonatomic, copy, readonly) NSString *epoch;
+@property(nonatomic, copy, readonly) NSString *body;
 - (instancetype)initWithAccount:(NSString *)account ownerToken:(NSString *)ownerToken
-                      generation:(NSString *)generation messageIdentity:(NSString *)messageIdentity;
+                     generation:(NSString *)generation messageIdentity:(NSString *)messageIdentity
+                        session:(NSString *)session messageType:(NSString *)messageType
+                      createdAt:(NSString *)createdAt epoch:(NSString *)epoch body:(NSString *)body;
 @end
 
 /* What a click produced. Mirrors the intake outcomes so the caller can show
@@ -108,6 +122,40 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
                               current:(nullable SRMenuCurrentIdentity *)current;
 
 - (nullable SRMenuMessageContext *)contextForOwnItem:(nullable id)item;
+
+/* Production wiring for the real host menu. `configureHostClasses:` fixes the
+ * three classes once; every later resolution re-checks them. */
+- (void)configureHostClasses:(nullable Class)menuClass coverClass:(nullable Class)coverClass
+                   cellClass:(nullable Class)cellClass;
+/* Overrides the message-manager class used for the second-source readback. */
+- (void)configureReadbackProvider:(nullable id (^)(void))provider;
+- (void)configureEpochProvider:(nullable unsigned long long (^)(void))provider;
+- (nullable SRMenuMessageContext *)contextForMenu:(nullable id)menu generation:(nonnull NSString *)generation;
+- (nullable NSArray *)appendHostItemToItems:(nullable NSArray *)items menu:(nullable id)menu
+                                     source:(nullable SRMenuMessageContext *)source
+                                  itemClass:(nullable Class)itemClass generation:(nonnull NSString *)generation;
+
+@end
+
+/* Strict, metadata-gated resolution of the message a host menu belongs to:
+ *   menu.responder -> rich-text cover view -> delegate -> message cell
+ *   -> getCurrentMessageWrap
+ * Every hop must be a declared method with the expected ABI, and every object
+ * must be an instance of the expected class (or a subclass). Any miss returns
+ * nil; there is no fallback to a recent message, selection text or clipboard. */
+@interface SRMenuHostSource : NSObject
++ (nullable instancetype)sourceForMenu:(nullable id)menu
+                             menuClass:(nullable Class)menuClass
+                            coverClass:(nullable Class)coverClass
+                             cellClass:(nullable Class)cellClass
+                               account:(nullable NSString *)account;
+@property(nonatomic, copy, readonly, nullable) NSString *messageIdentity;
+@property(nonatomic, copy, readonly, nullable) NSString *body;
+@property(nonatomic, copy, readonly, nullable) NSString *session;
+@property(nonatomic, copy, readonly, nullable) NSString *messageType;
+@property(nonatomic, copy, readonly, nullable) NSString *createdAt;
+@property(nonatomic) unsigned long long localID;
+@property(nonatomic, readonly) BOOL isText;
 @end
 
 /* Interceptor state. `installed` means the three IMPs are replaced and every
@@ -203,5 +251,22 @@ typedef NS_ENUM(NSUInteger, SRMenuCallObserverState) {
  * getters. No address, description, account, body, message identity, group,
  * path or media token is included. */
 - (NSDictionary *)diagnostics;
+@end
+NS_ASSUME_NONNULL_END
+
+NS_ASSUME_NONNULL_BEGIN
+/* Production menu-build interposer. It appends the one library item through the
+ * adapter and forwards the host call exactly once; it never observes, samples or
+ * reads the message on its own. */
+@interface SRMenuBuildHook : NSObject
+- (instancetype)initWithHook:(SRMessageMenuHook *)hook
+                   menuClass:(nullable Class)menuClass coverClass:(nullable Class)coverClass
+                   cellClass:(nullable Class)cellClass itemClass:(nullable Class)itemClass;
+- (BOOL)install:(NSError **)error;
+- (void)uninstall;
+@property(nonatomic, readonly) BOOL installed;
+/* YES when a later hook owned the method: nothing was restored, the trampoline
+ * keeps forwarding and `installed` stays YES. */
+@property(nonatomic, readonly) BOOL restoreRefused;
 @end
 NS_ASSUME_NONNULL_END

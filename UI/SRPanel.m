@@ -27,6 +27,8 @@
 #import "Adapter/SRWeChatTextSendHost.h"
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "Adapter/SRMenuABIProbe.h"
+#import "Adapter/SRRuntime.h"
+#import "Core/SRLibraryIntake.h"
 #import "Adapter/SRMessageMenuHook.h"
 #import "SRPlanScreens.h"
 #import "SRSettingsFallback.h"
@@ -368,7 +370,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     section = SRPanelSection(section);
-    if (section == 0) return 12;
+    if (section == 0) return 13;
     if (section == 1) return 4;
     if (section == 2) return 1;
     if (section == 4) return 8;
@@ -451,6 +453,17 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
             cell.detailTextLabel.text = [self menuCallObservationText];
             cell.accessibilityLabel = @"菜单调用观察（临时）";
             cell.accessibilityValue = [self menuCallObservationText];
+        }
+        /* Explicit opt-in for the production library entry. Off by default and
+         * unrelated to the temporary observation session above. */
+        if (path.row == 12) {
+            cell.textLabel.text = @"菜单入库（长按文字）";
+            cell.detailTextLabel.text = @"长按文字消息后从菜单存入库";
+            UISwitch *toggle = [[UISwitch alloc] init];
+            toggle.on = self.entryPreferences.libraryMenuEntryEnabled;
+            [toggle addTarget:self action:@selector(libraryMenuEntryToggled:) forControlEvents:UIControlEventValueChanged];
+            toggle.accessibilityLabel = @"菜单入库（长按文字）";
+            cell.accessoryView = toggle;
         }
     } else if (section == 1) {
         if (path.row == 0) { cell.textLabel.text = @"母群"; cell.detailTextLabel.text = self.draft[@"sourceGroup"][@"name"] ?: @"未选择"; }
@@ -1327,6 +1340,11 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     }]];
     SRPresentAlert(self, alert);
 }
+- (void)libraryMenuEntryToggled:(UISwitch *)toggle {
+    // The switch is the only writer of this preference; the menu hook reads it
+    // at build and click time, so turning it off also refuses old items.
+    self.entryPreferences.libraryMenuEntryEnabled = toggle.isOn;
+}
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
     NSInteger section = SRPanelSection(path.section);
@@ -1388,6 +1406,10 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
 @property(nonatomic, strong) SRMenuABIProbe *menuABIProbe;
 @property(nonatomic, strong) SRMenuCallObserver *menuCallObserver;
+/* Library menu entry: the production hook and its build interposer. This is a
+ * separate capability from the temporary call observer above. */
+@property(nonatomic, strong) SRMessageMenuHook *libraryMenuHook;
+@property(nonatomic, strong) SRMenuBuildHook *libraryMenuBuildHook;
 @property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, weak) UINavigationController *presented;
 @property(nonatomic) CGFloat floatingEntryUnitX;
@@ -2078,6 +2100,45 @@ void SRInstallPanelEntry(SRStore *store) {
     entry.menuCallObserver = [[SRMenuCallObserver alloc] init];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     __weak SREntry *weakEntry = entry;
+    if (store) {
+        entry.libraryMenuHook = [[SRMessageMenuHook alloc] initWithIntake:[SRLibraryIntake intakeForStore:store]
+            currentAccount:^NSString * {
+                SREntry *strong = weakEntry;
+                if (!strong.identityReader) return nil;
+                return [strong.identityReader connect:NULL] ? strong.identityReader.accountID : nil;
+            }
+            accountActive:^BOOL(NSString *value) {
+                SREntry *strong = weakEntry;
+                NSString *live = strong.identityReader && [strong.identityReader connect:NULL]
+                    ? strong.identityReader.accountID : nil;
+                return live && [live isEqual:value];
+            }
+            enabled:^BOOL { return weakEntry.entryPreferences.libraryMenuEntryEnabled; }];
+        [entry.libraryMenuHook configureReadbackProvider:^id {
+            // Verified 8.0.79 path: MMContext.currentContext -> getService: returns
+            // the forwarding service proxy; never unwrap it or cache its IMP.
+            Class contextClass = NSClassFromString(@"MMContext");
+            Class managerClass = NSClassFromString(@"CMessageMgr");
+            if (!contextClass || !managerClass) return nil;
+            id context = SRReadObject(contextClass, @"currentContext", @[], NULL);
+            if (!context) return nil;
+            return SRReadObject(context, @"getService:", @[managerClass], NULL);
+        }];
+        [entry.libraryMenuHook configureEpochProvider:^unsigned long long {
+            SREntry *strong = weakEntry;
+            // ULLONG_MAX means "no authoritative token"; 0 is a real value.
+            return strong.receiver ? [strong.receiver generationToken] : ULLONG_MAX;
+        }];
+        Class menuClass = NSClassFromString(@"MMMenuController");
+        Class coverClass = NSClassFromString(@"MMRichTextCoverView");
+        Class cellClass = NSClassFromString(@"TextMessageCellView");
+        Class itemClass = NSClassFromString(@"MMMenuItem");
+        if (menuClass && coverClass && cellClass && itemClass) {
+            entry.libraryMenuBuildHook = [[SRMenuBuildHook alloc] initWithHook:entry.libraryMenuHook
+                menuClass:menuClass coverClass:coverClass cellClass:cellClass itemClass:itemClass];
+            [entry.libraryMenuBuildHook install:NULL];
+        }
+    }
     entry.settingsEntry = [[SRWeChatSettingsEntry alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
         open:^(id controller) { if ([controller isKindOfClass:UIViewController.class]) [weakEntry openFromController:controller]; }];
     entry.settingsEntry.updated = ^(id controller, BOOL present) {

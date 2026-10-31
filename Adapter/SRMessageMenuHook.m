@@ -1,5 +1,6 @@
 #import "SRMessageMenuHook.h"
 #import "Core/SRLibraryIntake.h"
+#import "SRRuntime.h"
 #import <objc/runtime.h>
 #include <stdlib.h>
 
@@ -21,19 +22,27 @@
     NSString *_generation;
     NSString *_ownerToken;
     NSString *_messageIdentity;
+    NSString *_session;
+    NSString *_messageType;
+    NSString *_createdAt;
+    NSString *_epoch;
     NSString *_operationKey;
 }
 - (instancetype)initWithAccount:(NSString *)account body:(NSString *)body generation:(NSString *)generation
                      ownerToken:(NSString *)ownerToken messageIdentity:(NSString *)messageIdentity
-                operationKey:(NSString *)operationKey {
+                        session:(NSString *)session messageType:(NSString *)messageType
+                      createdAt:(NSString *)createdAt epoch:(NSString *)epoch operationKey:(NSString *)operationKey {
     self = [super init];
     if (self) {
-        // copy, not retain: a caller's NSMutableString cannot change this later.
         _account = [account copy];
         _body = [body copy];
         _generation = [generation copy];
         _ownerToken = [ownerToken copy];
         _messageIdentity = [messageIdentity copy];
+        _session = [session copy];
+        _messageType = [messageType copy];
+        _createdAt = [createdAt copy];
+        _epoch = [epoch copy];
         _operationKey = [operationKey copy];
     }
     return self;
@@ -43,6 +52,10 @@
 - (NSString *)generation { return _generation; }
 - (NSString *)ownerToken { return _ownerToken; }
 - (NSString *)messageIdentity { return _messageIdentity; }
+- (NSString *)session { return _session; }
+- (NSString *)messageType { return _messageType; }
+- (NSString *)createdAt { return _createdAt; }
+- (NSString *)epoch { return _epoch; }
 - (NSString *)operationKey { return _operationKey; }
 @end
 
@@ -51,15 +64,27 @@
     NSString *_ownerToken;
     NSString *_generation;
     NSString *_messageIdentity;
+    NSString *_session;
+    NSString *_messageType;
+    NSString *_createdAt;
+    NSString *_epoch;
+    NSString *_body;
 }
 - (instancetype)initWithAccount:(NSString *)account ownerToken:(NSString *)ownerToken
-                      generation:(NSString *)generation messageIdentity:(NSString *)messageIdentity {
+                     generation:(NSString *)generation messageIdentity:(NSString *)messageIdentity
+                        session:(NSString *)session messageType:(NSString *)messageType
+                      createdAt:(NSString *)createdAt epoch:(NSString *)epoch body:(NSString *)body {
     self = [super init];
     if (self) {
         _account = [account copy];
         _ownerToken = [ownerToken copy];
         _generation = [generation copy];
         _messageIdentity = [messageIdentity copy];
+        _session = [session copy];
+        _messageType = [messageType copy];
+        _createdAt = [createdAt copy];
+        _epoch = [epoch copy];
+        _body = [body copy];
     }
     return self;
 }
@@ -67,6 +92,11 @@
 - (NSString *)ownerToken { return _ownerToken; }
 - (NSString *)generation { return _generation; }
 - (NSString *)messageIdentity { return _messageIdentity; }
+- (NSString *)session { return _session; }
+- (NSString *)messageType { return _messageType; }
+- (NSString *)createdAt { return _createdAt; }
+- (NSString *)epoch { return _epoch; }
+- (NSString *)body { return _body; }
 @end
 
 @interface SRMessageMenuHook ()
@@ -89,6 +119,304 @@
  * the previous item. */
 @property(nonatomic, weak) id activeItem;
 @property(nonatomic, strong) NSObject *lock;
+/* item -> menu (weak/weak): used to re-resolve the current source at click. */
+@property(nonatomic, strong) NSMapTable *menus;
+@property(nonatomic) Class hostMenuClass;
+@property(nonatomic) Class hostCoverClass;
+@property(nonatomic) Class hostCellClass;
+/* menu -> generation, set when the menu was built; read again at click time so
+ * the generation check does not rely on the hook's active item state. */
+@property(nonatomic, strong) NSMapTable *menuGenerations;
+/* Account-context manager instance and the receiver's generation token. */
+@property(nonatomic, copy) id (^readbackProvider)(void);
+@property(nonatomic, copy) unsigned long long (^epochProvider)(void);
+@end
+
+/* -------------------------------------------------------------------------
+ * Host menu source resolution.
+ *
+ * Every hop is looked up in the real method list of the receiver's class and
+ * validated against the expected ABI before it is sent. Nothing here reads an
+ * ivar, uses a hard-coded offset, calls a pj* helper or touches Mikoto state.
+ * ---------------------------------------------------------------------- */
+static Method SRMenuHookMethod(Class cls, SEL selector) {
+    if (!cls || !selector) return NULL;
+    // A KVO subclass inherits the real declaration: walk the class chain, but
+    // never leave the expected host hierarchy.
+    for (Class current = cls; current; current = class_getSuperclass(current)) {
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(current, &count);
+        if (!methods) continue;
+        for (unsigned int index = 0; index < count; index++) {
+            if (method_getName(methods[index]) != selector) continue;
+            Method found = methods[index];
+            free(methods);
+            return found;
+        }
+        free(methods);
+    }
+    return NULL;
+}
+
+static BOOL SRMenuHookArgumentsAreSelfAndSEL(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 2) return NO;
+    char *first = method_copyArgumentType(method, 0);
+    char *second = method_copyArgumentType(method, 1);
+    BOOL ok = first && second && first[0] == '@' && second[0] == ':';
+    free(first); free(second);
+    return ok;
+}
+
+static BOOL SRMenuHookObjectGetter(Method method) {
+    if (!SRMenuHookArgumentsAreSelfAndSEL(method)) return NO;
+    char *type = method_copyReturnType(method);
+    BOOL ok = type && type[0] == '@' && type[1] != '?';
+    free(type);
+    return ok;
+}
+
+static BOOL SRMenuHookScalarGetter(Method method) {
+    if (!SRMenuHookArgumentsAreSelfAndSEL(method)) return NO;
+    char *type = method_copyReturnType(method);
+    char kind = type ? type[0] : 0;
+    free(type);
+    return kind == 'Q' || kind == 'L' || kind == 'I' || kind == 'q' || kind == 'i';
+}
+
+static BOOL SRMenuHookInitializer(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 6) return NO;
+    char *ret = method_copyReturnType(method);
+    BOOL ok = ret && ret[0] == '@' && ret[1] != '?';
+    free(ret);
+    if (!ok) return NO;
+    char *selfType = method_copyArgumentType(method, 0);
+    char *cmdType = method_copyArgumentType(method, 1);
+    ok = selfType && selfType[0] == '@' && cmdType && cmdType[0] == ':';
+    free(selfType); free(cmdType);
+    if (!ok) return NO;
+    for (unsigned int index = 2; index <= 4; index++) {
+        char *type = method_copyArgumentType(method, index);
+        BOOL object = type && type[0] == '@';
+        free(type);
+        if (!object) return NO;
+    }
+    char *action = method_copyArgumentType(method, 5);
+    BOOL sel = action && action[0] == ':';
+    free(action);
+    return sel;
+}
+
+static id SRMenuHookReadObject(id object, SEL selector) {
+    if (!object) return nil;
+    Method method = SRMenuHookMethod(object_getClass(object), selector);
+    if (!SRMenuHookObjectGetter(method)) return nil;
+    @try {
+        return ((id (*)(id, SEL))method_getImplementation(method))(object, selector);
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+/* The receiver is consumed by the init-family call and the result is owned. */
+typedef id (*SRMenuHookInitIMP)(id __attribute__((ns_consumed)), SEL, id, id, id, SEL)
+    __attribute__((ns_returns_retained));
+typedef unsigned long long (*SRMenuHookULLGetter)(id, SEL);
+typedef unsigned long (*SRMenuHookULGetter)(id, SEL);
+typedef unsigned int (*SRMenuHookUIGetter)(id, SEL);
+typedef long long (*SRMenuHookLLGetter)(id, SEL);
+typedef int (*SRMenuHookIGetter)(id, SEL);
+
+/* The call signature must match the declared return width; calling a 32-bit
+ * getter through a 64-bit function pointer is undefined. */
+static BOOL SRMenuHookReadUnsigned(id object, SEL selector, unsigned long long *value) {
+    if (!object || !value) return NO;
+    Method method = SRMenuHookMethod(object_getClass(object), selector);
+    if (!SRMenuHookScalarGetter(method)) return NO;
+    char *type = method_copyReturnType(method);
+    char kind = type ? type[0] : 0;
+    free(type);
+    IMP imp = method_getImplementation(method);
+    @try {
+        switch (kind) {
+            case 'Q': *value = ((SRMenuHookULLGetter)imp)(object, selector); return YES;
+            case 'L': *value = ((SRMenuHookULGetter)imp)(object, selector); return YES;
+            case 'I': *value = ((SRMenuHookUIGetter)imp)(object, selector); return YES;
+            case 'q': {
+                long long signedValue = ((SRMenuHookLLGetter)imp)(object, selector);
+                if (signedValue < 0) return NO;
+                *value = (unsigned long long)signedValue; return YES;
+            }
+            case 'i': {
+                int signedValue = ((SRMenuHookIGetter)imp)(object, selector);
+                if (signedValue < 0) return NO;
+                *value = (unsigned long long)signedValue; return YES;
+            }
+            default: return NO;
+        }
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+}
+
+/* Read-only lookup-service gate: a real object (never a class), the declared
+ * lookup selector present through reflection/forwarding, object return, object
+ * session and an unsigned-integer local id. Proxies pass through their own
+ * signature; nothing is unwrapped or invoked here. */
+/* Read-only lookup-service gate. It checks the declared ABI when the class
+ * really declares the method, the reflected/forwarded signature otherwise, and
+ * refuses a declaration that conflicts with the reflected one. Any exception
+ * from a proxy is turned into a refusal; nothing is invoked. */
+static BOOL SRMenuHookTypeIsInteger(const char *type) {
+    return type && (type[0] == 'I' || type[0] == 'Q' || type[0] == 'L');
+}
+
+/* Full lookup shape, including the implicit self and _cmd types. */
+static BOOL SRMenuHookLookupShape(const char *ret, const char *selfType, const char *cmdType,
+                                  const char *sessionType, const char *idType) {
+    return ret && ret[0] == '@' &&
+        selfType && selfType[0] == '@' &&
+        cmdType && cmdType[0] == ':' &&
+        sessionType && sessionType[0] == '@' &&
+        SRMenuHookTypeIsInteger(idType);
+}
+
+static BOOL SRMenuHookDeclaredLookupMatches(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 4) return NO;
+    char *ret = method_copyReturnType(method);
+    char *a0 = method_copyArgumentType(method, 0);
+    char *a1 = method_copyArgumentType(method, 1);
+    char *a2 = method_copyArgumentType(method, 2);
+    char *a3 = method_copyArgumentType(method, 3);
+    BOOL ok = SRMenuHookLookupShape(ret, a0, a1, a2, a3);
+    free(ret); free(a0); free(a1); free(a2); free(a3);
+    return ok;
+}
+
+static BOOL SRMenuHookSignatureMatches(NSMethodSignature *signature) {
+    if (!signature || signature.numberOfArguments != 4) return NO;
+    return SRMenuHookLookupShape(signature.methodReturnType,
+                                 [signature getArgumentTypeAtIndex:0],
+                                 [signature getArgumentTypeAtIndex:1],
+                                 [signature getArgumentTypeAtIndex:2],
+                                 [signature getArgumentTypeAtIndex:3]);
+}
+
+/* When the service does not declare the lookup itself, it may only be accepted
+ * as a forwarding proxy whose metadata methods are themselves declared with the
+ * expected ABI. */
+static BOOL SRMenuHookProxyMetadataMatches(id service) {
+    Method signatureMethod = SRMenuHookMethod(object_getClass(service), @selector(methodSignatureForSelector:));
+    Method forwardMethod = SRMenuHookMethod(object_getClass(service), @selector(forwardInvocation:));
+    if (!signatureMethod || method_getNumberOfArguments(signatureMethod) != 3) return NO;
+    char *sigRet = method_copyReturnType(signatureMethod);
+    char *sigArg = method_copyArgumentType(signatureMethod, 2);
+    BOOL sigOK = sigRet && sigRet[0] == '@' && sigArg && sigArg[0] == ':';
+    free(sigRet); free(sigArg);
+    if (!sigOK || !forwardMethod || method_getNumberOfArguments(forwardMethod) != 3) return NO;
+    char *fwdRet = method_copyReturnType(forwardMethod);
+    char *fwdArg = method_copyArgumentType(forwardMethod, 2);
+    BOOL fwdOK = fwdRet && fwdRet[0] == 'v' && fwdArg && fwdArg[0] == '@';
+    free(fwdRet); free(fwdArg);
+    return fwdOK;
+}
+
+static BOOL SRMenuHookValidLookupService(id service) {
+    if (!service || object_isClass(service)) return NO;
+    SEL selector = NSSelectorFromString(@"GetMsg:LocalID:");
+    @try {
+        Method declared = SRMenuHookMethod(object_getClass(service), selector);
+        if (declared) {
+            if (!SRMenuHookDeclaredLookupMatches(declared)) return NO;
+        } else if (!SRMenuHookProxyMetadataMatches(service)) {
+            return NO;
+        }
+        if (![service respondsToSelector:selector]) return NO;
+        NSMethodSignature *signature = [service methodSignatureForSelector:selector];
+        if (!SRMenuHookSignatureMatches(signature)) return NO;
+        if (declared) {
+            char *ret = method_copyReturnType(declared);
+            char *a0 = method_copyArgumentType(declared, 0);
+            char *a1 = method_copyArgumentType(declared, 1);
+            char *a2 = method_copyArgumentType(declared, 2);
+            char *a3 = method_copyArgumentType(declared, 3);
+            BOOL same = ret && a0 && a1 && a2 && a3 &&
+                strcmp(ret, signature.methodReturnType) == 0 &&
+                strcmp(a0, [signature getArgumentTypeAtIndex:0]) == 0 &&
+                strcmp(a1, [signature getArgumentTypeAtIndex:1]) == 0 &&
+                strcmp(a2, [signature getArgumentTypeAtIndex:2]) == 0 &&
+                strcmp(a3, [signature getArgumentTypeAtIndex:3]) == 0;
+            free(ret); free(a0); free(a1); free(a2); free(a3);
+            if (!same) return NO;
+        }
+        return YES;
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+}
+
+static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
+    if (!candidate || !base) return NO;
+    for (Class current = candidate; current; current = class_getSuperclass(current)) {
+        if (current == base) return YES;
+    }
+    return NO;
+}
+
+@implementation SRMenuHostSource {
+    NSString *_messageIdentity;
+    NSString *_body;
+    NSString *_session;
+    NSString *_messageType;
+    NSString *_createdAt;
+    BOOL _isText;
+}
++ (instancetype)sourceForMenu:(id)menu menuClass:(Class)menuClass
+                   coverClass:(Class)coverClass cellClass:(Class)cellClass
+                      account:(NSString *)account {
+    if (!menu || !menuClass || !coverClass || !cellClass) return nil;
+    // A KVO subclass (NSKVONotifying_<class>) is still the same host class.
+    if (!SRMenuHookClassIsKindOf(object_getClass(menu), menuClass)) return nil;
+    id responder = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
+    if (!responder || !SRMenuHookClassIsKindOf(object_getClass(responder), coverClass)) return nil;
+    id delegate = SRMenuHookReadObject(responder, NSSelectorFromString(@"delegate"));
+    if (!delegate || !SRMenuHookClassIsKindOf(object_getClass(delegate), cellClass)) return nil;
+    id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
+    if (!wrap) return nil;
+    unsigned long long localID = 0;
+    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiMesLocalID"), &localID) || !localID) return nil;
+    unsigned long long messageType = 0;
+    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiMessageType"), &messageType)) return nil;
+    unsigned long long createdAt = 0;
+    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiCreateTime"), &createdAt) || !createdAt) return nil;
+    // Session follows the receiver's direction rule, not a guessed field name:
+    // outgoing (from == account) -> to; incoming (to == account) -> from.
+    id fromObject = SRMenuHookReadObject(wrap, NSSelectorFromString(@"m_nsFromUsr"));
+    id toObject = SRMenuHookReadObject(wrap, NSSelectorFromString(@"m_nsToUsr"));
+    if (![fromObject isKindOfClass:NSString.class] || ![toObject isKindOfClass:NSString.class]) return nil;
+    NSString *from = fromObject, *to = toObject;
+    NSString *sessionObject = nil;
+    if (account.length && [from isEqual:account]) sessionObject = to;
+    else if (account.length && [to isEqual:account]) sessionObject = from;
+    else return nil;
+    if (!sessionObject.length) return nil;
+    id bodyObject = SRMenuHookReadObject(wrap, NSSelectorFromString(@"m_nsContent"));
+    if (![bodyObject isKindOfClass:NSString.class] || [bodyObject length] == 0) return nil;
+    SRMenuHostSource *source = [SRMenuHostSource new];
+    source->_messageIdentity = [[NSString alloc] initWithFormat:@"local:%llu", localID];
+    source.localID = localID;
+    source->_body = [bodyObject copy];
+    source->_session = [sessionObject copy];
+    source->_messageType = [[NSString alloc] initWithFormat:@"%llu", messageType];
+    source->_createdAt = [[NSString alloc] initWithFormat:@"%llu", createdAt];
+    source->_isText = (messageType == 1);
+    return source;
+}
+- (NSString *)messageIdentity { return _messageIdentity; }
+- (NSString *)body { return _body; }
+- (NSString *)session { return _session; }
+- (NSString *)messageType { return _messageType; }
+- (NSString *)createdAt { return _createdAt; }
+- (BOOL)isText { return _isText; }
 @end
 
 @implementation SRMessageMenuHook
@@ -107,6 +435,11 @@
             initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
             valueOptions:NSPointerFunctionsStrongMemory capacity:0];
         _lock = [NSObject new];
+        _menuGenerations = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
+                                                     valueOptions:NSPointerFunctionsStrongMemory capacity:0];
+        _menus = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
+                                           valueOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
+                                               capacity:0];
         _activeGeneration = @"";
     }
     return self;
@@ -250,7 +583,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
         SRMenuMessageContext *frozen = [[SRMenuMessageContext alloc]
             initWithAccount:source.account body:source.body generation:generation
             ownerToken:source.ownerToken messageIdentity:source.messageIdentity
-            operationKey:source.operationKey];
+            session:source.session messageType:source.messageType createdAt:source.createdAt
+            epoch:source.epoch operationKey:source.operationKey];
         own.context = frozen;
         [self.contexts setObject:frozen forKey:own];
         self.activeGeneration = [generation copy];
@@ -285,11 +619,17 @@ static BOOL SRImplicitParametersMatch(Method method) {
     // account and selected message must still be the ones this item was built
     // for. Missing identity is stale, never a wildcard.
     if (!current.account.length || !current.ownerToken.length || !current.generation.length ||
-        !current.messageIdentity.length) return SRMenuIntentContextStale;
+        !current.messageIdentity.length || !current.session.length || !current.messageType.length ||
+        !current.createdAt.length || !current.epoch.length || !current.body.length) return SRMenuIntentContextStale;
     if (![context.account isEqual:current.account] ||
         ![context.ownerToken isEqual:current.ownerToken] ||
         ![context.generation isEqual:current.generation] ||
-        ![context.messageIdentity isEqual:current.messageIdentity]) {
+        ![context.messageIdentity isEqual:current.messageIdentity] ||
+        ![context.session isEqual:current.session] ||
+        ![context.messageType isEqual:current.messageType] ||
+        ![context.createdAt isEqual:current.createdAt] ||
+        ![context.epoch isEqual:current.epoch] ||
+        ![context.body isEqual:current.body]) {
         return SRMenuIntentContextStale;
     }
     @synchronized(self.lock) {
@@ -303,6 +643,20 @@ static BOOL SRImplicitParametersMatch(Method method) {
     NSString * _Nullable liveAccount = self.currentAccount();
     if (!liveAccount.length || ![liveAccount isEqual:current.account]) return SRMenuIntentContextStale;
     if (!self.accountActive(current.account)) return SRMenuIntentContextStale;
+    // Last external callbacks (account/liveness) may have changed the receiver:
+    // re-read the authoritative token right before writing.
+    if (!self.epochProvider) return SRMenuIntentContextStale;
+    unsigned long long liveEpoch = self.epochProvider();
+    if (liveEpoch == ULLONG_MAX || ![[NSString stringWithFormat:@"%llu", liveEpoch] isEqual:current.epoch]) {
+        return SRMenuIntentContextStale;
+    }
+    // The callbacks above may have rebuilt the menu or flipped the switch.
+    if (!self.enabled || !self.enabled()) return SRMenuIntentDisabled;
+    @synchronized(self.lock) {
+        if (self.activeItem != item || ![context.generation isEqual:self.activeGeneration]) {
+            return SRMenuIntentContextStale;
+        }
+    }
     // Intake owns operation idempotence and conflict handling. The adapter must
     // not maintain a second success ledger that could hide a store failure or
     // answer a replay without consulting the durable source of truth.
@@ -323,7 +677,164 @@ static BOOL SRImplicitParametersMatch(Method method) {
     return itemID.length ? SRMenuIntentSaved : SRMenuIntentWriteFailed;
 }
 
+- (void)configureReadbackProvider:(id (^)(void))provider {
+    @synchronized(self.lock) { self.readbackProvider = [provider copy]; }
+}
+
+- (void)configureEpochProvider:(unsigned long long (^)(void))provider {
+    @synchronized(self.lock) { self.epochProvider = [provider copy]; }
+}
+
+- (void)configureHostClasses:(Class)menuClass coverClass:(Class)coverClass cellClass:(Class)cellClass {
+    @synchronized(self.lock) {
+        self.hostMenuClass = menuClass;
+        self.hostCoverClass = coverClass;
+        self.hostCellClass = cellClass;
+    }
+}
+
+- (NSString *)ownerTokenForMenu:(id)menu {
+    return [[NSString alloc] initWithFormat:@"menu:%p", menu];
+}
+
+- (SRMenuMessageContext *)contextForMenu:(id)menu generation:(NSString *)generation {
+    if (!menu || !generation.length) return nil;
+    if (!self.currentAccount) return nil;
+    NSString *account = self.currentAccount();
+    if (!account.length) return nil;
+    SRMenuHostSource *source = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
+                                                   coverClass:self.hostCoverClass cellClass:self.hostCellClass
+                                                      account:account];
+    if (!source || !source.isText || !source.body.length || !source.messageIdentity.length) return nil;
+    NSString *owner = [self ownerTokenForMenu:menu];
+    NSString *operationKey = [[NSString alloc] initWithFormat:@"menu:%@:%@:%@", owner, generation, source.messageIdentity];
+    @synchronized(self.lock) { [self.menuGenerations setObject:[generation copy] forKey:menu]; }
+    if (!self.epochProvider) return nil;
+    unsigned long long epochValue = self.epochProvider();
+    if (epochValue == ULLONG_MAX) return nil;
+    NSString *epoch = [[NSString alloc] initWithFormat:@"%llu", epochValue];
+    return [[SRMenuMessageContext alloc] initWithAccount:account body:source.body generation:generation
+                                              ownerToken:owner messageIdentity:source.messageIdentity
+                                                 session:source.session messageType:source.messageType
+                                               createdAt:source.createdAt epoch:epoch operationKey:operationKey];
+}
+
+- (NSArray *)appendHostItemToItems:(NSArray *)items menu:(id)menu source:(SRMenuMessageContext *)source
+                         itemClass:(Class)itemClass generation:(NSString *)generation {
+    NSArray *original = [items isKindOfClass:NSArray.class] ? items : @[];
+    if (!self.enabled || !self.enabled()) return original;
+    if (!menu || !source || !itemClass || !generation.length) return original;
+    Method initializer = SRMenuHookMethod(itemClass, NSSelectorFromString(@"initWithTitle:icon:target:action:"));
+    if (!SRMenuHookInitializer(initializer)) return original;
+    id item = nil;
+    @try {
+        item = ((SRMenuHookInitIMP)method_getImplementation(initializer))(
+            [itemClass alloc], NSSelectorFromString(@"initWithTitle:icon:target:action:"),
+            @"存入同步库", nil, self, NSSelectorFromString(@"srMenuAction:"));
+    } @catch (__unused NSException *exception) {
+        return original;
+    }
+    // A replacement object is only accepted when it is still a menu item of the
+    // expected class (or a subclass); anything else would break the host menu.
+    if (!item || !SRMenuHookClassIsKindOf(object_getClass(item), itemClass)) return original;
+    @synchronized(self.lock) {
+        SRMenuMessageContext *frozen = [[SRMenuMessageContext alloc]
+            initWithAccount:source.account body:source.body generation:generation
+                 ownerToken:source.ownerToken messageIdentity:source.messageIdentity
+                    session:source.session messageType:source.messageType
+                  createdAt:source.createdAt epoch:source.epoch operationKey:source.operationKey];
+        [self.contexts setObject:frozen forKey:item];
+        [self.menus setObject:menu forKey:item];
+        self.activeGeneration = [generation copy];
+        self.activeItem = item;
+        NSMutableArray *published = [NSMutableArray arrayWithCapacity:original.count + 1];
+        for (id existing in original) {
+            if (![self.contexts objectForKey:existing]) [published addObject:existing];
+        }
+        [published addObject:item];
+        return [published copy];
+    }
+}
+
+- (SRMenuCurrentIdentity *)currentIdentityForMenu:(id)menu {
+    if (!menu) return nil;
+    NSString *account = self.currentAccount ? self.currentAccount() : nil;
+    if (!account.length) return nil;
+    SRMenuHostSource *source = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
+                                                   coverClass:self.hostCoverClass cellClass:self.hostCellClass
+                                                      account:account];
+    if (!source || !source.messageIdentity.length) return nil;
+    // Independent second source: read the same message back through the declared
+    // instance API of the account-context message manager.
+    id manager = self.readbackProvider ? self.readbackProvider() : nil;
+    if (!SRMenuHookValidLookupService(manager)) return nil;
+    id stored = nil;
+    @try {
+        stored = SRReadObjectWithObjectAndUnsignedInteger(manager, @"GetMsg:LocalID:",
+                                                         source.session, @(source.localID), NULL);
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+    if (!stored) return nil;
+    unsigned long long storedID = 0;
+    if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMesLocalID"), &storedID) ||
+        storedID != source.localID) return nil;
+    unsigned long long storedType = 0;
+    if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMessageType"), &storedType) ||
+        ![[NSString stringWithFormat:@"%llu", storedType] isEqual:source.messageType]) return nil;
+    unsigned long long storedCreated = 0;
+    if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiCreateTime"), &storedCreated) ||
+        ![[NSString stringWithFormat:@"%llu", storedCreated] isEqual:source.createdAt]) return nil;
+    id storedBody = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsContent"));
+    if (![storedBody isKindOfClass:NSString.class] || ![storedBody isEqual:source.body]) return nil;
+    id storedFrom = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsFromUsr"));
+    id storedTo = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsToUsr"));
+    NSString *storedSession = nil;
+    if ([storedFrom isKindOfClass:NSString.class] && [storedFrom isEqual:account]) storedSession = storedTo;
+    else if ([storedTo isKindOfClass:NSString.class] && [storedTo isEqual:account]) storedSession = storedFrom;
+    if (![storedSession isKindOfClass:NSString.class] || ![storedSession isEqual:source.session]) return nil;
+    NSString *generation = nil;
+    @synchronized(self.lock) { generation = [self.menuGenerations objectForKey:menu]; }
+    if (!generation.length) return nil;
+    // The manager read may have taken time: confirm the live selection still
+    // resolves to the same message before using the readback result.
+    SRMenuHostSource *recheck = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
+                                                     coverClass:self.hostCoverClass cellClass:self.hostCellClass
+                                                        account:account];
+    if (!recheck ||
+        ![recheck.messageIdentity isEqual:source.messageIdentity] ||
+        ![recheck.session isEqual:source.session] ||
+        ![recheck.messageType isEqual:source.messageType] ||
+        ![recheck.createdAt isEqual:source.createdAt] ||
+        ![recheck.body isEqual:source.body]) return nil;
+    // The manager read may have taken time: capture the live epoch now; the
+    // commit compares it with the frozen value.
+    if (!self.epochProvider) return nil;
+    unsigned long long epochValue = self.epochProvider();
+    if (epochValue == ULLONG_MAX) return nil;
+    NSString *epoch = [[NSString alloc] initWithFormat:@"%llu", epochValue];
+    return [[SRMenuCurrentIdentity alloc] initWithAccount:account ownerToken:[self ownerTokenForMenu:menu]
+                                              generation:generation messageIdentity:source.messageIdentity
+                                                 session:source.session messageType:source.messageType
+                                               createdAt:source.createdAt epoch:epoch body:source.body];
+}
+
+/* The host invokes item.target/item.action with the menu item view as the
+ * sender, so the item is read back from the view through its declared getter. */
+- (void)srMenuAction:(id)sender {
+    // The menu action must never leak an exception into the host.
+    @try {
+        id item = SRMenuHookReadObject(sender, NSSelectorFromString(@"menuItem"));
+        if (!item || ![self ownsItem:item]) return;
+        id menu = nil;
+        @synchronized(self.lock) { menu = [self.menus objectForKey:item]; }
+        [self handleSelection:item current:[self currentIdentityForMenu:menu]];
+    } @catch (__unused NSException *exception) {
+    }
+}
+
 @end
+
 
 /* -------------------------------------------------------------------------
  * Observation-only menu call observer.
@@ -1377,4 +1888,154 @@ static Method SRMenuDeclaredMethodInfo(id target, SEL action, NSUInteger *argume
     return [self.events copy] ?: @[];
 }
 
+@end
+
+/* -------------------------------------------------------------------------
+ * Production menu-build interposer.
+ *
+ * One owner per process. The host's setMenuItems: is replaced only after the
+ * declared method passes the ABI gate; the original is invoked exactly once with
+ * the array we publish, and an observation failure never blocks the host call.
+ * ---------------------------------------------------------------------- */
+static NSObject *SRMenuBuildGlobalLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+static SRMenuBuildHook *SRMenuBuildOwner;
+static IMP SRMenuBuildOriginalIMP;
+static Method SRMenuBuildSetterMethod;
+static Class SRMenuBuildInstalledClass;
+static BOOL SRMenuBuildEverInstalled;
+
+static BOOL SRMenuBuildSetterShape(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 3) return NO;
+    char *ret = method_copyReturnType(method);
+    BOOL ok = ret && ret[0] == 'v';
+    free(ret);
+    if (!ok) return NO;
+    char *selfType = method_copyArgumentType(method, 0);
+    char *cmdType = method_copyArgumentType(method, 1);
+    char *itemsType = method_copyArgumentType(method, 2);
+    ok = selfType && selfType[0] == '@' && cmdType && cmdType[0] == ':' &&
+        itemsType && itemsType[0] == '@';
+    free(selfType); free(cmdType); free(itemsType);
+    return ok;
+}
+
+@interface SRMenuBuildHook (SRForward)
+- (id)publishItems:(id)items menu:(id)menu;
+@end
+
+static void SRMenuBuildForward(id self, SEL command, id items) {
+    IMP original = NULL;
+    SRMenuBuildHook *hook = nil;
+    @synchronized(SRMenuBuildGlobalLock()) {
+        original = SRMenuBuildOriginalIMP;
+        hook = SRMenuBuildOwner;
+    }
+    id published = items;
+    if (hook) @try {
+        published = [hook publishItems:items menu:self];
+    } @catch (__unused NSException *exception) {
+        published = items;
+    }
+    if (original) ((void (*)(id, SEL, id))original)(self, command, published);
+}
+
+@interface SRMenuBuildHook ()
+@property(nonatomic, strong) SRMessageMenuHook *hook;
+@property(nonatomic) Class menuClass;
+@property(nonatomic) Class coverClass;
+@property(nonatomic) Class cellClass;
+@property(nonatomic) Class itemClass;
+@property(nonatomic) BOOL installed;
+@property(nonatomic) BOOL restoreRefused;
+@property(nonatomic) NSUInteger buildCounter;
+- (id)publishItems:(id)items menu:(id)menu;
+@end
+
+@implementation SRMenuBuildHook
+- (instancetype)initWithHook:(SRMessageMenuHook *)hook menuClass:(Class)menuClass
+                  coverClass:(Class)coverClass cellClass:(Class)cellClass itemClass:(Class)itemClass {
+    self = [super init];
+    if (self) {
+        _hook = hook;
+        _menuClass = menuClass;
+        _coverClass = coverClass;
+        _cellClass = cellClass;
+        _itemClass = itemClass;
+    }
+    return self;
+}
+- (BOOL)installed { return _installed; }
+- (id)publishItems:(id)items menu:(id)menu {
+    if (!self.hook || !menu) return items;
+    if (!self.hook.enabled || !self.hook.enabled()) return items;
+    NSString *generation = [[NSString alloc] initWithFormat:@"build:%lu", (unsigned long)++self.buildCounter];
+    SRMenuMessageContext *context = [self.hook contextForMenu:menu generation:generation];
+    if (!context) return items;
+    return [self.hook appendHostItemToItems:items menu:menu source:context
+                                  itemClass:self.itemClass generation:generation];
+}
+- (BOOL)install:(NSError **)error {
+    @synchronized(SRMenuBuildGlobalLock()) {
+        if (self.installed) return NO;
+        if (SRMenuBuildOwner) {
+            if (error) *error = [NSError errorWithDomain:@"SyncRelay.MenuBuild" code:1 userInfo:nil];
+            return NO;
+        }
+        if (SRMenuBuildEverInstalled) {
+            if (self.menuClass != SRMenuBuildInstalledClass) {
+                if (error) *error = [NSError errorWithDomain:@"SyncRelay.MenuBuild" code:3 userInfo:nil];
+                return NO;
+            }
+            // Re-installing on the same class would overwrite the predecessor the
+            // existing trampoline is bound to. Only the untouched original chain
+            // may be re-bound; a chain that now points back at our trampoline is
+            // refused without modifying anything.
+            if (!SRMenuBuildSetterMethod ||
+                method_getImplementation(SRMenuBuildSetterMethod) != SRMenuBuildOriginalIMP ||
+                SRMenuBuildOriginalIMP == (IMP)SRMenuBuildForward) {
+                if (error) *error = [NSError errorWithDomain:@"SyncRelay.MenuBuild" code:4 userInfo:nil];
+                return NO;
+            }
+        }
+        Method setter = SRMenuHookMethod(self.menuClass, NSSelectorFromString(@"setMenuItems:"));
+        if (!SRMenuBuildSetterShape(setter)) {
+            if (error) *error = [NSError errorWithDomain:@"SyncRelay.MenuBuild" code:2 userInfo:nil];
+            return NO;
+        }
+        [self.hook configureHostClasses:self.menuClass coverClass:self.coverClass cellClass:self.cellClass];
+        SRMenuBuildOriginalIMP = method_setImplementation(setter, (IMP)SRMenuBuildForward);
+        SRMenuBuildSetterMethod = setter;
+        SRMenuBuildInstalledClass = self.menuClass;
+        SRMenuBuildEverInstalled = YES;
+        SRMenuBuildOwner = self;
+        _installed = YES;
+        return YES;
+    }
+}
+- (void)uninstall {
+    @synchronized(SRMenuBuildGlobalLock()) {
+        if (!_installed) return;
+        BOOL ours = SRMenuBuildSetterMethod &&
+            method_getImplementation(SRMenuBuildSetterMethod) == (IMP)SRMenuBuildForward;
+        if (!ours) {
+            // A later hook owns the method now. Restoring would overwrite it, and
+            // clearing the forwarding state would strand the trampoline with no
+            // original. Keep both and report the refusal honestly.
+            _restoreRefused = YES;
+            return;
+        }
+        method_setImplementation(SRMenuBuildSetterMethod, SRMenuBuildOriginalIMP);
+        if (SRMenuBuildOwner == self) SRMenuBuildOwner = nil;
+        // A call already inside the trampoline still needs the original this
+        // installation captured; keep both until the next install replaces them.
+        _installed = NO;
+        _restoreRefused = NO;
+    }
+}
+- (BOOL)restoreRefused { return _restoreRefused; }
 @end

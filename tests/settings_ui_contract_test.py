@@ -129,7 +129,7 @@ class SettingsUIContractTests(unittest.TestCase):
 
     def test_menu_abi_row_is_appended_without_an_account_gate(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
-        self.assertIn('if (section == 0) return 12;', panel)
+        self.assertIn('if (section == 0) return 13;', panel)
         self.assertIn('if (path.row == 10) [self confirmMenuABIDiagnostic];', panel)
         # "more settings" is the logical section 0; the new row is handled before
         # the account gate, so it never touches identity or storage.
@@ -191,7 +191,7 @@ class SettingsUIContractTests(unittest.TestCase):
 
     def test_menu_call_observation_row_shares_one_observer_and_never_self_starts(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
-        self.assertIn('if (section == 0) return 12;', panel)
+        self.assertIn('if (section == 0) return 13;', panel)
         self.assertIn('if (path.row == 11) [self confirmMenuCallObservation];', panel)
         self.assertIn(u'@"\u83dc\u5355\u8c03\u7528\u89c2\u5bdf\uff08\u4e34\u65f6\uff09"', panel)
         # One observer, created by the entry assembly and injected into both paths.
@@ -359,10 +359,48 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertGreaterEqual(panel.count('!panel.menuCallObservationActive'), 1)
         self.assertGreaterEqual(panel.count('!entry.menuCallObservationActive'), 3)
 
+    def test_library_menu_entry_reads_back_through_the_verified_service(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        entry = panel.split('void SRInstallPanelEntry', 1)[1]
+        for token in ('configureReadbackProvider:', 'configureEpochProvider:',
+                      'NSClassFromString(@"MMContext")', 'NSClassFromString(@"CMessageMgr")',
+                      '@"currentContext"', '@"getService:"'):
+            self.assertIn(token, entry, token)
+
+    def test_library_menu_entry_has_an_explicit_opt_in_switch(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertIn('if (path.row == 12) {', panel)
+        self.assertIn(u'@"\u83dc\u5355\u5165\u5e93\uff08\u957f\u6309\u6587\u5b57\uff09"', panel)
+        self.assertIn('UISwitch *toggle = [[UISwitch alloc] init];', panel)
+        self.assertIn('[toggle addTarget:self action:@selector(libraryMenuEntryToggled:)', panel)
+        self.assertIn('self.entryPreferences.libraryMenuEntryEnabled = toggle.isOn;', panel)
+        # Off by default and independent of the temporary observer session.
+        self.assertNotIn('libraryMenuEntryEnabled = YES', panel)
+
+    def test_library_menu_entry_is_wired_independently_of_the_call_observer(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertIn('#import "Core/SRLibraryIntake.h"', panel)
+        entry = panel.split('void SRInstallPanelEntry', 1)[1]
+        for token in ('SRMessageMenuHook alloc', 'initWithIntake:[SRLibraryIntake intakeForStore:store]',
+                      'SRMenuBuildHook alloc', '[entry.libraryMenuBuildHook install:NULL]',
+                      'NSClassFromString(@"MMMenuController")',
+                      'NSClassFromString(@"MMRichTextCoverView")',
+                      'NSClassFromString(@"TextMessageCellView")',
+                      'NSClassFromString(@"MMMenuItem")'):
+            self.assertIn(token, entry, token)
+        # The library switch and the temporary observer stay separate objects.
+        self.assertIn('@property(nonatomic, strong) SRMessageMenuHook *libraryMenuHook;', panel)
+        self.assertIn('@property(nonatomic, strong) SRMenuBuildHook *libraryMenuBuildHook;', panel)
+        self.assertNotIn('menuCallObserver = entry.libraryMenuHook', panel)
+
     def test_menu_call_observation_does_not_touch_the_intake_hook(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
-        self.assertNotIn('initWithIntake:', panel)
-        self.assertNotIn('SRMessageMenuHook alloc', panel)
+        # The library menu hook is a separate capability. The temporary observer
+        # wiring must not construct it or share its state.
+        observer = panel.split('- (void)menuCallObservationActionFromPanel:', 1)[1]
+        observer = observer.split('\n- (', 1)[0]
+        self.assertNotIn('initWithIntake:', observer)
+        self.assertNotIn('libraryMenuHook', observer)
         self.assertNotIn('libraryMenuEntryEnabled = YES', panel)
         self.assertNotIn('MSHookMessageEx', panel)
 

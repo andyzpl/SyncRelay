@@ -102,12 +102,9 @@ class IntakeContracts(unittest.TestCase):
                           "SRLibraryIntake"):
             self.assertNotIn(forbidden, screens, forbidden)
 
-    def test_the_menu_adapter_exists_but_no_entry_installs_it(self):
-        """The adapter is reviewable and gated; nothing wires it yet.
-
-        This replaces the older "no menu code at all" assertion. The safety
-        constraint is that no installation path exists before the entry layer
-        installs it deliberately - not that the adapter may never exist."""
+    def test_the_menu_adapter_is_installed_only_through_the_gated_build_hook(self):
+        """The adapter is gated; the entry installs the build interposer only
+        after resolving the four host classes, and no raw hooking API is used."""
         adapter = read("Adapter/SRMessageMenuHook.m")
         self.assertIn("SRMenuGateEncodingMismatch", adapter)
         self.assertIn("method_copyArgumentType", adapter)
@@ -117,16 +114,22 @@ class IntakeContracts(unittest.TestCase):
         # The adapter never writes to the library and never sends.
         for forbidden in ("sqlite3", "createLibraryItem", "submitDelivery", "startRule"):
             self.assertNotIn(forbidden, adapter, forbidden)
-        # No installation path exists anywhere yet.
         for path in ("Adapter/SRWeChatReceiver.m", "Tweak/SRBootstrap.m", "UI/SRPanel.m",
                      "Adapter/SRMessageMenuHook.m"):
             self.assertNotIn("MSHookMessageEx", read(path), path)
-        for path in ("Tweak/SRBootstrap.m", "UI/SRPanel.m"):
-            # The settings panel may reference the separate call observer that
-            # shares this header, but the intake hook itself is never wired here.
-            text = read(path)
-            self.assertNotIn("initWithIntake:", text, path)
-            self.assertNotIn("SRMessageMenuHook alloc", text, path)
+        # The bootstrap never constructs the intake hook; only the settings entry
+        # assembles it, together with the gated build interposer.
+        bootstrap = read("Tweak/SRBootstrap.m")
+        self.assertNotIn("initWithIntake:", bootstrap)
+        self.assertNotIn("SRMessageMenuHook alloc", bootstrap)
+        workflow = read(".github/workflows/build.yml")
+        menu_target = [line for line in workflow.splitlines() if "message-menu-hook-test" in line and "clang" in line]
+        self.assertTrue(menu_target, "menu hook test target missing")
+        self.assertIn("Adapter/SRRuntime.m", menu_target[0])
+        panel = read("UI/SRPanel.m")
+        self.assertIn("SRMenuBuildHook alloc", panel)
+        self.assertIn("[entry.libraryMenuBuildHook install:NULL]", panel)
+        self.assertIn("NSClassFromString(@\"MMMenuController\")", panel)
 
     def test_menu_click_rechecks_an_independent_identity(self):
         header = read("Adapter/SRMessageMenuHook.h")

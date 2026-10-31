@@ -997,6 +997,10 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         [self fail:@"Image observation failed; export diagnostics" error:NULL];
     }
 }
+- (unsigned long long)generationToken {
+    @synchronized(self) { return (unsigned long long)self.generation; }
+}
+
 - (void)stop {
     BOOL wasArmed;
     @synchronized(SRTaps()) {

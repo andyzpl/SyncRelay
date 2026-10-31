@@ -33,6 +33,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)armForAccount:(NSString *)account configuration:(NSDictionary *)configuration
      newMessagesOnly:(BOOL)newMessagesOnly error:(NSError **)error;
 - (void)stop;
+/* Read-only lifecycle token: the receiver's existing generation, without
+ * requiring an armed session. Used to invalidate stale menu items. */
+- (unsigned long long)generationToken;
 - (NSDictionary *)diagnostics;
 @end
 NS_ASSUME_NONNULL_END

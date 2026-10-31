@@ -19,13 +19,36 @@
 @end
 
 @interface SRFakeMenuItem : NSObject
+@property(nonatomic, strong) id target;
+@property(nonatomic) SEL action;
 - (instancetype)initWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action;
+@end
+/* 0 = self, 1 = nil, 2 = replacement object, for the whole fixture class. */
+static NSInteger gMenuItemInitMode = 0;
+@interface SRFakeMenuItemSubclass : SRFakeMenuItem
+@end
+@implementation SRFakeMenuItemSubclass
 @end
 @implementation SRFakeMenuItem
 - (instancetype)initWithTitle:(id)title icon:(id)icon target:(id)target action:(SEL)action {
-    self = [super init]; (void)title; (void)icon; (void)target; (void)action; return self;
+    self = [super init];
+    (void)title; (void)icon;
+    if (gMenuItemInitMode == 1) return nil;
+    if (gMenuItemInitMode == 2) return (id)[SRFakeMenuItemSubclass new];
+    if (gMenuItemInitMode == 3) return (id)[NSObject new];
+    _target = target; _action = action;
+    return self;
 }
 @end
+/* Host-style dispatch: the host sends target/action with the item view as the
+ * sender, never the item itself. */
+static void SRDispatchMenuAction(id item, id sender) {
+    id target = [item target];
+    SEL action = [item action];
+    if (!target || !action) return;
+    IMP imp = [target methodForSelector:action];
+    if (imp) ((void (*)(id, SEL, id))imp)(target, action, sender);
+}
 
 @interface SRIncompleteMenuController : NSObject
 - (void)setMenuItems:(NSArray *)items;
@@ -332,6 +355,114 @@ static NSUInteger gWrongABIResolverCalls = 0;
 + (NSDictionary *)inspectHandlerGettersForItem:(id)item receiver:(id)receiver;
 @end
 
+/* Host-shaped source chain: menu.responder -> cover.delegate -> cell -> wrap. */
+@interface SRHostMenu : NSObject
+@property(nonatomic, strong) id responder;
+@end
+@implementation SRHostMenu
+@end
+@interface SRHostCoverView : NSObject
+@property(nonatomic, strong) id delegate;
+@end
+@implementation SRHostCoverView
+@end
+@interface SRHostMessageCell : NSObject
+@property(nonatomic, strong) id currentWrap;
+- (id)getCurrentMessageWrap;
+@end
+@implementation SRHostMessageCell
+- (id)getCurrentMessageWrap { return self.currentWrap; }
+@end
+@interface SRHostWrap : NSObject
+@property(nonatomic) unsigned long long m_uiMesLocalID;
+@property(nonatomic) unsigned int m_uiMessageType;
+@property(nonatomic) unsigned long long m_uiCreateTime;
+@property(nonatomic, copy) NSString *m_nsFromUsr;
+@property(nonatomic, copy) NSString *m_nsToUsr;
+@property(nonatomic, copy) NSString *m_nsContent;
+@end
+@implementation SRHostWrap
+@end
+/* Wrong ABI: the local id getter returns an object instead of an integer. */
+@interface SRHostBadWrap : NSObject
+@property(nonatomic, strong) id m_uiMesLocalID;
+@property(nonatomic) unsigned int m_uiMessageType;
+@property(nonatomic) unsigned long long m_uiCreateTime;
+@property(nonatomic, copy) NSString *m_nsFromUsr;
+@property(nonatomic, copy) NSString *m_nsToUsr;
+@property(nonatomic, copy) NSString *m_nsContent;
+@end
+@implementation SRHostBadWrap
+@end
+static id gReadbackWrap = nil;
+@interface SRThrowingLookupProxy : NSProxy
+@end
+@implementation SRThrowingLookupProxy
+- (instancetype)init { return self; }
+- (BOOL)respondsToSelector:(__unused SEL)selector {
+    @throw [NSException exceptionWithName:@"SRTestProxy" reason:@"lookup" userInfo:nil];
+}
+- (NSMethodSignature *)methodSignatureForSelector:(__unused SEL)selector { return nil; }
+@end
+static NSUInteger gConflictCalls = 0;
+@interface SRConflictingLookup : NSObject
+- (id)GetMsg:(id)session LocalID:(unsigned int)localID;
+@end
+@implementation SRConflictingLookup
+- (id)GetMsg:(__unused id)session LocalID:(__unused unsigned int)localID { gConflictCalls++; return nil; }
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    if (selector == NSSelectorFromString(@"GetMsg:LocalID:")) {
+        // Declared I, reflected Q: both valid integer shapes, but they differ.
+        return [NSMethodSignature signatureWithObjCTypes:"@@:@Q"];
+    }
+    return [super methodSignatureForSelector:selector];
+}
+@end
+@interface SRFakeLookupProxy : NSProxy
+@property(nonatomic, strong) id target;
+@end
+@implementation SRFakeLookupProxy
+- (instancetype)init { return self; }
+- (BOOL)respondsToSelector:(SEL)selector { return [self.target respondsToSelector:selector]; }
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector { return [self.target methodSignatureForSelector:selector]; }
+- (void)forwardInvocation:(NSInvocation *)invocation { [invocation invokeWithTarget:self.target]; }
+@end
+static NSUInteger gReadbackCalls = 0;
+static id gReadbackSession = nil;
+static unsigned long long gReadbackLocalID = 0;
+@interface SRFakeMessageManager : NSObject
+- (id)GetMsg:(id)session LocalID:(unsigned long long)localID;
+@end
+@implementation SRFakeMessageManager
+- (id)GetMsg:(id)session LocalID:(unsigned long long)localID {
+    gReadbackCalls++; gReadbackSession = session; gReadbackLocalID = localID;
+    return gReadbackWrap;
+}
+@end
+@interface SRFakeMenuItemView : NSObject
+@property(nonatomic, strong) id menuItem;
+@end
+@implementation SRFakeMenuItemView
+@end
+@interface SRMessageMenuHook (SRTestAction)
+- (void)srMenuAction:(id)sender;
+@end
+
+/* Production build interposer fixtures. */
+static NSUInteger gBuildSetCalls = 0;
+static IMP gBuildForeignNext;
+static void SRBuildForeignHook(id self, SEL command, id items) {
+    if (gBuildForeignNext) ((void (*)(id, SEL, id))gBuildForeignNext)(self, command, items);
+}
+@interface SRBuildMenuController : NSObject
+@property(nonatomic, strong) id responder;
+@property(nonatomic, strong) NSArray *lastItems;
+- (void)setMenuItems:(NSArray *)items;
+@end
+@implementation SRBuildMenuController
+- (void)setMenuItems:(NSArray *)items { gBuildSetCalls++; self.lastItems = items; }
+@end
+
 /* A later hook installed on top of the observer's trampoline. */
 static NSUInteger gExternalHookCalls = 0;
 static IMP gExternalHookNext;
@@ -346,16 +477,33 @@ static NSDictionary *context(NSString *account, NSString *body, NSString *identi
     return value;
 }
 
+static NSString *gHelperBody = @"body";
 static SRMenuMessageContext *makeContext(NSString *account, NSString *body, NSString *identity, NSString *key) {
-    // The snapshot is only constructible through its designated initializer now.
+    gHelperBody = [body copy];
     return [[SRMenuMessageContext alloc] initWithAccount:account body:body generation:@"g1"
-        ownerToken:@"owner-1" messageIdentity:identity operationKey:key];
+        ownerToken:@"owner-1" messageIdentity:identity session:@"chat" messageType:@"1"
+        createdAt:@"1000" epoch:@"0" operationKey:key];
+}
+static SRMenuMessageContext *makeContextFull(NSString *account, NSString *body, NSString *identity,
+                                             NSString *key, NSString *session, NSString *type,
+                                             NSString *created) {
+    return [[SRMenuMessageContext alloc] initWithAccount:account body:body generation:@"g1"
+        ownerToken:@"owner-1" messageIdentity:identity session:session messageType:type
+        createdAt:created epoch:@"0" operationKey:key];
 }
 
 static SRMenuCurrentIdentity *currentIdentity(NSString *account, NSString *owner,
                                                NSString *generation, NSString *message) {
     return [[SRMenuCurrentIdentity alloc] initWithAccount:account ownerToken:owner
-        generation:generation messageIdentity:message];
+        generation:generation messageIdentity:message session:@"chat" messageType:@"1"
+        createdAt:@"1000" epoch:@"0" body:gHelperBody];
+}
+static SRMenuCurrentIdentity *currentIdentityFull(NSString *account, NSString *owner, NSString *generation,
+                                                  NSString *message, NSString *session, NSString *type,
+                                                  NSString *created, NSString *body) {
+    return [[SRMenuCurrentIdentity alloc] initWithAccount:account ownerToken:owner
+        generation:generation messageIdentity:message session:session messageType:type
+        createdAt:created epoch:@"0" body:body];
 }
 
 int main(void) {
@@ -378,6 +526,8 @@ int main(void) {
             currentAccount:^NSString *{ return account; }
             accountActive:^BOOL(NSString *value) { return [value isEqual:account]; }
             enabled:^BOOL { return preferences.libraryMenuEntryEnabled; }];
+        __block unsigned long long menuEpoch = 0;
+        [hook configureEpochProvider:^{ return menuEpoch; }];
 
         // --- gate ---
         CHECK([hook gateMenuClass:SRFakeMenuController.class itemClass:SRFakeMenuItem.class] == SRMenuGateMatched);
@@ -478,6 +628,392 @@ int main(void) {
         CHECK([hook handleSelection:third.lastObject current:currentIdentity(@"account", @"owner-1", @"g3", @"msg-3")]  == SRMenuIntentSaved);
         CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == 2);
 
+        // --- host source chain and the real host item path ---
+        SRHostMenu *hostMenu = [SRHostMenu new];
+        SRHostCoverView *cover = [SRHostCoverView new];
+        SRHostMessageCell *cell = [SRHostMessageCell new];
+        SRHostWrap *wrap = [SRHostWrap new];
+        wrap.m_uiMesLocalID = 42;
+        wrap.m_uiMessageType = 1;
+        wrap.m_uiCreateTime = 1000;
+        wrap.m_nsFromUsr = @"chat@chatroom";
+        wrap.m_nsToUsr = @"account";
+        wrap.m_nsContent = @"宿主正文";
+        cell.currentWrap = wrap;
+        cover.delegate = cell;
+        hostMenu.responder = cover;
+        [hook configureHostClasses:SRHostMenu.class coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class];
+        SRFakeMessageManager *readbackManager = [SRFakeMessageManager new];
+        [hook configureReadbackProvider:^{ return readbackManager; }];
+        gReadbackWrap = wrap;
+
+        SRMenuHostSource *source = [SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class
+                                                       coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class account:@"account"];
+        CHECK(source != nil);
+        CHECK([source.messageIdentity isEqual:@"local:42"]);
+        CHECK(source.localID == 42);
+        CHECK(source.isText && [source.body isEqual:@"宿主正文"]);
+        CHECK([source.session isEqual:@"chat@chatroom"]);   // incoming: from is the session
+        wrap.m_nsFromUsr = @"account";                    // outgoing: to is the session
+        wrap.m_nsToUsr = @"chat@chatroom";
+        SRMenuHostSource *outgoing = [SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class
+                                                          coverClass:SRHostCoverView.class
+                                                           cellClass:SRHostMessageCell.class account:@"account"];
+        CHECK(outgoing != nil && [outgoing.session isEqual:@"chat@chatroom"]);
+        wrap.m_nsFromUsr = @"someone@chatroom";           // neither side is the current account
+        wrap.m_nsToUsr = @"other";
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class coverClass:SRHostCoverView.class
+                                    cellClass:SRHostMessageCell.class account:@"account"] == nil);
+        wrap.m_nsFromUsr = @"chat@chatroom";
+        wrap.m_nsToUsr = @"account";
+        // Every gate refuses on its own; nothing falls back to a recent message.
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRForeignItem.class coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class account:@"account"] == nil);
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class coverClass:SRForeignItem.class cellClass:SRHostMessageCell.class account:@"account"] == nil);
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class coverClass:SRHostCoverView.class cellClass:SRForeignItem.class account:@"account"] == nil);
+        SRHostCoverView *bareCover = [SRHostCoverView new];
+        hostMenu.responder = bareCover;
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class account:@"account"] == nil);
+        hostMenu.responder = cover;
+        cell.currentWrap = nil;
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class account:@"account"] == nil);
+        SRHostBadWrap *badWrap = [SRHostBadWrap new];
+        badWrap.m_uiMesLocalID = @"not-a-number";
+        badWrap.m_uiMessageType = 1;
+        badWrap.m_uiCreateTime = 1000;
+        badWrap.m_nsFromUsr = @"chat@chatroom";
+        badWrap.m_nsToUsr = @"account";
+        badWrap.m_nsContent = @"x";
+        cell.currentWrap = badWrap;
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class account:@"account"] == nil);
+        cell.currentWrap = wrap;
+        wrap.m_nsContent = @"";
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class account:@"account"] == nil);
+        wrap.m_nsContent = @"宿主正文";
+        wrap.m_uiMesLocalID = 0;
+        CHECK([SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class account:@"account"] == nil);
+        wrap.m_uiMesLocalID = 42;
+        wrap.m_uiMessageType = 49;
+        SRMenuHostSource *nonText = [SRMenuHostSource sourceForMenu:hostMenu menuClass:SRHostMenu.class
+                                                        coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class account:@"account"];
+        CHECK(nonText != nil && !nonText.isText);
+        wrap.m_uiMessageType = 1;
+
+        SRMenuMessageContext *hostContext = [hook contextForMenu:hostMenu generation:@"g9"];
+        CHECK(hostContext != nil && [hostContext.messageIdentity isEqual:@"local:42"]);
+        CHECK([hook contextForMenu:nil generation:@"g9"] == nil);
+        NSArray *hostItems = [hook appendHostItemToItems:@[foreign] menu:hostMenu source:hostContext
+                                               itemClass:SRFakeMenuItem.class generation:@"g9"];
+        CHECK(hostItems.count == 2 && hostItems[0] == foreign);
+        CHECK([hook ownsItem:hostItems.lastObject]);
+        // A wrong item ABI refuses the append instead of building something else.
+        CHECK([hook appendHostItemToItems:@[foreign] menu:hostMenu source:hostContext itemClass:NSObject.class generation:@"g9"].count == 1);
+
+        SRFakeMenuItemView *itemView = [SRFakeMenuItemView new];
+        NSUInteger savedBeforeHostClick = [[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count];
+        __block NSUInteger hostGeneration = 0;
+        void (^rebuild)(void) = ^{
+            hostGeneration++;
+            NSString *gen = [NSString stringWithFormat:@"host-%lu", (unsigned long)hostGeneration];
+            NSArray *items = [hook appendHostItemToItems:@[foreign] menu:hostMenu
+                source:[hook contextForMenu:hostMenu generation:gen]
+                itemClass:SRFakeMenuItem.class generation:gen];
+            itemView.menuItem = items.lastObject;
+        };
+        // Every rejection uses a fresh, unsaved operation and changes one field.
+
+        // 1) the clicked menu now resolves to a different local id.
+        rebuild();
+        wrap.m_uiMesLocalID = 99;
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
+        wrap.m_uiMesLocalID = 42;
+
+        // 2) readback returns the same id/body but a different session.
+        SRHostWrap *sameIdOtherSession = [SRHostWrap new];
+        sameIdOtherSession.m_uiMesLocalID = 42;
+        sameIdOtherSession.m_uiMessageType = 1;
+        sameIdOtherSession.m_uiCreateTime = 1000;
+        sameIdOtherSession.m_nsFromUsr = @"account";
+        sameIdOtherSession.m_nsToUsr = @"another@chatroom";
+        sameIdOtherSession.m_nsContent = @"宿主正文";
+        gReadbackWrap = sameIdOtherSession;
+        rebuild();
+        gReadbackCalls = 0;
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK(gReadbackCalls >= 1);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
+
+        // 3) same id/body, different message type.
+        SRHostWrap *sameIdOtherType = [SRHostWrap new];
+        sameIdOtherType.m_uiMesLocalID = 42;
+        sameIdOtherType.m_uiMessageType = 49;
+        sameIdOtherType.m_uiCreateTime = 1000;
+        sameIdOtherType.m_nsFromUsr = @"chat@chatroom";
+        sameIdOtherType.m_nsToUsr = @"account";
+        sameIdOtherType.m_nsContent = @"宿主正文";
+        gReadbackWrap = sameIdOtherType;
+        rebuild();
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
+
+        // 4) same id/body, different creation time.
+        SRHostWrap *sameIdOtherTime = [SRHostWrap new];
+        sameIdOtherTime.m_uiMesLocalID = 42;
+        sameIdOtherTime.m_uiMessageType = 1;
+        sameIdOtherTime.m_uiCreateTime = 2000;
+        sameIdOtherTime.m_nsFromUsr = @"chat@chatroom";
+        sameIdOtherTime.m_nsToUsr = @"account";
+        sameIdOtherTime.m_nsContent = @"宿主正文";
+        gReadbackWrap = sameIdOtherTime;
+        rebuild();
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
+        gReadbackWrap = wrap;
+
+        // 5) account changed after the menu was built.
+        rebuild();
+        account = @"other";
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
+        account = @"account";
+
+        // 6) switch off refuses an item already on screen.
+        rebuild();
+        preferences.libraryMenuEntryEnabled = NO;
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
+        preferences.libraryMenuEntryEnabled = YES;
+
+        // 7) a foreign item view is never ours.
+        SRFakeMenuItemView *foreignView = [SRFakeMenuItemView new];
+        foreignView.menuItem = foreign;
+        SRDispatchMenuAction(foreignView.menuItem, foreignView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
+
+        // 8) receiver epoch changed after the menu was built.
+        rebuild();
+        menuEpoch = 2;
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
+        menuEpoch = 0;
+
+        // 9) the normal path saves once, and a repeat is a duplicate.
+        rebuild();
+        gReadbackCalls = 0;
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK(gReadbackCalls >= 1);
+        CHECK([gReadbackSession isEqual:@"chat@chatroom"]);
+        CHECK(gReadbackLocalID == 42);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick + 1);
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick + 1);
+
+        // A forwarding proxy is a valid lookup service; a class object and a
+        // plain object are refused before any readback.
+        SRFakeLookupProxy *serviceProxy = [[SRFakeLookupProxy alloc] init];
+        serviceProxy.target = readbackManager;
+        [hook configureReadbackProvider:^{ return serviceProxy; }];
+        rebuild();
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick + 2);
+        // A proxy query that throws is refused, not propagated to the host.
+        [hook configureReadbackProvider:^{ return [[SRThrowingLookupProxy alloc] init]; }];
+        rebuild();
+        gReadbackCalls = 0;
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK(gReadbackCalls == 0);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick + 2);
+        // A declaration that conflicts with the reflected signature is refused.
+        gConflictCalls = 0;
+        [hook configureReadbackProvider:^{ return [SRConflictingLookup new]; }];
+        rebuild();
+        gReadbackCalls = 0;
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK(gReadbackCalls == 0);
+        CHECK(gConflictCalls == 0);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick + 2);
+        [hook configureReadbackProvider:^{ return (id)SRFakeMessageManager.class; }];
+        rebuild();
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick + 2);
+        [hook configureReadbackProvider:^{ return [NSObject new]; }];
+        rebuild();
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick + 2);
+        [hook configureReadbackProvider:^{ return readbackManager; }];
+
+        // Missing epoch provider and the unavailable token are refused, while a
+        // real initial 0 stays valid (covered by the success cases above).
+        SRMessageMenuHook *noEpochHook = [[SRMessageMenuHook alloc] initWithIntake:intake
+            currentAccount:^NSString * { return @"account"; }
+            accountActive:^BOOL(NSString *value) { return [value isEqual:@"account"]; }
+            enabled:^BOOL { return YES; }];
+        NSArray *noEpochItems = [noEpochHook appendOwnItemToItems:@[] generation:@"g1"
+            source:makeContext(@"account", @"body", @"msg-ne", @"op-ne")];
+        CHECK([noEpochHook handleSelection:noEpochItems.lastObject
+            current:currentIdentity(@"account", @"owner-1", @"g1", @"msg-ne")] == SRMenuIntentContextStale);
+        SRMessageMenuHook *unavailableHook = [[SRMessageMenuHook alloc] initWithIntake:intake
+            currentAccount:^NSString * { return @"account"; }
+            accountActive:^BOOL(NSString *value) { return [value isEqual:@"account"]; }
+            enabled:^BOOL { return YES; }];
+        [unavailableHook configureHostClasses:SRHostMenu.class coverClass:SRHostCoverView.class
+                                    cellClass:SRHostMessageCell.class];
+        __block NSUInteger epochReads = 0;
+        __block unsigned long long unavailableEpoch = 0;
+        [unavailableHook configureEpochProvider:^unsigned long long { epochReads++; return unavailableEpoch; }];
+        CHECK([unavailableHook contextForMenu:hostMenu generation:@"g1"] != nil);   // 0 is a real token
+        NSUInteger readsBefore = epochReads;
+        unavailableEpoch = ULLONG_MAX;
+        CHECK([unavailableHook contextForMenu:hostMenu generation:@"g1"] == nil);
+        CHECK(epochReads > readsBefore);
+
+        // A menu rebuilt from inside the account callback invalidates the click.
+        __block SRMessageMenuHook *reentrantHook = nil;
+        __block BOOL rebuiltOnce = NO;
+        reentrantHook = [[SRMessageMenuHook alloc] initWithIntake:intake
+            currentAccount:^NSString * {
+                if (!rebuiltOnce) {
+                    rebuiltOnce = YES;
+                    [reentrantHook appendOwnItemToItems:@[] generation:@"g1"
+                        source:makeContext(@"account", @"body", @"msg-other", @"op-other")];
+                }
+                return @"account";
+            }
+            accountActive:^BOOL(NSString *value) { return [value isEqual:@"account"]; }
+            enabled:^BOOL { return YES; }];
+        [reentrantHook configureEpochProvider:^unsigned long long { return 0; }];
+        NSArray *reentrantItems = [reentrantHook appendOwnItemToItems:@[] generation:@"g1"
+            source:makeContext(@"account", @"body", @"msg-main", @"op-main")];
+        CHECK([reentrantHook handleSelection:reentrantItems.lastObject
+            current:currentIdentity(@"account", @"owner-1", @"g1", @"msg-main")] == SRMenuIntentContextStale);
+
+        // Turning the switch off from inside the callback also refuses.
+        __block BOOL switchOn = YES;
+        SRMessageMenuHook *disableHook = [[SRMessageMenuHook alloc] initWithIntake:intake
+            currentAccount:^NSString * { switchOn = NO; return @"account"; }
+            accountActive:^BOOL(NSString *value) { return [value isEqual:@"account"]; }
+            enabled:^BOOL { return switchOn; }];
+        [disableHook configureEpochProvider:^unsigned long long { return 0; }];
+        NSArray *disableItems = [disableHook appendOwnItemToItems:@[] generation:@"g1"
+            source:makeContext(@"account", @"body", @"msg-off", @"op-off")];
+        CHECK([disableHook handleSelection:disableItems.lastObject
+            current:currentIdentity(@"account", @"owner-1", @"g1", @"msg-off")] == SRMenuIntentDisabled);
+
+        // Message body/session/type/time are part of the frozen identity.
+        SRMenuMessageContext *strictContext = makeContextFull(@"account", @"body", @"msg-strict", @"op-strict",
+                                                              @"chat", @"1", @"1000");
+        NSArray *strictItems = [hook appendOwnItemToItems:@[] generation:@"g1" source:strictContext];
+        CHECK(strictItems.count == 1);
+        CHECK([hook handleSelection:strictItems.lastObject
+            current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"chat", @"1", @"1000", @"body")] == SRMenuIntentSaved);
+        CHECK([hook handleSelection:strictItems.lastObject
+            current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"chat", @"1", @"1000", @"different")] == SRMenuIntentContextStale);
+        CHECK([hook handleSelection:strictItems.lastObject
+            current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"otherchat", @"1", @"1000", @"body")] == SRMenuIntentContextStale);
+        CHECK([hook handleSelection:strictItems.lastObject
+            current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"chat", @"49", @"1000", @"body")] == SRMenuIntentContextStale);
+        CHECK([hook handleSelection:strictItems.lastObject
+            current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"chat", @"1", @"2000", @"body")] == SRMenuIntentContextStale);
+
+        // A KVO subclass of the menu class is still the same host class.
+        Class kvoMenuClass = objc_allocateClassPair(SRHostMenu.class, "NSKVONotifying_SRHostMenu", 0);
+        objc_registerClassPair(kvoMenuClass);
+        SRHostMenu *kvoMenu = [[kvoMenuClass alloc] init];
+        kvoMenu.responder = cover;
+        CHECK([SRMenuHostSource sourceForMenu:kvoMenu menuClass:SRHostMenu.class coverClass:SRHostCoverView.class
+                                    cellClass:SRHostMessageCell.class account:@"account"] != nil);
+
+        // The click-time generation comes from the menu, not the active item.
+        NSArray *regenerated = [hook appendHostItemToItems:@[foreign] menu:hostMenu
+            source:[hook contextForMenu:hostMenu generation:@"g9"] itemClass:SRFakeMenuItem.class generation:@"g9"];
+        CHECK(regenerated.count == 2 && [hook ownsItem:regenerated.lastObject]);
+        SRFakeMenuItemView *regeneratedView = [SRFakeMenuItemView new];
+        regeneratedView.menuItem = regenerated.lastObject;
+        CHECK([hook contextForMenu:hostMenu generation:@"g10"] != nil);
+        NSUInteger beforeStaleGeneration = [[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count];
+        SRDispatchMenuAction(regeneratedView.menuItem, regeneratedView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == beforeStaleGeneration);
+
+        // --- item initializer ownership: self / nil / replacement ---
+        gMenuItemInitMode = 1;   // init returns nil: nothing may be appended
+        NSArray *nilAppend = [hook appendHostItemToItems:@[foreign] menu:hostMenu source:hostContext
+                                               itemClass:SRFakeMenuItem.class generation:@"g11"];
+        CHECK(nilAppend.count == 1 && nilAppend[0] == foreign);
+        gMenuItemInitMode = 2;   // init replaces the receiver with a compatible item
+        NSArray *replacedAppend = [hook appendHostItemToItems:@[foreign] menu:hostMenu source:hostContext
+                                                    itemClass:SRFakeMenuItem.class generation:@"g11"];
+        CHECK(replacedAppend.count == 2 && [hook ownsItem:replacedAppend.lastObject]);
+        CHECK([replacedAppend.lastObject isKindOfClass:SRFakeMenuItem.class]);
+        gMenuItemInitMode = 3;   // incompatible replacement: refused, nothing published
+        NSArray *incompatible = [hook appendHostItemToItems:@[foreign] menu:hostMenu source:hostContext
+                                                 itemClass:SRFakeMenuItem.class generation:@"g11"];
+        CHECK(incompatible.count == 1 && incompatible[0] == foreign);
+        gMenuItemInitMode = 0;
+        __weak id weakOwnedItem = nil;
+        @autoreleasepool {
+            NSArray *owned = [hook appendHostItemToItems:@[foreign] menu:hostMenu source:hostContext
+                                              itemClass:SRFakeMenuItem.class generation:@"g12"];
+            weakOwnedItem = owned.lastObject;
+        }
+        CHECK(weakOwnedItem == nil);   // the hook keeps only a weak key
+
+        // --- production build interposer: append, forward once, refusal ---
+        SRBuildMenuController *buildMenu = [SRBuildMenuController new];
+        buildMenu.responder = cover;
+        gBuildSetCalls = 0;
+        SRMenuBuildHook *buildHook = [[SRMenuBuildHook alloc] initWithHook:hook
+            menuClass:SRBuildMenuController.class coverClass:SRHostCoverView.class
+            cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
+        CHECK([buildHook install:NULL]);
+        CHECK(buildHook.installed && !buildHook.restoreRefused);
+        [buildMenu setMenuItems:@[foreign]];
+        CHECK(gBuildSetCalls == 1);
+        CHECK(buildMenu.lastItems.count == 2 && [hook ownsItem:buildMenu.lastItems.lastObject]);
+        // A later hook takes the method; uninstall must keep forwarding intact.
+        Method buildSetter = class_getInstanceMethod(SRBuildMenuController.class, @selector(setMenuItems:));
+        IMP buildTrampoline = method_getImplementation(buildSetter);
+        gBuildForeignNext = buildTrampoline;
+        method_setImplementation(buildSetter, (IMP)SRBuildForeignHook);
+        [buildHook uninstall];
+        CHECK(buildHook.installed && buildHook.restoreRefused);
+        NSUInteger callsBeforeForeign = gBuildSetCalls;
+        [buildMenu setMenuItems:@[foreign]];
+        CHECK(gBuildSetCalls == callsBeforeForeign + 1);   // still forwarded once
+        // Remove the foreign hook, then restore cleanly.
+        method_setImplementation(buildSetter, buildTrampoline);
+        gBuildForeignNext = NULL;
+        [buildHook uninstall];
+        CHECK(!buildHook.installed && !buildHook.restoreRefused);
+        // A call already inside the trampoline still forwards after a clean
+        // uninstall; the captured original is not cleared.
+        NSUInteger callsAfterRestore = gBuildSetCalls;
+        ((void (*)(id, SEL, id))buildTrampoline)(buildMenu, @selector(setMenuItems:), @[foreign]);
+        CHECK(gBuildSetCalls == callsAfterRestore + 1);
+        // The same class may be re-installed while the chain is the original one.
+        SRMenuBuildHook *sameClass = [[SRMenuBuildHook alloc] initWithHook:hook
+            menuClass:SRBuildMenuController.class coverClass:SRHostCoverView.class
+            cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
+        CHECK([sameClass install:NULL]);
+        CHECK(sameClass.installed);
+        [sameClass uninstall];
+        CHECK(!sameClass.installed);
+        // A chain that now points elsewhere is refused without modification.
+        gBuildForeignNext = method_getImplementation(buildSetter);
+        method_setImplementation(buildSetter, (IMP)SRBuildForeignHook);
+        IMP beforeRefusal = method_getImplementation(buildSetter);
+        SRMenuBuildHook *changedChain = [[SRMenuBuildHook alloc] initWithHook:hook
+            menuClass:SRBuildMenuController.class coverClass:SRHostCoverView.class
+            cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
+        CHECK(![changedChain install:NULL]);
+        CHECK(method_getImplementation(buildSetter) == beforeRefusal);
+        method_setImplementation(buildSetter, buildTrampoline);
+        gBuildForeignNext = NULL;
+        // Re-installing on a different class after restore is refused.
+        SRMenuBuildHook *crossClass = [[SRMenuBuildHook alloc] initWithHook:hook menuClass:SRHostMenu.class
+            coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
+        CHECK(![crossClass install:NULL]);
+        CHECK(!crossClass.installed);
+
         // --- storage gone: refuse, never report success ---
         // Isolated fixture: the store is created inside an inner pool and is
         // released when that pool drains, while the hook and its item stay
@@ -499,6 +1035,7 @@ int main(void) {
                 accountActive:^BOOL(NSString *value) { return [value isEqual:@"account"]; }
                 enabled:^BOOL { return YES; }];
             CHECK(deadHook != nil);
+        [deadHook configureEpochProvider:^unsigned long long { return 0; }];
             // A new operation that was never clicked and never saved.
             deadItems = [deadHook appendOwnItemToItems:@[] generation:@"g4"
                 source:makeContext(@"account", @"写入但存储已失效", @"msg-4", @"op-4")];
@@ -525,7 +1062,8 @@ int main(void) {
         NSMutableString *mIdentity = [@"msg-freeze" mutableCopy];
         NSMutableString *mKey = [@"op-freeze" mutableCopy];
         SRMenuMessageContext *liveSource = [[SRMenuMessageContext alloc] initWithAccount:mAccount
-            body:mBody generation:mGeneration ownerToken:@"owner-freeze" messageIdentity:mIdentity operationKey:mKey];
+            body:mBody generation:mGeneration ownerToken:@"owner-freeze" messageIdentity:mIdentity
+            session:@"chat" messageType:@"1" createdAt:@"1000" epoch:@"0" operationKey:mKey];
         preferences.libraryMenuEntryEnabled = YES;
         NSArray *frozenItems = [hook appendOwnItemToItems:@[] generation:@"g-freeze" source:liveSource];
         CHECK(frozenItems.count == 1);
