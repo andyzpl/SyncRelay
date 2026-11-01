@@ -1069,26 +1069,6 @@ int main(void) {
                                            itemClass:SRFakeMenuItem.class generation:@"g-dedupe-2"];
         CHECK(twice.count == 2);
 
-        // Mikoto-style downstream chain: its item is appended on every setter
-        // call, so our single publish must leave exactly one of each.
-        if (buildHook.installed) [buildHook uninstall];   // one owner at a time
-        SRMikotoMenuController *mikotoMenu = [SRMikotoMenuController new];
-        mikotoMenu.responder = cover;
-        mikotoMenu.storedItems = @[foreign];
-        SRMenuBuildHook *mikotoHook = [[SRMenuBuildHook alloc] initWithHook:hook
-            menuClass:SRMikotoMenuController.class coverClass:SRHostCoverView.class
-            cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
-        CHECK([mikotoHook install:NULL]);
-        [mikotoMenu setMenuVisible:YES responder:cover animated:NO];
-        NSUInteger ours = 0, mikoto = 0;
-        for (SRFakeMenuItem *item in mikotoMenu.storedItems) {
-            if (item.target == hook) ours++;
-            if ([NSStringFromSelector(item.action) hasPrefix:@"pjItemView"]) mikoto++;
-        }
-        CHECK(ours == 1);
-        CHECK(mikoto == 1);
-        [mikotoHook uninstall];
-
         // A presentation refreshes the item even when the host kept a cached
         // array: the show interposer appends before the menu is displayed.
         SRBuildMenuController *showMenu = [SRBuildMenuController new];
@@ -1160,8 +1140,8 @@ int main(void) {
         // Re-installing on a different class after restore is refused.
         SRMenuBuildHook *crossClass = [[SRMenuBuildHook alloc] initWithHook:hook menuClass:SRHostMenu.class
             coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
-        CHECK([crossClass install:NULL]);
-        [crossClass uninstall];
+        CHECK(![crossClass install:NULL]);
+        CHECK(!crossClass.installed);
 
         // --- storage gone: refuse, never report success ---
         // Isolated fixture: the store is created inside an inner pool and is

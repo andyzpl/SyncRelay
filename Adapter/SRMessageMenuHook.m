@@ -2344,15 +2344,8 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
         }
         if (SRMenuBuildEverInstalled) {
             if (self.menuClass != SRMenuBuildInstalledClass) {
-                // A different class is fine only after a clean uninstall: nothing
-                // owns the method and the slot holds the original implementation.
-                if (SRMenuBuildOwner || !SRMenuBuildSetterMethod ||
-                    method_getImplementation(SRMenuBuildSetterMethod) != SRMenuBuildOriginalIMP) {
-                    if (error) *error = [NSError errorWithDomain:@"SyncRelay.MenuBuild" code:3 userInfo:nil];
-                    return NO;
-                }
-                SRMenuBuildInstalledClass = self.menuClass;
-                SRMenuBuildOriginalIMP = NULL;
+                if (error) *error = [NSError errorWithDomain:@"SyncRelay.MenuBuild" code:3 userInfo:nil];
+                return NO;
             }
             // Re-installing on the same class would overwrite the predecessor the
             // existing trampoline is bound to. Only the untouched original chain
