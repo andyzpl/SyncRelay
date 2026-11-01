@@ -981,6 +981,52 @@ static BOOL SRImplicitParametersMatch(Method method) {
 
 /* The host invokes item.target/item.action with the menu item view as the
  * sender, so the item is read back from the view through its declared getter. */
+/* 8.0.79 hides the menu responder at click time. The item still carries the
+ * freeze taken when the menu was built, so identity comes from there and the
+ * message is re-read independently before anything is written. */
+- (SRMenuCurrentIdentity *)frozenIdentityForItem:(id)item menu:(id)menu {
+    SRMenuMessageContext *context = [self contextForOwnItem:item];
+    if (!context) return nil;
+    NSString *account = self.currentAccount ? self.currentAccount() : nil;
+    if (!account.length || ![account isEqual:context.account]) return nil;
+    NSString *prefix = @"local:";
+    if (![context.messageIdentity hasPrefix:prefix]) return nil;
+    unsigned long long localID = strtoull(context.messageIdentity.UTF8String + prefix.length, NULL, 10);
+    if (!localID) return nil;
+    id manager = self.readbackProvider ? self.readbackProvider() : nil;
+    if (!SRMenuHookValidLookupService(manager)) return nil;
+    id stored = nil;
+    @try {
+        stored = SRReadObjectWithObjectAndUnsignedInteger(manager, @"GetMsg:LocalID:",
+                                                         context.session, @(localID), NULL);
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+    if (!stored) return nil;
+    unsigned long long storedID = 0;
+    if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMesLocalID"), &storedID) || storedID != localID) return nil;
+    id body = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsContent"));
+    if (![body isKindOfClass:NSString.class] || ![body isEqual:context.body]) return nil;
+    id fromObject = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsFromUsr"));
+    id toObject = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsToUsr"));
+    NSString *session = nil;
+    if ([fromObject isKindOfClass:NSString.class] && [fromObject isEqual:account]) session = toObject;
+    else if ([toObject isKindOfClass:NSString.class] && [toObject isEqual:account]) session = fromObject;
+    if (![session isKindOfClass:NSString.class] || ![session isEqual:context.session]) return nil;
+    if (!self.epochProvider) return nil;
+    unsigned long long liveEpoch = self.epochProvider();
+    if (liveEpoch == ULLONG_MAX) return nil;
+    NSString *epoch = [[NSString alloc] initWithFormat:@"%llu", liveEpoch];
+    if (![epoch isEqual:context.epoch]) return nil;
+    NSString *generation = nil;
+    @synchronized(self.lock) { generation = [self.menuGenerations objectForKey:menu]; }
+    if (![generation isEqual:context.generation]) return nil;
+    return [[SRMenuCurrentIdentity alloc] initWithAccount:account ownerToken:context.ownerToken
+        generation:context.generation messageIdentity:context.messageIdentity
+        session:context.session messageType:context.messageType
+        createdAt:context.createdAt epoch:context.epoch body:context.body];
+}
+
 - (void)srMenuAction:(id)sender {
     // The menu action must never leak an exception into the host. Hosts differ in
     // what they pass as the sender, so accept the item view, the item itself, or
@@ -1000,7 +1046,9 @@ static BOOL SRImplicitParametersMatch(Method method) {
         if (!item || ![self ownsItem:item]) return;
         id menu = nil;
         @synchronized(self.lock) { menu = [self.menus objectForKey:item] ?: self.activeMenu; }
-        NSInteger intent = (NSInteger)[self handleSelection:item current:[self currentIdentityForMenu:menu]];
+        SRMenuCurrentIdentity *current = [self currentIdentityForMenu:menu];
+        if (!current) current = [self frozenIdentityForItem:item menu:menu];
+        NSInteger intent = (NSInteger)[self handleSelection:item current:current];
         @synchronized(self.lock) { self.lastIntent = intent; }
     } @catch (__unused NSException *exception) {
     }
