@@ -137,7 +137,7 @@ int main(void) {
         assert([store claimTextExperiment:nextExperiment configuration:experimentDraft account:@"account" target:@"target@chatroom" error:&error]);
         assert(count([store summaryForRun:run error:&error], @"confirmed") == 2000);
 
-        /* A schema-14 file with an orphaned foreign-key row must be rejected
+        /* A schema-15 file with an orphaned foreign-key row must be rejected
          * before the open-time trigger refresh can commit. */
         NSString *damagedPath = [directory stringByAppendingPathComponent:@"damaged.sqlite3"];
         SRStore *damaged = [[SRStore alloc] initWithPath:damagedPath error:&error];
@@ -221,7 +221,7 @@ int main(void) {
          * schema-14 file. Unsupported markers are gate values, not migration
          * fixtures; use empty databases so the test cannot imply schema-11
          * compatibility or require an old data set. */
-        for (NSNumber *unsupportedNumber in @[@1, @13, @15]) {
+        for (NSNumber *unsupportedNumber in @[@1, @13, @16]) {
             int unsupportedVersion = unsupportedNumber.intValue;
             NSString *unsupportedPath = [directory stringByAppendingPathComponent:
                 [NSString stringWithFormat:@"unsupported-%d.sqlite3", unsupportedVersion]];
