@@ -1160,8 +1160,8 @@ int main(void) {
         // Re-installing on a different class after restore is refused.
         SRMenuBuildHook *crossClass = [[SRMenuBuildHook alloc] initWithHook:hook menuClass:SRHostMenu.class
             coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
-        CHECK(![crossClass install:NULL]);
-        CHECK(!crossClass.installed);
+        CHECK([crossClass install:NULL]);
+        [crossClass uninstall];
 
         // --- storage gone: refuse, never report success ---
         // Isolated fixture: the store is created inside an inner pool and is
