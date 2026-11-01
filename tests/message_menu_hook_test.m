@@ -361,6 +361,16 @@ static NSUInteger gWrongABIResolverCalls = 0;
 @end
 
 /* Host-shaped source chain: menu.responder -> cover.delegate -> cell -> wrap. */
+/* 8.0.79 shape: the responder is stored but no getter is declared. */
+@interface SRHostNoGetterMenu : NSObject {
+    id _responder;
+}
+- (void)setResponderForTest:(id)responder;
+@end
+@implementation SRHostNoGetterMenu
+- (void)setResponderForTest:(id)responder { _responder = responder; }
+@end
+
 @interface SRHostMenu : NSObject
 @property(nonatomic, strong) id responder;
 @end
@@ -937,6 +947,13 @@ int main(void) {
             current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"chat", @"49", @"1000", @"body")] == SRMenuIntentContextStale);
         CHECK([hook handleSelection:strictItems.lastObject
             current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"chat", @"1", @"2000", @"body")] == SRMenuIntentContextStale);
+
+        // Without a responder getter the stored ivar is used instead.
+        SRHostNoGetterMenu *ivarMenu = [SRHostNoGetterMenu new];
+        [ivarMenu setResponderForTest:cover];
+        CHECK([SRMenuHostSource sourceForMenu:ivarMenu menuClass:SRHostNoGetterMenu.class
+                                   coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class
+                                      account:@"account"] != nil);
 
         // A KVO subclass of the menu class is still the same host class.
         Class kvoMenuClass = objc_allocateClassPair(SRHostMenu.class, "NSKVONotifying_SRHostMenu", 0);

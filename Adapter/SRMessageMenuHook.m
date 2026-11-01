@@ -374,6 +374,30 @@ static BOOL SRMenuHookValidLookupService(id service) {
     }
 }
 
+/* 8.0.79 no longer exposes a `responder` getter on the menu controller, but the
+ * object is still stored in an ivar. Read it through the runtime (no offsets):
+ * a declared getter wins, then the first object ivar whose name mentions
+ * responder. Nothing is written and no KVC is used. */
+static id SRMenuHookResponder(id menu) {
+    if (!menu) return nil;
+    id declared = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
+    if (declared) return declared;
+    Class cls = object_getClass(menu);
+    unsigned int count = 0;
+    Ivar *ivars = class_copyIvarList(cls, &count);
+    if (!ivars) return nil;
+    id found = nil;
+    for (unsigned int index = 0; index < count && !found; index++) {
+        const char *name = ivar_getName(ivars[index]);
+        const char *type = ivar_getTypeEncoding(ivars[index]);
+        if (!name || !type || type[0] != '@') continue;
+        if (!strstr(name, "esponder")) continue;
+        found = object_getIvar(menu, ivars[index]);
+    }
+    free(ivars);
+    return found;
+}
+
 static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
     if (!candidate || !base) return NO;
     for (Class current = candidate; current; current = class_getSuperclass(current)) {
@@ -412,7 +436,7 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
     if (!menu || !menuClass || !coverClass || !cellClass) return nil;
     // A KVO subclass (NSKVONotifying_<class>) is still the same host class.
     if (!SRMenuHookClassIsKindOf(object_getClass(menu), menuClass)) return nil;
-    if (!responder) responder = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
+    if (!responder) responder = SRMenuHookResponder(menu);
     if (!responder || !SRMenuHookClassIsKindOf(object_getClass(responder), coverClass)) return nil;
     id delegate = SRMenuHookReadObject(responder, NSSelectorFromString(@"delegate"));
     if (!delegate || !SRMenuHookClassIsKindOf(object_getClass(delegate), cellClass)) return nil;
@@ -759,7 +783,7 @@ static BOOL SRImplicitParametersMatch(Method method) {
 }
 
 - (SRMenuMessageContext *)contextForMenu:(id)menu generation:(NSString *)generation responder:(id)responder {
-    if (!responder) responder = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
+    if (!responder) responder = SRMenuHookResponder(menu);
     if (responder) [self rememberResponder:responder forMenu:menu];
     if (!menu || !generation.length) return nil;
     if (!self.currentAccount) return nil;
