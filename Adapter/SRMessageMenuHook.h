@@ -137,6 +137,9 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
 /* Supplies a responder when the menu no longer exposes one (8.0.79). The UI
  * layer injects the capture, so this file stays free of UIKit. */
 - (void)configureResponderProvider:(nullable id (^)(void))provider;
+/* Called on the main thread with the outcome of a menu selection, so the UI can
+ * show a short confirmation without the adapter knowing about UIKit. */
+- (void)configureSelectionHandler:(nullable void (^)(SRMenuIntentResult result))handler;
 /* Optional host icon object (UIImage) supplied by the UI layer. */
 - (void)configureMenuIcon:(nullable id)icon;
 /* Bounded, numeric-only status for diagnostics: no account, body or IDs. */

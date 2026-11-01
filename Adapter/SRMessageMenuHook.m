@@ -147,6 +147,7 @@ NSDictionary<NSString *, id> *SRMenuLibraryStatus(void) {
 @property(nonatomic, strong) NSMapTable *menuResponders;
 @property(nonatomic, strong) id menuIcon;
 @property(nonatomic, copy) id (^responderProvider)(void);
+@property(nonatomic, copy) void (^selectionHandler)(SRMenuIntentResult);
 @property(nonatomic) NSUInteger publishCount;
 @property(nonatomic) NSInteger lastIntent;
 @property(nonatomic) NSUInteger prepareCount;
@@ -829,6 +830,10 @@ static BOOL SRImplicitParametersMatch(Method method) {
     }
 }
 
+- (void)configureSelectionHandler:(void (^)(SRMenuIntentResult))handler {
+    @synchronized(self.lock) { self.selectionHandler = [handler copy]; }
+}
+
 - (void)configureResponderProvider:(id (^)(void))provider {
     @synchronized(self.lock) { self.responderProvider = [provider copy]; }
 }
@@ -1068,8 +1073,16 @@ static BOOL SRImplicitParametersMatch(Method method) {
         @synchronized(self.lock) { menu = [self.menus objectForKey:item] ?: self.activeMenu; }
         SRMenuCurrentIdentity *current = [self currentIdentityForMenu:menu];
         if (!current) current = [self frozenIdentityForItem:item menu:menu];
-        NSInteger intent = (NSInteger)[self handleSelection:item current:current];
-        @synchronized(self.lock) { self.lastIntent = intent; }
+        SRMenuIntentResult result = [self handleSelection:item current:current];
+        NSInteger intent = (NSInteger)result;
+        void (^handler)(SRMenuIntentResult) = nil;
+        @synchronized(self.lock) {
+            self.lastIntent = intent;
+            handler = self.selectionHandler;
+        }
+        if (handler) {
+            dispatch_async(dispatch_get_main_queue(), ^{ handler(result); });
+        }
     } @catch (__unused NSException *exception) {
     }
 }

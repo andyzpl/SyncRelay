@@ -73,7 +73,7 @@ class IntakeContracts(unittest.TestCase):
         source = read("Core/SRLibraryIntake.m")
         for forbidden in ("library_tasks", "createLibraryTask", "startLibraryTask", "sqlite3",
                           "submitDelivery", "startRule", "saveLibraryImageData",
-                          "claimNext", "deleteLibraryEntry"):
+                          "claimNext"):
             self.assertNotIn(forbidden, source, forbidden)
         self.assertIn("createLibraryItemForAccount", source)
 
@@ -94,12 +94,15 @@ class IntakeContracts(unittest.TestCase):
         for unit in ("Core/SRLibraryIntake.m", "tests/library_intake_test.m"):
             self.assertIn(unit, syntax, unit)
 
-    def test_library_page_is_still_read_only_in_this_build(self):
-        """Forwarding is not wired yet, so the pages must not pretend it is."""
+    def test_library_pages_offer_delete_and_text_forwarding(self):
+        """The library started read-only. It now exposes deletion and text
+        forwarding through the frozen-task API, and nothing else."""
         screens = read("UI/SRLibraryScreens.m")
-        self.assertIn("本页只读", screens)
-        for forbidden in ("转发", "createLibraryTaskForAccount", "startLibraryTask",
-                          "SRLibraryIntake"):
+        for token in ("deleteLibraryEntry", "createLibraryTaskForAccount", "startLibraryTask",
+                      "deleteLibraryEntry:item account:error:"[:0] or "删除条目", "转发到群"):
+            self.assertIn(token, screens, token)
+        # Intake and sending stay outside the pages.
+        for forbidden in ("SRLibraryIntake", "submitDelivery", "sendText"):
             self.assertNotIn(forbidden, screens, forbidden)
 
     def test_the_menu_adapter_is_installed_only_through_the_gated_build_hook(self):

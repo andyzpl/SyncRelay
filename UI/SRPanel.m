@@ -32,6 +32,41 @@
 /* 8.0.79 no longer exposes the menu responder. Capture the current first
  * responder the same way Mikoto does: an action sent to nil walks the responder
  * chain, and the first object that implements it records itself. */
+/* Short, non-blocking confirmation for a menu selection. No message content is
+ * shown, only the outcome. */
+static void SRShowMenuToast(NSString *text) {
+    if (!text.length) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *window = nil;
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
+                if (candidate.isKeyWindow) { window = candidate; break; }
+            }
+            if (window) break;
+        }
+        if (!window) return;
+        UILabel *label = [UILabel new];
+        label.text = text;
+        label.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+        label.textColor = UIColor.whiteColor;
+        label.backgroundColor = [UIColor colorWithWhite:0 alpha:0.82];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.layer.cornerRadius = 10;
+        label.clipsToBounds = YES;
+        [label sizeToFit];
+        CGSize size = label.bounds.size;
+        label.frame = CGRectMake(0, 0, size.width + 32, size.height + 20);
+        label.center = CGPointMake(window.bounds.size.width / 2, window.bounds.size.height * 0.78);
+        [window addSubview:label];
+        [UIView animateWithDuration:0.25 delay:1.4 options:0 animations:^{
+            label.alpha = 0;
+        } completion:^(__unused BOOL finished) {
+            [label removeFromSuperview];
+        }];
+    });
+}
+
 static __weak id SRCapturedMenuFirstResponder;
 @interface NSObject (SRSyncRelayFirstResponder)
 - (void)srCaptureMenuFirstResponder:(id)sender;
@@ -2131,6 +2166,18 @@ void SRInstallPanelEntry(SRStore *store) {
                 return live && [live isEqual:value];
             }
             enabled:^BOOL { return weakEntry.entryPreferences.libraryMenuEntryEnabled; }];
+        [entry.libraryMenuHook configureSelectionHandler:^(SRMenuIntentResult result) {
+            switch (result) {
+                case SRMenuIntentSaved: SRShowMenuToast(@"已存入同步库"); break;
+                case SRMenuIntentDuplicate: SRShowMenuToast(@"已在同步库中"); break;
+                case SRMenuIntentUnsupported: SRShowMenuToast(@"仅支持普通文字"); break;
+                case SRMenuIntentContextStale: SRShowMenuToast(@"该消息已不可用"); break;
+                case SRMenuIntentDisabled: SRShowMenuToast(@"菜单入库未开启"); break;
+                case SRMenuIntentStorageUnavailable:
+                case SRMenuIntentWriteFailed: SRShowMenuToast(@"暂不可用，请稍后重试"); break;
+                default: break;
+            }
+        }];
         [entry.libraryMenuHook configureResponderProvider:^id {
             SRCapturedMenuFirstResponder = nil;
             [UIApplication.sharedApplication sendAction:@selector(srCaptureMenuFirstResponder:)

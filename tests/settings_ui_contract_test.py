@@ -359,6 +359,15 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertGreaterEqual(panel.count('!panel.menuCallObservationActive'), 1)
         self.assertGreaterEqual(panel.count('!entry.menuCallObservationActive'), 3)
 
+    def test_library_menu_selection_reports_the_outcome(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        for token in ('configureSelectionHandler:', 'SRShowMenuToast',
+                      u'@"\u5df2\u5b58\u5165\u540c\u6b65\u5e93"',
+                      u'@"\u5df2\u5728\u540c\u6b65\u5e93\u4e2d"',
+                      'SRMenuIntentDuplicate', 'SRMenuIntentContextStale'):
+            self.assertIn(token, panel, token)
+        self.assertNotIn('keyWindow', panel)
+
     def test_library_menu_status_is_bounded_and_numeric(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
         self.assertIn('report[@"libraryMenu"] = SRMenuLibraryStatus();', panel)

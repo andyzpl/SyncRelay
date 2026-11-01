@@ -36,7 +36,7 @@ class B3ReadOnlyPages(unittest.TestCase):
             self.assertNotIn(forbidden, source)
         # No import, cleanup, delete, task creation or dispatch entry.
         for forbidden in ("saveLibraryImageData", "createLibraryItem", "appendLibraryVersion",
-                          "deleteLibraryEntry", "startLibraryTask", "resendLibraryTask",
+                          "resendLibraryTask",
                           "pruneTemporaryFiles", "pruneUnreferenced", "reserveBytes",
                           "commitReservation", "claimNextForRun", "submitDelivery",
                           "startRule:", "resumeRun:", "cancelRun:", "endRun:",

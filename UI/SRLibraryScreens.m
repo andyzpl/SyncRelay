@@ -139,7 +139,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (self.masked) return @"离开前台时已清除本页显示；回到前台会重新核对账号后再读取。";
     if (self.accountInvalid) return @"当前账号无法核对或已经改变，旧条目已隐藏。请返回重新读取账号。";
     if (self.problem) return @"本页只读，不会创建、删除或发送任何条目。";
-    return @"本页只读：条目来自本账号的消息库，不提供导入、编辑、删除、清理或派发。";
+    return @"条目来自本账号的消息库；左滑可删除条目，详情页可把普通文字转发到群。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"library"] ?:
@@ -183,6 +183,44 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
 }
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)path {
+    if (self.accountInvalid || self.problem) return nil;
+    NSDictionary *entry = self.rows[path.row];
+    NSString *item = entry[@"id"];
+    if (!item.length) return nil;
+    __weak typeof(self) weakSelf = self;
+    UIContextualAction *remove = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+        title:@"删除" handler:^(__unused UIContextualAction *action, __unused UIView *view,
+                                 void (^completion)(BOOL)) {
+        [weakSelf confirmDeleteItem:item completion:completion];
+    }];
+    UISwipeActionsConfiguration *config = [UISwipeActionsConfiguration configurationWithActions:@[remove]];
+    config.performsFirstActionWithFullSwipe = NO;
+    return config;
+}
+
+- (void)confirmDeleteItem:(NSString *)item completion:(void (^)(BOOL))completion {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除条目？"
+        message:@"从消息库列表移除该条目；已保存的历史版本与媒体不会被删除。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *a) {
+        if (completion) completion(NO);
+    }]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+        NSError *error = nil;
+        BOOL ok = [weakSelf.store deleteLibraryEntry:item account:weakSelf.account error:&error];
+        if (ok) { [weakSelf reload]; if (completion) completion(YES); return; }
+        if (completion) completion(NO);
+        UIAlertController *failure = [UIAlertController alertControllerWithTitle:@"删除失败"
+            message:error.localizedDescription ?: @"请稍后重试" preferredStyle:UIAlertControllerStyleAlert];
+        [failure addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+        [weakSelf presentViewController:failure animated:YES completion:nil];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
     if (self.masked) return;
@@ -217,9 +255,99 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @end
 
 @implementation SRLibraryItemScreen
+- (void)showActions {
+    if (self.masked || self.accountInvalid || self.problem || ![self verified]) return;
+    NSString *kind = [self.entry[@"kind"] isKindOfClass:NSString.class] ? self.entry[@"kind"] : @"";
+    BOOL text = [kind isEqual:@"text"];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    if (text) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"转发到群…" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *a) { [weakSelf promptForward]; }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"删除条目" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *a) { [weakSelf confirmDelete]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)confirmDelete {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除条目？"
+        message:@"从列表移除该条目；历史版本与媒体不会被删除。" preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *a) {
+        NSError *error = nil;
+        if ([weakSelf.store deleteLibraryEntry:weakSelf.item account:weakSelf.account error:&error]) {
+            [weakSelf.navigationController popViewControllerAnimated:YES];
+            return;
+        }
+        [weakSelf showFailure:@"删除失败" error:error];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptForward {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"转发到群"
+        message:@"输入目标群 wxid，多个用逗号、空格或换行分隔（1–20 个）。仅普通文字条目可用。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"wxid1, wxid2";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确认转发" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *a) {
+        [weakSelf forwardToGroups:alert.textFields.firstObject.text];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)forwardToGroups:(NSString *)raw {
+    NSMutableArray<NSString *> *targets = [NSMutableArray array];
+    for (NSString *part in [raw componentsSeparatedByCharactersInSet:
+            [NSCharacterSet characterSetWithCharactersInString:@",， \n\t"]]) {
+        NSString *trimmed = [part stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (trimmed.length && ![targets containsObject:trimmed]) [targets addObject:trimmed];
+    }
+    if (targets.count < 1 || targets.count > 20) {
+        [self showFailure:@"目标数量不对" error:nil];
+        return;
+    }
+    NSError *error = nil;
+    NSString *confirmation = [NSUUID.UUID.UUIDString copy];
+    NSString *task = [self.store createLibraryTaskForAccount:self.account item:self.item
+        version:self.entry[@"current_version_id"] confirmationID:confirmation targets:targets
+        minimum:0 maximum:0 error:&error];
+    if (!task.length) { [self showFailure:@"创建转发任务失败" error:error]; return; }
+    if (![self.store startLibraryTask:task account:self.account error:&error]) {
+        [self showFailure:@"启动转发任务失败" error:error];
+        return;
+    }
+    UIAlertController *done = [UIAlertController alertControllerWithTitle:@"已创建转发任务"
+        message:[NSString stringWithFormat:@"目标 %lu 个；任务已冻结并启动。", (unsigned long)targets.count]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [done addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:done animated:YES completion:nil];
+}
+
+- (void)showFailure:(NSString *)title error:(NSError *)error {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+        message:error.localizedDescription ?: @"请稍后重试" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"条目详情";
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"操作"
+        style:UIBarButtonItemStylePlain target:self action:@selector(showActions)];
     SRStyleSettingsTable(self);
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
@@ -284,7 +412,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (self.accountInvalid) return @"当前账号无法核对或已经改变，本页已失去显示资格。";
     if (self.problem) return @"本页只读，不会创建、删除或发送任何条目。";
     if (section == 0) return @"条目只属于打开本页时的账号；数量与版本以持久记录为准。";
-    return @"本页不渲染媒体、不准备素材、不调用宿主图片接口，也不提供编辑、删除或派发。";
+    return @"文字版本可转发到群；删除只隐藏条目，不删除历史版本与媒体。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"library-item"] ?:
