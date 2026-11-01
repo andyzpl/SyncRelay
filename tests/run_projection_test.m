@@ -242,14 +242,14 @@ static void checkGroupRows(void) {
 
 static void checkTargetLimit(void) {
     CHECK(SRRunProjectionTargetLimit == 600);
-    NSArray *over = [SRRunProjection groupRowsForCards:@[card(@"rule-big", @"Synthetic Big", 21, YES, NO, nil)]];
+    NSArray *over = [SRRunProjection groupRowsForCards:@[card(@"rule-big", @"Synthetic Big", 601, YES, NO, nil)]];
     CHECK(over.count == 1);
     CHECK([over[0][@"executable"] isEqual:@NO]);
-    CHECK([over[0][@"targetCount"] isEqual:@21]);
-    CHECK([over[0][@"blockedText"] isEqual:[NSString stringWithFormat:
-        @"超过每条 20 群的执行范围，本组不可执行；不会截取前 20 群"]]);
-    // Exactly 20 is still executable; nothing is truncated.
-    NSArray *exact = [SRRunProjection groupRowsForCards:@[card(@"rule-20", @"Synthetic Twenty", 20, YES, NO, nil)]];
+    CHECK([over[0][@"targetCount"] isEqual:@601]);
+    CHECK([over[0][@"blockedText"] isKindOfClass:NSString.class]);
+    CHECK([over[0][@"blockedText"] rangeOfString:@"600"].location != NSNotFound);
+    // Exactly the ceiling is still executable; nothing is truncated.
+    NSArray *exact = [SRRunProjection groupRowsForCards:@[card(@"rule-max", @"Synthetic Max", 600, YES, NO, nil)]];
     CHECK([exact[0][@"executable"] isEqual:@YES]);
     CHECK([exact[0][@"blockedText"] isEqual:NSNull.null]);
     CHECK([[SRRunProjection overviewForGroupRows:over][@"limited"] isEqual:@1]);
