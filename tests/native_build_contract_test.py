@@ -103,17 +103,17 @@ class NativeBuildContracts(unittest.TestCase):
             .split('if (!setup) return nil;', 1)[0]
         enforced = store.split('id enforced = [self perform:^id{', 1)[1] \
             .split('if (!initialized || !enforced) return nil;', 1)[0]
-        self.assertIn('version == 0 || version == 14', setup)
-        self.assertIn('Unsupported database schema; this build requires a new schema 14 database', setup)
+        self.assertIn('version == 0 || version == 15', setup)
+        self.assertIn('Unsupported database schema; this build requires a new schema 15 database', setup)
         self.assertNotIn('version <', setup)
-        self.assertLess(setup.index('version == 0 || version == 14'),
+        self.assertLess(setup.index('version == 0 || version == 15'),
                          setup.index('PRAGMA foreign_keys=ON'))
         self.assertNotIn('migrateRuleIntervalConstraint', store)
         self.assertNotIn('migrationDiagnostics', store)
-        self.assertIn('if (version == 0) [self query:@"PRAGMA user_version=14"', store)
+        self.assertIn('if (version == 0) [self query:@"PRAGMA user_version=15"', store)
         self.assertIn('PRAGMA user_version', enforced)
-        self.assertIn('[row[@"user_version"] integerValue] == 14', enforced)
-        self.assertLess(enforced.index('[row[@"user_version"] integerValue] == 14'),
+        self.assertIn('[row[@"user_version"] integerValue] == 15', enforced)
+        self.assertLess(enforced.index('[row[@"user_version"] integerValue] == 15'),
                         enforced.index('self.schemaVersion ='))
         self.assertNotIn('PRAGMA user_version=', enforced)
         header = (ROOT / 'Core/SRStore.h').read_text(encoding='utf-8')

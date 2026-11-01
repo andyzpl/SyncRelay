@@ -38,8 +38,8 @@ def open_schema(db):
     legacy-version fixture or migration DDL is involved.
     """
     version = db.execute('PRAGMA user_version').fetchone()[0]
-    if version not in (0, 14):
-        raise sqlite3.IntegrityError('Unsupported database schema; fresh schema 14 is required')
+    if version not in (0, 15):
+        raise sqlite3.IntegrityError('Unsupported database schema; fresh schema 15 is required')
     relation_check = library_relation_check_sql()
     db.execute('PRAGMA foreign_keys=ON')
     if db.in_transaction:
@@ -52,7 +52,7 @@ def open_schema(db):
         if db.execute(relation_check).fetchall():
             raise sqlite3.IntegrityError('Database schema has broken library version relations')
         if version == 0:
-            db.execute('PRAGMA user_version=14')
+            db.execute('PRAGMA user_version=15')
         db.commit()
     except sqlite3.Error:
         db.rollback()
@@ -109,15 +109,15 @@ class OperationsSchemaTests(unittest.TestCase):
                 'image_experiments', 'submission_receipts')
 
     def test_schema_14_guard_version_and_tables_agree(self):
-        self.assertIn('version == 0 || version == 14', STORE)
+        self.assertIn('version == 0 || version == 15', STORE)
         self.assertNotIn('migrationDiagnostics', STORE)
         self.assertIn('self.schemaVersion = [row[@"user_version"] integerValue];', STORE)
         self.assertIn('broken library version relations', STORE)
         self.assertGreaterEqual(STORE.count('@"PRAGMA foreign_key_check"'), 1)
-        self.assertEqual(['PRAGMA user_version=14'],
+        self.assertEqual(['PRAGMA user_version=15'],
                          [sql for sql in statements(STORE) if sql.startswith('PRAGMA user_version=')])
         open_schema(self.db)
-        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(15, self.db.execute('PRAGMA user_version').fetchone()[0])
         tables = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({'operations_preferences', 'operations_contents',
                          'operations_cancellations', 'operations_legacy_adoptions'} <= tables)
@@ -130,7 +130,7 @@ class OperationsSchemaTests(unittest.TestCase):
         # These are gate values only.  They are not legacy fixtures and do not
         # represent a supported migration source; future versions must refuse
         # the same way as old/unknown values.
-        for version in (1, 13, 15):
+        for version in (1, 13, 16):
             with self.subTest(version=version):
                 db = sqlite3.connect(':memory:')
                 try:
@@ -147,7 +147,7 @@ class OperationsSchemaTests(unittest.TestCase):
         # A file carrying an unsupported marker is not a migration input.  The
         # gate must run before any CREATE TABLE/trigger statement, for both an
         # old marker and a future marker.
-        for version in (13, 15):
+        for version in (13, 16):
             with self.subTest(version=version):
                 db = sqlite3.connect(':memory:')
                 try:
@@ -166,7 +166,7 @@ class OperationsSchemaTests(unittest.TestCase):
         self.db.commit()
         self.db.execute('PRAGMA foreign_keys=OFF')
         self.db.execute("INSERT INTO allocations VALUES('missing-plan','orphan@chatroom','missing-rule',0)")
-        self.db.execute('PRAGMA user_version=14')
+        self.db.execute('PRAGMA user_version=15')
         self.db.commit()
         self.db.execute('PRAGMA foreign_keys=ON')
         before = self.db.execute('SELECT * FROM allocations').fetchall()
@@ -177,7 +177,7 @@ class OperationsSchemaTests(unittest.TestCase):
             raise sqlite3.IntegrityError('Database schema has broken foreign keys')
         except sqlite3.IntegrityError:
             self.db.rollback()
-        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(15, self.db.execute('PRAGMA user_version').fetchone()[0])
         self.assertEqual(before, self.db.execute('SELECT * FROM allocations').fetchall())
 
     def test_current_schema_version_relation_failure_rolls_back_the_open_transaction(self):
@@ -187,7 +187,7 @@ class OperationsSchemaTests(unittest.TestCase):
         self.db.commit()
         self.db.execute('PRAGMA foreign_keys=OFF')
         self.db.execute("INSERT INTO library_items VALUES('item','account','text',1,1,'missing-version')")
-        self.db.execute('PRAGMA user_version=14')
+        self.db.execute('PRAGMA user_version=15')
         self.db.commit()
         before = self.db.execute('SELECT * FROM library_items').fetchall()
         self.db.execute('PRAGMA foreign_keys=ON')
@@ -199,7 +199,7 @@ class OperationsSchemaTests(unittest.TestCase):
             raise sqlite3.IntegrityError('Database schema has broken library version relations')
         except sqlite3.IntegrityError:
             self.db.rollback()
-        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(15, self.db.execute('PRAGMA user_version').fetchone()[0])
         self.assertEqual(before, self.db.execute('SELECT * FROM library_items').fetchall())
 
     def test_library_version_relation_check_accepts_current_highest_version(self):
@@ -418,11 +418,11 @@ class OperationsSchemaTests(unittest.TestCase):
     def test_current_schema_reopen_is_idempotent_and_preserves_ledgers(self):
         self.seed_ledgers()
         before = self.rows(self.legacy_tables())
-        self.db.execute('PRAGMA user_version=14')
+        self.db.execute('PRAGMA user_version=15')
         self.db.commit()
         open_schema(self.db)
         self.assertEqual(before, self.rows(self.legacy_tables()))
-        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(15, self.db.execute('PRAGMA user_version').fetchone()[0])
         self.assertEqual([], self.db.execute('PRAGMA foreign_key_check').fetchall())
 
     def test_unsupported_schema_is_rejected_without_repair(self):

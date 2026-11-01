@@ -106,7 +106,7 @@ class CaptureTimeMetadataContracts(unittest.TestCase):
 
     def test_no_schema_column_or_migration_is_added(self):
         store = (ROOT / 'Core/SRStore.m').read_text(encoding='utf-8')
-        self.assertIn('PRAGMA user_version=14', store)
+        self.assertIn('PRAGMA user_version=15', store)
         for source in (CAPTURE, MESSAGE, store):
             self.assertNotIn('ALTER TABLE', source)
             self.assertNotIn('sourceTime', store)

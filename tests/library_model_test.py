@@ -26,8 +26,8 @@ def schema(db):
 def open_current(db):
     """Mirror a schema-14 reopen; unsupported versions are never upgraded."""
     version = db.execute('PRAGMA user_version').fetchone()[0]
-    if version not in (0, 14):
-        raise sqlite3.IntegrityError('Unsupported database schema; fresh schema 14 is required')
+    if version not in (0, 15):
+        raise sqlite3.IntegrityError('Unsupported database schema; fresh schema 15 is required')
     schema(db)
     if db.execute('PRAGMA foreign_key_check').fetchall():
         raise sqlite3.IntegrityError('Database schema has broken foreign keys')
@@ -96,7 +96,7 @@ class LibraryModelTests(unittest.TestCase):
         return {table: self.db.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
                 for table in tables}
 
-    # schema 14 direct initialization -------------------------------------
+    # schema 15 direct initialization -------------------------------------
     def test_schema_14_reopen_keeps_every_current_row(self):
         self.db.execute("INSERT INTO configurations VALUES('account','{}',1)")
         self.db.execute("INSERT INTO operations_preferences VALUES('account',1)")
@@ -111,7 +111,7 @@ class LibraryModelTests(unittest.TestCase):
         legacy = ('configurations', 'operations_preferences', 'plans', 'rules', 'allocations',
                   'runs', 'deliveries', 'source_claims', 'operations_contents')
         before = self.rows(legacy)
-        self.db.execute('PRAGMA user_version=14')
+        self.db.execute('PRAGMA user_version=15')
         self.db.commit()
         open_current(self.db)
         self.assertEqual(before, self.rows(legacy))
@@ -123,7 +123,7 @@ class LibraryModelTests(unittest.TestCase):
     def test_existing_content_source_is_stable_on_reopen(self):
         self.content('one', message='first', captured=170)
         self.db.execute("INSERT INTO content_sources(content_id,account,source_kind,recorded_at) VALUES('one','account','group_sync',170)")
-        self.db.execute('PRAGMA user_version=14')
+        self.db.execute('PRAGMA user_version=15')
         self.db.commit()
         self.assertEqual([('one', 'group_sync', None, None, 170)],
                          self.db.execute('SELECT content_id,source_kind,library_item_id,'

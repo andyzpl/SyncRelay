@@ -149,6 +149,10 @@ NS_ASSUME_NONNULL_BEGIN
  * never resolve here. Claims, the original task and its run stay untouched. */
 - (nullable NSString *)resendLibraryTask:(NSString *)task account:(NSString *)account
                           confirmationID:(NSString *)confirmationID error:(NSError **)error;
+/* Read-only dispatch history for one library entry: one row per frozen task,
+ * newest first, with its run state when started. */
+- (nullable NSArray<NSDictionary *> *)libraryTasksForItem:(NSString *)item account:(NSString *)account
+                                                   limit:(NSUInteger)limit error:(NSError **)error;
 /* Re-verifies the freeze against durable rows; nil on tampering or loss. */
 - (nullable NSDictionary *)libraryTask:(NSString *)task account:(NSString *)account error:(NSError **)error;
 /* Where captured operations content came from: group_sync or message_library. */

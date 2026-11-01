@@ -21,7 +21,7 @@ class AutomaticProgressContractTests(unittest.TestCase):
         self.assertNotIn('DELETE FROM submission_receipts', store)
         # The current product has no legacy rules-table rebuild or upgrade path.
         self.assertNotIn('ALTER TABLE rules_interval_v8 RENAME TO rules', store)
-        self.assertIn('version == 0 || version == 14', store)
+        self.assertIn('version == 0 || version == 15', store)
 
     def test_claims_only_unattempted_targets(self):
         store = (ROOT / 'Core/SRStore.m').read_text(encoding='utf-8')

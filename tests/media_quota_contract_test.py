@@ -192,8 +192,8 @@ class MediaBudgetContract(unittest.TestCase):
         self.assertIn('checkSharedWarning(root);', native.split('int main(void)', 1)[1])
 
     def test_schema_version_guard_is_single_and_bounded(self):
-        self.assertContains('version == 0 || version == 14', STORE_M, 'Store')
-        self.assertEqual(['PRAGMA user_version=14'],
+        self.assertContains('version == 0 || version == 15', STORE_M, 'Store')
+        self.assertEqual(['PRAGMA user_version=15'],
                          [line.strip().split('"')[1] for line in STORE_M.splitlines()
                           if 'PRAGMA user_version=' in line])
 

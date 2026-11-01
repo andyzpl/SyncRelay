@@ -319,11 +319,17 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         [self showFailure:@"目标数量不对" error:nil];
         return;
     }
+    for (NSString *target in targets) {
+        if (![target hasSuffix:@"@chatroom"]) {
+            [self showFailure:@"目标必须是群 wxid（以 @chatroom 结尾）" error:nil];
+            return;
+        }
+    }
     NSError *error = nil;
     NSString *confirmation = [NSUUID.UUID.UUIDString copy];
     NSString *task = [self.store createLibraryTaskForAccount:self.account item:self.item
         version:self.entry[@"current_version_id"] confirmationID:confirmation targets:targets
-        minimum:0 maximum:0 error:&error];
+        minimum:5 maximum:8 error:&error];
     if (!task.length) { [self showFailure:@"创建转发任务失败" error:error]; return; }
     if (![self.store startLibraryTask:task account:self.account error:&error]) {
         [self showFailure:@"启动转发任务失败" error:error];

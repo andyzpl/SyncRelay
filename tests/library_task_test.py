@@ -39,10 +39,10 @@ def schema(db):
 
 
 def reopen_current(db):
-    """Reapply current trigger definitions only for schema 14 databases."""
+    """Reapply current trigger definitions only for schema 15 databases."""
     version = db.execute('PRAGMA user_version').fetchone()[0]
-    if version != 14:
-        raise sqlite3.IntegrityError('Unsupported database schema; fresh schema 14 is required')
+    if version != 15:
+        raise sqlite3.IntegrityError('Unsupported database schema; fresh schema 15 is required')
     schema(db)
     if db.execute('PRAGMA foreign_key_check').fetchall():
         raise sqlite3.IntegrityError('Database schema has broken foreign keys')
@@ -533,10 +533,10 @@ class LibraryTaskTests(unittest.TestCase):
         self.db.execute(self.fx.attach_run, ('run-legacy', 100.0, task, 'account'))
         self.db.execute('UPDATE library_tasks SET media_token=? WHERE id=?', (TOKEN, task))
         before = self.db.execute('SELECT * FROM library_tasks ORDER BY id').fetchall()
-        self.db.execute('PRAGMA user_version=14')
+        self.db.execute('PRAGMA user_version=15')
         self.db.commit()
         reopen_current(self.db)                # production DDL, DROP + CREATE triggers
-        self.assertEqual(14, self.db.execute('PRAGMA user_version').fetchone()[0])
+        self.assertEqual(15, self.db.execute('PRAGMA user_version').fetchone()[0])
         self.assertEqual(before, self.db.execute('SELECT * FROM library_tasks ORDER BY id').fetchall())
         self.assertEqual(1, self.fx.count('library_items'))
         self.assertEqual([], self.db.execute('PRAGMA foreign_key_check').fetchall())
