@@ -341,6 +341,20 @@ static BOOL SRMenuHookProxyMetadataMatches(id service) {
     return fwdOK;
 }
 
+/* Declared SEL getter only: no KVC, no inferred layout. */
+static SEL SRMenuHookReadAction(id item) {
+    if (!item) return NULL;
+    SEL getter = NSSelectorFromString(@"action");
+    if (![item respondsToSelector:getter]) return NULL;
+    Method method = SRMenuHookMethod(object_getClass(item), getter);
+    if (!method) return NULL;
+    char *ret = method_copyReturnType(method);
+    BOOL ok = ret && ret[0] == ':';
+    free(ret);
+    if (!ok) return NULL;
+    return ((SEL (*)(id, SEL))method_getImplementation(method))(item, getter);
+}
+
 static BOOL SRMenuHookValidLookupService(id service) {
     if (!service || object_isClass(service)) return NO;
     SEL selector = NSSelectorFromString(@"GetMsg:LocalID:");
@@ -2216,6 +2230,7 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
 /* Last successful freeze for a menu, reused only for a rebuild within the same
  * short long-press window (the host may rebuild the array several times). */
 @property(nonatomic, strong) NSMapTable *recentContexts;
+@property(nonatomic, strong) NSMapTable *recentItems;
 @property(nonatomic, strong) NSMapTable *recentBuildTimes;
 @property(nonatomic) NSTimeInterval reuseWindow;
 - (id)publishItems:(id)items menu:(id)menu;
@@ -2232,6 +2247,8 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
         _cellClass = cellClass;
         _itemClass = itemClass;
         SRMenuStatusBuildHook = self;
+        _recentItems = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
+                                                valueOptions:NSPointerFunctionsStrongMemory capacity:0];
         _recentContexts = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                                     valueOptions:NSPointerFunctionsStrongMemory capacity:0];
         _recentBuildTimes = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
@@ -2277,22 +2294,38 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     if (responder) [self.hook rememberResponder:responder forMenu:menu];
     id items = SRMenuHookReadObject(menu, NSSelectorFromString(@"currentMenuItems"));
     if (![items isKindOfClass:NSArray.class]) return;
+    id remembered = [self.recentItems objectForKey:menu];
     BOOL alreadyOurs = NO;
     for (id existing in (NSArray *)items) {
-        if (SRMenuHookReadObject(existing, NSSelectorFromString(@"target")) == self.hook) { alreadyOurs = YES; break; }
+        if (existing == remembered) { alreadyOurs = YES; break; }
+        id target = SRMenuHookReadObject(existing, NSSelectorFromString(@"target"));
+        SEL action = SRMenuHookReadAction(existing);
+        if (target == self.hook && action == NSSelectorFromString(@"srMenuAction:")) { alreadyOurs = YES; break; }
     }
+    if (alreadyOurs) { if (!remembered) [self.recentItems setObject:[(NSArray *)items lastObject] forKey:menu]; return; }
     NSString *generation = [[NSString alloc] initWithFormat:@"show:%lu", (unsigned long)++self.buildCounter];
     SRMenuMessageContext *context = [self.hook contextForMenu:menu generation:generation responder:responder];
     if (!context) return;
     NSArray *published = [self.hook appendHostItemToItems:items menu:menu source:context
                                                 itemClass:self.itemClass generation:generation];
     if (published == items) return;
-    // Mutate the live array when possible: calling setMenuItems: would let other
-    // tweaks (which also hook it) append their item a second time.
     if ([items isKindOfClass:NSMutableArray.class]) {
         [(NSMutableArray *)items setArray:published];
+        [self.recentItems setObject:published.lastObject forKey:menu];
         return;
     }
+    // Immutable: the downstream chain is Mikoto (installed before us), which
+    // appends its own item on every call. Strip its items first so it adds
+    // exactly one, then hand the array over once.
+    NSMutableArray *cleaned = [NSMutableArray arrayWithCapacity:published.count];
+    for (id existing in published) {
+        SEL action = SRMenuHookReadAction(existing);
+        if (action && strncmp(sel_getName(action), "pjItemView", 10) == 0) continue;
+        [cleaned addObject:existing];
+    }
+    if (!SRMenuBuildOriginalIMP) return;
+    ((void (*)(id, SEL, id))SRMenuBuildOriginalIMP)(menu, NSSelectorFromString(@"setMenuItems:"), cleaned);
+    [self.recentItems setObject:published.lastObject forKey:menu];
     // Rebuild only through the original implementation captured at install: the
     // public setter would re-enter other tweaks (Mikoto) and duplicate their item.
     if (alreadyOurs) return;

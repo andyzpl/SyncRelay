@@ -474,6 +474,28 @@ static void SRBuildForeignHook(id self, SEL command, id items) {
 @property(nonatomic) NSTimeInterval reuseWindow;
 @end
 
+/* Stands in for Mikoto: every setMenuItems: call appends its own item. */
+@interface SRMikotoMenuController : NSObject
+@property(nonatomic, strong) id responder;
+@property(nonatomic, copy) NSArray *storedItems;
+@property(nonatomic) NSUInteger mikotoCount;
+- (NSArray *)currentMenuItems;
+- (void)setMenuItems:(NSArray *)items;
+- (void)setMenuVisible:(BOOL)visible responder:(id)responder animated:(BOOL)animated;
+@end
+@implementation SRMikotoMenuController
+- (NSArray *)currentMenuItems { return [self.storedItems copy]; }
+- (void)setMenuItems:(NSArray *)items {
+    NSMutableArray *next = [items mutableCopy];
+    id item = [[SRFakeMenuItem alloc] initWithTitle:@"mikoto" icon:nil target:self
+                                             action:NSSelectorFromString(@"pjItemView3:")];
+    [next addObject:item];
+    self.mikotoCount++;
+    self.storedItems = next;
+}
+- (void)setMenuVisible:(__unused BOOL)visible responder:(__unused id)responder animated:(__unused BOOL)animated {}
+@end
+
 @interface SRBuildMenuController : NSObject
 @property(nonatomic, strong) id responder;
 @property(nonatomic, strong) NSArray *lastItems;
@@ -1046,6 +1068,25 @@ int main(void) {
         NSArray *twice = [hook appendHostItemToItems:once menu:hostMenu source:hostContext
                                            itemClass:SRFakeMenuItem.class generation:@"g-dedupe-2"];
         CHECK(twice.count == 2);
+
+        // Mikoto-style downstream chain: its item is appended on every setter
+        // call, so our single publish must leave exactly one of each.
+        SRMikotoMenuController *mikotoMenu = [SRMikotoMenuController new];
+        mikotoMenu.responder = cover;
+        mikotoMenu.storedItems = @[foreign];
+        SRMenuBuildHook *mikotoHook = [[SRMenuBuildHook alloc] initWithHook:hook
+            menuClass:SRMikotoMenuController.class coverClass:SRHostCoverView.class
+            cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
+        CHECK([mikotoHook install:NULL]);
+        [mikotoMenu setMenuVisible:YES responder:cover animated:NO];
+        NSUInteger ours = 0, mikoto = 0;
+        for (SRFakeMenuItem *item in mikotoMenu.storedItems) {
+            if (item.target == hook) ours++;
+            if ([NSStringFromSelector(item.action) hasPrefix:@"pjItemView"]) mikoto++;
+        }
+        CHECK(ours == 1);
+        CHECK(mikoto == 1);
+        [mikotoHook uninstall];
 
         // A presentation refreshes the item even when the host kept a cached
         // array: the show interposer appends before the menu is displayed.
