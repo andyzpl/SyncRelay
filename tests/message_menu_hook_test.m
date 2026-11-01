@@ -948,6 +948,16 @@ int main(void) {
         CHECK([hook handleSelection:strictItems.lastObject
             current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"chat", @"1", @"2000", @"body")] == SRMenuIntentContextStale);
 
+        // A KVO-style subclass declares no ivars: the responder ivar on the
+        // superclass must still be found.
+        Class kvoNoGetter = objc_allocateClassPair(SRHostNoGetterMenu.class, "NSKVONotifying_SRHostNoGetterMenu", 0);
+        objc_registerClassPair(kvoNoGetter);
+        SRHostNoGetterMenu *kvoIvarMenu = [[kvoNoGetter alloc] init];
+        [kvoIvarMenu setResponderForTest:cover];
+        CHECK([SRMenuHostSource sourceForMenu:kvoIvarMenu menuClass:SRHostNoGetterMenu.class
+                                   coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class
+                                      account:@"account"] != nil);
+
         // Without a responder getter the stored ivar is used instead.
         SRHostNoGetterMenu *ivarMenu = [SRHostNoGetterMenu new];
         [ivarMenu setResponderForTest:cover];

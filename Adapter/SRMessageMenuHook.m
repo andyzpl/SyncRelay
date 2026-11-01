@@ -388,20 +388,23 @@ static id SRMenuHookResponder(id menu) {
     if (!menu) return nil;
     id declared = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
     if (declared) return declared;
-    Class cls = object_getClass(menu);
-    unsigned int count = 0;
-    Ivar *ivars = class_copyIvarList(cls, &count);
-    if (!ivars) return nil;
-    id found = nil;
-    for (unsigned int index = 0; index < count && !found; index++) {
-        const char *name = ivar_getName(ivars[index]);
-        const char *type = ivar_getTypeEncoding(ivars[index]);
-        if (!name || !type || type[0] != '@') continue;
-        if (!strstr(name, "esponder")) continue;
-        found = object_getIvar(menu, ivars[index]);
+    // A KVO subclass declares no ivars of its own: walk the class chain.
+    for (Class cls = object_getClass(menu); cls; cls = class_getSuperclass(cls)) {
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList(cls, &count);
+        if (!ivars) continue;
+        id found = nil;
+        for (unsigned int index = 0; index < count && !found; index++) {
+            const char *name = ivar_getName(ivars[index]);
+            const char *type = ivar_getTypeEncoding(ivars[index]);
+            if (!name || !type || type[0] != '@') continue;
+            if (!strstr(name, "esponder")) continue;
+            found = object_getIvar(menu, ivars[index]);
+        }
+        free(ivars);
+        if (found) return found;
     }
-    free(ivars);
-    return found;
+    return nil;
 }
 
 static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
