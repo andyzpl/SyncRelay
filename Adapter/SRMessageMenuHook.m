@@ -2293,10 +2293,9 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
         [(NSMutableArray *)items setArray:published];
         return;
     }
-    if (alreadyOurs) return;
-    if ([menu respondsToSelector:NSSelectorFromString(@"setMenuItems:")]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(menu, NSSelectorFromString(@"setMenuItems:"), published);
-    }
+    // Never call setMenuItems: here: other tweaks hook it and would append their
+    // own item again. The host's own build path publishes our item.
+    (void)alreadyOurs;
 }
 
 - (BOOL)install:(NSError **)error {

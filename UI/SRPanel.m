@@ -2138,10 +2138,9 @@ void SRInstallPanelEntry(SRStore *store) {
             return SRCapturedMenuFirstResponder;
         }];
         if ([UIImage respondsToSelector:@selector(systemImageNamed:)]) {
-            UIImage *icon = [UIImage systemImageNamed:@"tray.and.arrow.down"];
-            // Keep our own colours: the menu otherwise tints a template image and
-            // it no longer matches the host icons.
-            [entry.libraryMenuHook configureMenuIcon:[icon imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]];
+            // Template rendering: the host tints it with the same colour as its
+            // own menu icons.
+            [entry.libraryMenuHook configureMenuIcon:[UIImage systemImageNamed:@"tray.and.arrow.down"]];
         }
         [entry.libraryMenuHook configureReadbackProvider:^id {
             // Verified 8.0.79 path: MMContext.currentContext -> getService: returns
