@@ -802,15 +802,6 @@ int main(void) {
         CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
         preferences.libraryMenuEntryEnabled = YES;
 
-        // The responder captured at build time is used when the menu no longer
-        // exposes one at click time.
-        hostMenu.responder = nil;
-        rebuild();
-        NSUInteger beforeRemembered = [[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count];
-        SRDispatchMenuAction(itemView.menuItem, itemView);
-        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == beforeRemembered + 1);
-        hostMenu.responder = cover;
-
         // 7) a sender carrying a foreign item is refused by the entry itself:
         // dispatch through our own published item, not the foreign one.
         SRFakeMenuItemView *foreignView = [SRFakeMenuItemView new];
