@@ -948,6 +948,17 @@ int main(void) {
         CHECK([hook handleSelection:strictItems.lastObject
             current:currentIdentityFull(@"account", @"owner-1", @"g1", @"msg-strict", @"chat", @"1", @"2000", @"body")] == SRMenuIntentContextStale);
 
+        // A responder provider supplies the capture when the menu has neither a
+        // getter nor the expected ivar.
+        [hook configureResponderProvider:^id { return cover; }];
+        SRHostNoGetterMenu *providerMenu = [SRHostNoGetterMenu new];
+        CHECK([SRMenuHostSource sourceForMenu:providerMenu menuClass:SRHostNoGetterMenu.class
+                                   coverClass:SRHostCoverView.class cellClass:SRHostMessageCell.class
+                                      account:@"account"] == nil);
+        NSString *providerGeneration = @"g-provider";
+        CHECK([hook contextForMenu:providerMenu generation:providerGeneration] != nil);
+        [hook configureResponderProvider:nil];
+
         // Without a responder getter the stored ivar is used instead.
         SRHostNoGetterMenu *ivarMenu = [SRHostNoGetterMenu new];
         [ivarMenu setResponderForTest:cover];

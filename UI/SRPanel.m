@@ -28,6 +28,20 @@
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "Adapter/SRMenuABIProbe.h"
 #import "Adapter/SRRuntime.h"
+
+/* 8.0.79 no longer exposes the menu responder. Capture the current first
+ * responder the same way Mikoto does: an action sent to nil walks the responder
+ * chain, and the first object that implements it records itself. */
+static __weak id SRCapturedMenuFirstResponder;
+@interface NSObject (SRSyncRelayFirstResponder)
+- (void)srCaptureMenuFirstResponder:(id)sender;
+@end
+@implementation NSObject (SRSyncRelayFirstResponder)
+- (void)srCaptureMenuFirstResponder:(id)sender {
+    (void)sender;
+    SRCapturedMenuFirstResponder = self;
+}
+@end
 #import "Core/SRLibraryIntake.h"
 #import "Adapter/SRMessageMenuHook.h"
 #import "SRPlanScreens.h"
@@ -2117,6 +2131,12 @@ void SRInstallPanelEntry(SRStore *store) {
                 return live && [live isEqual:value];
             }
             enabled:^BOOL { return weakEntry.entryPreferences.libraryMenuEntryEnabled; }];
+        [entry.libraryMenuHook configureResponderProvider:^id {
+            SRCapturedMenuFirstResponder = nil;
+            [UIApplication.sharedApplication sendAction:@selector(srCaptureMenuFirstResponder:)
+                                                     to:nil from:nil forEvent:nil];
+            return SRCapturedMenuFirstResponder;
+        }];
         if ([UIImage respondsToSelector:@selector(systemImageNamed:)]) {
             UIImage *icon = [UIImage systemImageNamed:@"tray.and.arrow.down"];
             // Keep our own colours: the menu otherwise tints a template image and

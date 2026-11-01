@@ -134,6 +134,9 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
 - (nullable SRMenuMessageContext *)contextForMenu:(nullable id)menu generation:(nonnull NSString *)generation
                                         responder:(nullable id)responder;
 - (void)rememberResponder:(nullable id)responder forMenu:(nullable id)menu;
+/* Supplies a responder when the menu no longer exposes one (8.0.79). The UI
+ * layer injects the capture, so this file stays free of UIKit. */
+- (void)configureResponderProvider:(nullable id (^)(void))provider;
 /* Optional host icon object (UIImage) supplied by the UI layer. */
 - (void)configureMenuIcon:(nullable id)icon;
 /* Bounded, numeric-only status for diagnostics: no account, body or IDs. */

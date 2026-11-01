@@ -146,6 +146,7 @@ NSDictionary<NSString *, id> *SRMenuLibraryStatus(void) {
 @property(nonatomic, copy) unsigned long long (^epochProvider)(void);
 @property(nonatomic, strong) NSMapTable *menuResponders;
 @property(nonatomic, strong) id menuIcon;
+@property(nonatomic, copy) id (^responderProvider)(void);
 @property(nonatomic) NSUInteger publishCount;
 @property(nonatomic) NSInteger lastIntent;
 @property(nonatomic) NSUInteger prepareCount;
@@ -793,6 +794,10 @@ static BOOL SRImplicitParametersMatch(Method method) {
     }
 }
 
+- (void)configureResponderProvider:(id (^)(void))provider {
+    @synchronized(self.lock) { self.responderProvider = [provider copy]; }
+}
+
 - (void)configureMenuIcon:(id)icon {
     @synchronized(self.lock) { self.menuIcon = icon; }
 }
@@ -816,6 +821,12 @@ static BOOL SRImplicitParametersMatch(Method method) {
     SRMenuHostSource *source = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
                                                    coverClass:self.hostCoverClass cellClass:self.hostCellClass
                                                       account:account responder:responder];
+    if (!source && self.responderProvider) {
+        id provided = self.responderProvider();
+        if (provided) source = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
+                                                    coverClass:self.hostCoverClass cellClass:self.hostCellClass
+                                                       account:account responder:provided];
+    }
     if (!source || !source.isText || !source.body.length || !source.messageIdentity.length) return nil;
     NSString *owner = [self ownerTokenForMenu:menu];
     NSString *operationKey = [[NSString alloc] initWithFormat:@"menu:%@:%@:%@", owner, generation, source.messageIdentity];
@@ -885,6 +896,12 @@ static BOOL SRImplicitParametersMatch(Method method) {
     SRMenuHostSource *source = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
                                                    coverClass:self.hostCoverClass cellClass:self.hostCellClass
                                                       account:account responder:remembered];
+    if (!source && self.responderProvider) {
+        id provided = self.responderProvider();
+        if (provided) source = [SRMenuHostSource sourceForMenu:menu menuClass:self.hostMenuClass
+                                                    coverClass:self.hostCoverClass cellClass:self.hostCellClass
+                                                       account:account responder:provided];
+    }
     if (!source || !source.messageIdentity.length) return nil;
     // Independent second source: read the same message back through the declared
     // instance API of the account-context message manager.
