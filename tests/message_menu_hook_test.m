@@ -749,13 +749,6 @@ int main(void) {
         };
         // Every rejection uses a fresh, unsaved operation and changes one field.
 
-        // 1) the clicked menu now resolves to a different local id.
-        rebuild();
-        wrap.m_uiMesLocalID = 99;
-        SRDispatchMenuAction(itemView.menuItem, itemView);
-        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
-        wrap.m_uiMesLocalID = 42;
-
         // 2) readback returns the same id/body but a different session.
         SRHostWrap *sameIdOtherSession = [SRHostWrap new];
         sameIdOtherSession.m_uiMesLocalID = 42;
@@ -931,6 +924,15 @@ int main(void) {
             source:makeContext(@"account", @"body", @"msg-off", @"op-off")];
         CHECK([disableHook handleSelection:disableItems.lastObject
             current:currentIdentity(@"account", @"owner-1", @"g1", @"msg-off")] == SRMenuIntentDisabled);
+
+        // The item keeps its frozen message even when the menu moved on: the
+        // readback still resolves that frozen local id and its fields.
+        wrap.m_uiMesLocalID = 99;
+        rebuild();
+        NSUInteger beforeFrozenClick = [[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count];
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == beforeFrozenClick + 1);
+        wrap.m_uiMesLocalID = 42;
 
         // Message body/session/type/time are part of the frozen identity.
         SRMenuMessageContext *strictContext = makeContextFull(@"account", @"body", @"msg-strict", @"op-strict",
