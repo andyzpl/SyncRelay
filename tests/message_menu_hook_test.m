@@ -1071,6 +1071,7 @@ int main(void) {
 
         // Mikoto-style downstream chain: its item is appended on every setter
         // call, so our single publish must leave exactly one of each.
+        if (buildHook.installed) [buildHook uninstall];   // one owner at a time
         SRMikotoMenuController *mikotoMenu = [SRMikotoMenuController new];
         mikotoMenu.responder = cover;
         mikotoMenu.storedItems = @[foreign];
