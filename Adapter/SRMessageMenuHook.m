@@ -381,6 +381,7 @@ static BOOL SRMenuHookValidLookupService(id service) {
  * responder. Nothing is written and no KVC is used. */
 /* Diagnostic only: which gate refused the last host-source resolution. */
 static NSInteger SRMenuLastSourceStage;
+static NSInteger SRMenuResponderState;
 static Class SRMenuStatusMenuClass;
 static void SRMenuStage(NSInteger stage) { SRMenuLastSourceStage = stage; }
 
@@ -388,6 +389,7 @@ static id SRMenuHookResponder(id menu) {
     if (!menu) return nil;
     id declared = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
     if (declared) return declared;
+    SRMenuResponderState = 20;   // no responder ivar found anywhere
     // A KVO subclass declares no ivars of its own: walk the class chain.
     for (Class cls = object_getClass(menu); cls; cls = class_getSuperclass(cls)) {
         unsigned int count = 0;
@@ -399,6 +401,7 @@ static id SRMenuHookResponder(id menu) {
             const char *type = ivar_getTypeEncoding(ivars[index]);
             if (!name || !type || type[0] != '@') continue;
             if (!strstr(name, "esponder")) continue;
+            SRMenuResponderState = 21;   // ivar found; value may still be nil
             found = object_getIvar(menu, ivars[index]);
         }
         free(ivars);
@@ -778,7 +781,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
                                           @"publishes": @(self.publishCount),
                                           @"lastIntent": @(self.lastIntent),
                                           @"enabled": @(self.enabled ? self.enabled() : NO),
-                                          @"stage": @(SRMenuLastSourceStage) } mutableCopy];
+                                          @"stage": @(SRMenuLastSourceStage),
+                                          @"responderState": @(SRMenuResponderState) } mutableCopy];
         Class menuClass = SRMenuStatusMenuClass;
         if (menuClass) {
             unsigned int count = 0;
@@ -792,6 +796,20 @@ static BOOL SRImplicitParametersMatch(Method method) {
             }
             free(ivars);
             status[@"ivars"] = names;
+        }
+        Class itemViewClass = NSClassFromString(@"MMMenuItemView");
+        if (itemViewClass) {
+            unsigned int count = 0;
+            Ivar *ivars = class_copyIvarList(itemViewClass, &count);
+            NSMutableArray *itemNames = [NSMutableArray array];
+            for (unsigned int index = 0; index < count && itemNames.count < 40; index++) {
+                const char *name = ivar_getName(ivars[index]);
+                const char *type = ivar_getTypeEncoding(ivars[index]);
+                if (!name) continue;
+                [itemNames addObject:[NSString stringWithFormat:@"%s %s", name, type ?: "?"]];
+            }
+            free(ivars);
+            status[@"itemViewIvars"] = itemNames;
         }
         return status;
     }
