@@ -1005,6 +1005,12 @@ static BOOL SRImplicitParametersMatch(Method method) {
     if (!stored) return nil;
     unsigned long long storedID = 0;
     if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMesLocalID"), &storedID) || storedID != localID) return nil;
+    unsigned long long storedType = 0;
+    if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMessageType"), &storedType) ||
+        ![[NSString stringWithFormat:@"%llu", storedType] isEqual:context.messageType]) return nil;
+    unsigned long long storedCreated = 0;
+    if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiCreateTime"), &storedCreated) ||
+        ![[NSString stringWithFormat:@"%llu", storedCreated] isEqual:context.createdAt]) return nil;
     id body = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsContent"));
     if (![body isKindOfClass:NSString.class] || ![body isEqual:context.body]) return nil;
     id fromObject = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsFromUsr"));
