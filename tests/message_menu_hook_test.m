@@ -1022,13 +1022,17 @@ int main(void) {
         // array: the show interposer appends before the menu is displayed.
         SRBuildMenuController *showMenu = [SRBuildMenuController new];
         showMenu.responder = cover;
-        showMenu.currentMenuItems = @[foreign];
+        showMenu.currentMenuItems = [@[foreign] mutableCopy];
         SRMenuBuildHook *showHook = [[SRMenuBuildHook alloc] initWithHook:hook
             menuClass:SRBuildMenuController.class coverClass:SRHostCoverView.class
             cellClass:SRHostMessageCell.class itemClass:SRFakeMenuItem.class];
         CHECK([showHook install:NULL]);
+        NSUInteger setCallsBeforeShow = gBuildSetCalls;
         [showMenu setMenuVisible:YES responder:cover animated:NO];
         CHECK(showMenu.showCalls == 1);
+        // The live array is refreshed in place: no setMenuItems: rebuild, so other
+        // tweaks hooking that setter cannot append a duplicate.
+        CHECK(gBuildSetCalls == setCallsBeforeShow);
         CHECK(showMenu.currentMenuItems.count == 2);
         CHECK([hook ownsItem:showMenu.currentMenuItems.lastObject]);
         // A second presentation must not rebuild the array again: other tweaks

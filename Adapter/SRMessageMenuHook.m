@@ -2103,15 +2103,24 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     if (responder) [self.hook rememberResponder:responder forMenu:menu];
     id items = SRMenuHookReadObject(menu, NSSelectorFromString(@"currentMenuItems"));
     if (![items isKindOfClass:NSArray.class]) return;
+    BOOL alreadyOurs = NO;
     for (id existing in (NSArray *)items) {
-        if (SRMenuHookReadObject(existing, NSSelectorFromString(@"target")) == self.hook) return;
+        if (SRMenuHookReadObject(existing, NSSelectorFromString(@"target")) == self.hook) { alreadyOurs = YES; break; }
     }
     NSString *generation = [[NSString alloc] initWithFormat:@"show:%lu", (unsigned long)++self.buildCounter];
     SRMenuMessageContext *context = [self.hook contextForMenu:menu generation:generation responder:responder];
     if (!context) return;
     NSArray *published = [self.hook appendHostItemToItems:items menu:menu source:context
                                                 itemClass:self.itemClass generation:generation];
-    if (published != items && [menu respondsToSelector:NSSelectorFromString(@"setMenuItems:")]) {
+    if (published == items) return;
+    // Mutate the live array when possible: calling setMenuItems: would let other
+    // tweaks (which also hook it) append their item a second time.
+    if ([items isKindOfClass:NSMutableArray.class]) {
+        [(NSMutableArray *)items setArray:published];
+        return;
+    }
+    if (alreadyOurs) return;
+    if ([menu respondsToSelector:NSSelectorFromString(@"setMenuItems:")]) {
         ((void (*)(id, SEL, id))objc_msgSend)(menu, NSSelectorFromString(@"setMenuItems:"), published);
     }
 }
