@@ -2293,9 +2293,13 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
         [(NSMutableArray *)items setArray:published];
         return;
     }
-    // Never call setMenuItems: here: other tweaks hook it and would append their
-    // own item again. The host's own build path publishes our item.
-    (void)alreadyOurs;
+    // Rebuild only through the original implementation captured at install: the
+    // public setter would re-enter other tweaks (Mikoto) and duplicate their item.
+    if (alreadyOurs) return;
+    IMP original = SRMenuBuildOriginalIMP;
+    if (original) {
+        ((void (*)(id, SEL, id))original)(menu, NSSelectorFromString(@"setMenuItems:"), published);
+    }
 }
 
 - (BOOL)install:(NSError **)error {
