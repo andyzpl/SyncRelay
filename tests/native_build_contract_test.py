@@ -121,7 +121,7 @@ class NativeBuildContracts(unittest.TestCase):
 
     def test_store_schema_gate_fixture_does_not_imply_legacy_migration(self):
         test = (ROOT / 'tests/store_test.m').read_text(encoding='utf-8')
-        self.assertIn('for (NSNumber *unsupportedNumber in @[@1, @13, @15])', test)
+        self.assertIn('for (NSNumber *unsupportedNumber in @[@1, @13, @16])', test)
         self.assertIn('SELECT count(*) FROM sqlite_master WHERE type=\'table\'', test)
         self.assertIn('PRAGMA user_version', test)
         self.assertNotIn('SRStore *seed = [[SRStore alloc] initWithPath:unsupportedPath', test)

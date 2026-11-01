@@ -145,7 +145,7 @@ int main(void) {
         damaged = nil;
         sqlite3 *damagedDB = NULL;
         assert(sqlite3_open(damagedPath.fileSystemRepresentation, &damagedDB) == SQLITE_OK);
-        assert(sqlite3_exec(damagedDB, "PRAGMA foreign_keys=OFF; INSERT INTO allocations(plan_id,target,rule_id,position) VALUES('missing-plan','orphan@chatroom','missing-rule',0); PRAGMA user_version=14;", NULL, NULL, NULL) == SQLITE_OK);
+        assert(sqlite3_exec(damagedDB, "PRAGMA foreign_keys=OFF; INSERT INTO allocations(plan_id,target,rule_id,position) VALUES('missing-plan','orphan@chatroom','missing-rule',0); PRAGMA user_version=15;", NULL, NULL, NULL) == SQLITE_OK);
         assert(sqlite3_close(damagedDB) == SQLITE_OK);
         damaged = [[SRStore alloc] initWithPath:damagedPath error:&error];
         assert(!damaged && error);
@@ -155,14 +155,14 @@ int main(void) {
             assert([NSFileManager.defaultManager removeItemAtPath:damagedMediaPath error:nil]);
         /* A current-version pointer is a composite relation (item, account,
          * kind and highest ordinal), so foreign_key_check alone cannot catch
-         * an orphaned pointer. Opening the schema-14 file must reject it. */
+         * an orphaned pointer. Opening the schema-15 file must reject it. */
         NSString *damagedVersionPath = [directory stringByAppendingPathComponent:@"damaged-version.sqlite3"];
         SRStore *damagedVersion = [[SRStore alloc] initWithPath:damagedVersionPath error:&error];
         assert(damagedVersion);
         damagedVersion = nil;
         sqlite3 *damagedVersionDB = NULL;
         assert(sqlite3_open(damagedVersionPath.fileSystemRepresentation, &damagedVersionDB) == SQLITE_OK);
-        assert(sqlite3_exec(damagedVersionDB, "PRAGMA foreign_keys=OFF; INSERT INTO library_items(id,account,kind,created_at,updated_at,current_version_id) VALUES('item','account','text',1,1,'missing-version'); PRAGMA user_version=14;", NULL, NULL, NULL) == SQLITE_OK);
+        assert(sqlite3_exec(damagedVersionDB, "PRAGMA foreign_keys=OFF; INSERT INTO library_items(id,account,kind,created_at,updated_at,current_version_id) VALUES('item','account','text',1,1,'missing-version'); PRAGMA user_version=15;", NULL, NULL, NULL) == SQLITE_OK);
         assert(sqlite3_close(damagedVersionDB) == SQLITE_OK);
         damagedVersion = [[SRStore alloc] initWithPath:damagedVersionPath error:&error];
         assert(!damagedVersion && error);
@@ -171,7 +171,7 @@ int main(void) {
         if ([NSFileManager.defaultManager fileExistsAtPath:damagedVersionMediaPath])
             assert([NSFileManager.defaultManager removeItemAtPath:damagedVersionMediaPath error:nil]);
         /* Foreign keys do not encode account ownership. A content source
-         * carrying another account must still make a schema-14 open fail
+         * carrying another account must still make a schema-15 open fail
          * before any trigger refresh or media cleanup can commit. */
         NSString *damagedSourcePath = [directory stringByAppendingPathComponent:@"damaged-source.sqlite3"];
         SRStore *damagedSource = [[SRStore alloc] initWithPath:damagedSourcePath error:&error];
@@ -185,7 +185,7 @@ int main(void) {
             "VALUES('content','account','mother@chatroom','message','{}','{}',1);"
             "INSERT INTO content_sources(content_id,account,source_kind,library_item_id,library_version_id,recorded_at) "
             "VALUES('content','other-account','group_sync',NULL,NULL,1);"
-            "PRAGMA user_version=14;";
+            "PRAGMA user_version=15;";
         assert(sqlite3_exec(damagedSourceDB, crossAccountSource, NULL, NULL, NULL) == SQLITE_OK);
         assert(sqlite3_close(damagedSourceDB) == SQLITE_OK);
         damagedSource = [[SRStore alloc] initWithPath:damagedSourcePath error:&error];
@@ -208,7 +208,7 @@ int main(void) {
             "VALUES('token','account','message_library','scope','digest',1,1);"
             "INSERT INTO media_references(account,token,owner_kind,owner_id,created_at) "
             "VALUES('other-account','token','plan','missing-plan',1);"
-            "PRAGMA user_version=14;";
+            "PRAGMA user_version=15;";
         assert(sqlite3_exec(damagedMediaRefDB, crossAccountMediaReference, NULL, NULL, NULL) == SQLITE_OK);
         assert(sqlite3_close(damagedMediaRefDB) == SQLITE_OK);
         damagedMediaRef = [[SRStore alloc] initWithPath:damagedMediaRefPath error:&error];
