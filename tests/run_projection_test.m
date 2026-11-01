@@ -241,7 +241,7 @@ static void checkGroupRows(void) {
 }
 
 static void checkTargetLimit(void) {
-    CHECK(SRRunProjectionTargetLimit == 20);
+    CHECK(SRRunProjectionTargetLimit == 600);
     NSArray *over = [SRRunProjection groupRowsForCards:@[card(@"rule-big", @"Synthetic Big", 21, YES, NO, nil)]];
     CHECK(over.count == 1);
     CHECK([over[0][@"executable"] isEqual:@NO]);

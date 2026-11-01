@@ -136,7 +136,7 @@ int main(void) {
         [hosts[0] finish]; [session tick]; CHECK(count(store, run, @"submitted") == 3);
         CHECK(![session startRule:rule account:@"account" error:NULL]);
 
-        NSArray *big = makePlan(store, @"big", 21); CHECK(![session startRule:big[0][@"id"] account:@"account" error:NULL]);
+        NSArray *big = makePlan(store, @"big", 601); CHECK(![session startRule:big[0][@"id"] account:@"account" error:NULL]);
         CHECK([store historyForRule:big[0][@"id"] account:@"account" limit:1 offset:0 error:NULL].count == 0);
 
         // Cancellation before main-queue dispatch cannot invoke a native host.
@@ -279,7 +279,7 @@ int main(void) {
         [hosts.lastObject finish]; [session tick];
         CHECK(count(store, run, @"submitted") == 1 && count(store, run, @"cancelled") == 1);
         CHECK(!session.busy && !session.needsIdleTimer && [session.status[@"state"] isEqual:@"ended"]);
-        CHECK([session.status[@"targetLimit"] isEqual:@20]);
+        CHECK([session.status[@"targetLimit"] isEqual:@600]);
         NSNumber *endedAt = [store summaryForRun:run error:NULL][@"ended_at"];
         CHECK([session cancelRun:run account:@"account" error:NULL]);
         CHECK([[store summaryForRun:run error:NULL][@"ended_at"] isEqual:endedAt]);
