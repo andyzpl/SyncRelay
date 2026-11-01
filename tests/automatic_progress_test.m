@@ -186,7 +186,7 @@ int main(void) {
         SRStore *future = [[SRStore alloc] initWithPath:futurePath error:NULL]; CHECK(future);
         future = nil;
         CHECK(sqlite3_open(futurePath.fileSystemRepresentation, &db) == SQLITE_OK);
-        CHECK(sqlite3_exec(db, "PRAGMA user_version=15", NULL, NULL, NULL) == SQLITE_OK);
+        CHECK(sqlite3_exec(db, "PRAGMA user_version=16", NULL, NULL, NULL) == SQLITE_OK);
         CHECK(sqlite3_close(db) == SQLITE_OK);
         future = [[SRStore alloc] initWithPath:futurePath error:NULL]; CHECK(!future);
         CHECK(future.schemaVersion == 0);
