@@ -137,7 +137,7 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
 /* Optional host icon object (UIImage) supplied by the UI layer. */
 - (void)configureMenuIcon:(nullable id)icon;
 /* Bounded, numeric-only status for diagnostics: no account, body or IDs. */
-- (NSDictionary<NSString *, NSNumber *> *)status;
+- (NSDictionary<NSString *, id> *)status;
 FOUNDATION_EXPORT NSDictionary<NSString *, id> *SRMenuLibraryStatus(void);
 - (nullable NSArray *)appendHostItemToItems:(nullable NSArray *)items menu:(nullable id)menu
                                      source:(nullable SRMenuMessageContext *)source

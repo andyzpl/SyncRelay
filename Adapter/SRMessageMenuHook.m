@@ -378,6 +378,11 @@ static BOOL SRMenuHookValidLookupService(id service) {
  * object is still stored in an ivar. Read it through the runtime (no offsets):
  * a declared getter wins, then the first object ivar whose name mentions
  * responder. Nothing is written and no KVC is used. */
+/* Diagnostic only: which gate refused the last host-source resolution. */
+static NSInteger SRMenuLastSourceStage;
+static Class SRMenuStatusMenuClass;
+static void SRMenuStage(NSInteger stage) { SRMenuLastSourceStage = stage; }
+
 static id SRMenuHookResponder(id menu) {
     if (!menu) return nil;
     id declared = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
@@ -433,34 +438,37 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
 + (instancetype)sourceForMenu:(id)menu menuClass:(Class)menuClass
                    coverClass:(Class)coverClass cellClass:(Class)cellClass
                       account:(NSString *)account responder:(id)responder {
+    SRMenuStage(0);
     if (!menu || !menuClass || !coverClass || !cellClass) return nil;
     // A KVO subclass (NSKVONotifying_<class>) is still the same host class.
-    if (!SRMenuHookClassIsKindOf(object_getClass(menu), menuClass)) return nil;
+    if (!SRMenuHookClassIsKindOf(object_getClass(menu), menuClass)) { SRMenuStage(1); return nil; }
     if (!responder) responder = SRMenuHookResponder(menu);
-    if (!responder || !SRMenuHookClassIsKindOf(object_getClass(responder), coverClass)) return nil;
+    if (!responder) { SRMenuStage(2); return nil; }
+    if (!SRMenuHookClassIsKindOf(object_getClass(responder), coverClass)) { SRMenuStage(3); return nil; }
     id delegate = SRMenuHookReadObject(responder, NSSelectorFromString(@"delegate"));
-    if (!delegate || !SRMenuHookClassIsKindOf(object_getClass(delegate), cellClass)) return nil;
+    if (!delegate) { SRMenuStage(4); return nil; }
+    if (!SRMenuHookClassIsKindOf(object_getClass(delegate), cellClass)) { SRMenuStage(5); return nil; }
     id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
-    if (!wrap) return nil;
+    if (!wrap) { SRMenuStage(6); return nil; }
     unsigned long long localID = 0;
-    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiMesLocalID"), &localID) || !localID) return nil;
+    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiMesLocalID"), &localID) || !localID) { SRMenuStage(7); return nil; }
     unsigned long long messageType = 0;
-    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiMessageType"), &messageType)) return nil;
+    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiMessageType"), &messageType)) { SRMenuStage(8); return nil; }
     unsigned long long createdAt = 0;
-    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiCreateTime"), &createdAt) || !createdAt) return nil;
+    if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiCreateTime"), &createdAt) || !createdAt) { SRMenuStage(9); return nil; }
     // Session follows the receiver's direction rule, not a guessed field name:
     // outgoing (from == account) -> to; incoming (to == account) -> from.
     id fromObject = SRMenuHookReadObject(wrap, NSSelectorFromString(@"m_nsFromUsr"));
     id toObject = SRMenuHookReadObject(wrap, NSSelectorFromString(@"m_nsToUsr"));
-    if (![fromObject isKindOfClass:NSString.class] || ![toObject isKindOfClass:NSString.class]) return nil;
+    if (![fromObject isKindOfClass:NSString.class] || ![toObject isKindOfClass:NSString.class]) { SRMenuStage(10); return nil; }
     NSString *from = fromObject, *to = toObject;
     NSString *sessionObject = nil;
     if (account.length && [from isEqual:account]) sessionObject = to;
     else if (account.length && [to isEqual:account]) sessionObject = from;
-    else return nil;
-    if (!sessionObject.length) return nil;
+    else { SRMenuStage(11); return nil; }
+    if (!sessionObject.length) { SRMenuStage(12); return nil; }
     id bodyObject = SRMenuHookReadObject(wrap, NSSelectorFromString(@"m_nsContent"));
-    if (![bodyObject isKindOfClass:NSString.class] || [bodyObject length] == 0) return nil;
+    if (![bodyObject isKindOfClass:NSString.class] || [bodyObject length] == 0) { SRMenuStage(13); return nil; }
     SRMenuHostSource *source = [SRMenuHostSource new];
     source->_messageIdentity = [[NSString alloc] initWithFormat:@"local:%llu", localID];
     source.localID = localID;
@@ -760,12 +768,28 @@ static BOOL SRImplicitParametersMatch(Method method) {
     return [[NSString alloc] initWithFormat:@"menu:%p", menu];
 }
 
-- (NSDictionary<NSString *, NSNumber *> *)status {
+- (NSDictionary<NSString *, id> *)status {
     @synchronized(self.lock) {
-        return @{ @"classes": @(self.hostMenuClass != Nil),
-                  @"publishes": @(self.publishCount),
-                  @"lastIntent": @(self.lastIntent),
-                  @"enabled": @(self.enabled ? self.enabled() : NO) };
+        NSMutableDictionary *status = [@{ @"classes": @(self.hostMenuClass != Nil),
+                                          @"publishes": @(self.publishCount),
+                                          @"lastIntent": @(self.lastIntent),
+                                          @"enabled": @(self.enabled ? self.enabled() : NO),
+                                          @"stage": @(SRMenuLastSourceStage) } mutableCopy];
+        Class menuClass = SRMenuStatusMenuClass;
+        if (menuClass) {
+            unsigned int count = 0;
+            Ivar *ivars = class_copyIvarList(menuClass, &count);
+            NSMutableArray *names = [NSMutableArray array];
+            for (unsigned int index = 0; index < count && names.count < 40; index++) {
+                const char *name = ivar_getName(ivars[index]);
+                const char *type = ivar_getTypeEncoding(ivars[index]);
+                if (!name) continue;
+                [names addObject:[NSString stringWithFormat:@"%s %s", name, type ?: "?"]];
+            }
+            free(ivars);
+            status[@"ivars"] = names;
+        }
+        return status;
     }
 }
 
@@ -2220,6 +2244,7 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
         }
         SRMenuBuildSetterMethod = setter;
         SRMenuBuildInstalledClass = self.menuClass;
+        SRMenuStatusMenuClass = self.menuClass;
         SRMenuBuildEverInstalled = YES;
         SRMenuBuildOwner = self;
         _installed = YES;
