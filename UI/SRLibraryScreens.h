@@ -11,6 +11,9 @@ NS_ASSUME_NONNULL_BEGIN
  * Every page re-verifies the account it was opened with before it reads or
  * shows anything, and refuses (rather than switching) when that account
  * changed. */
+/* Reusable target picker: grouped plans -> frozen targets. */
+FOUNDATION_EXPORT UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account, NSUInteger limit,
+                                                         void (^completion)(NSArray<NSString *> *targets));
 FOUNDATION_EXPORT UIViewController *SRCreateLibraryList(SRStore *store, NSString *account,
                                                         BOOL (^verifyAccount)(void));
 FOUNDATION_EXPORT UIViewController *SRCreateLibraryItem(SRStore *store, NSString *account,

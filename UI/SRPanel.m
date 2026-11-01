@@ -28,12 +28,60 @@
 #import "Adapter/SRWeChatSettingsEntry.h"
 #import "Adapter/SRMenuABIProbe.h"
 #import "Adapter/SRRuntime.h"
+#import <objc/runtime.h>
 
 /* 8.0.79 no longer exposes the menu responder. Capture the current first
  * responder the same way Mikoto does: an action sent to nil walks the responder
  * chain, and the first object that implements it records itself. */
 /* Short, non-blocking confirmation for a menu selection. No message content is
  * shown, only the outcome. */
+/* Read-only probe for the native group picker. It reports only class presence
+ * and declared method shape: no instance is created, no selector is invoked and
+ * no account, group or message data is read. */
+static NSDictionary *SRTargetPickerProbeReport(void) {
+    NSMutableDictionary *report = [NSMutableDictionary dictionary];
+    NSArray<NSString *> *classes = @[@"ContactSelectView", @"SessionSelectController",
+                                     @"MultiSelectContactsViewController"];
+    NSMutableDictionary *presence = [NSMutableDictionary dictionary];
+    for (NSString *name in classes) presence[name] = @(NSClassFromString(name) != Nil);
+    report[@"classes"] = presence;
+    report[@"protocol"] = @(NSProtocolFromString(@"SessionSelectControllerDelegate") != nil);
+    NSArray<NSString *> *selectors = @[
+        @"setContactSelectWithSelectAll:WithBlackList:WithRemoveIds:WithIsFriend:WithMultiSelect:WithContactSelect:",
+        @"showContactSelectWithTitle:WithSettingBlock:WithDidSelectBlock:",
+        @"OnSelectSessions:SessionSelectController:",
+        @"OnSelectSession:SessionSelectController:",
+        @"OnSelectSessionCancel:",
+        @"show", @"showInView:", @"presentFromViewController:"];
+    Class contact = NSClassFromString(@"ContactSelectView");
+    Class session = NSClassFromString(@"SessionSelectController");
+    NSMutableDictionary *methods = [NSMutableDictionary dictionary];
+    for (NSString *name in selectors) {
+        SEL selector = NSSelectorFromString(name);
+        NSMutableDictionary *shape = [NSMutableDictionary dictionary];
+        for (Class cls in @[contact ?: (id)NSNull.null, session ?: (id)NSNull.null]) {
+            if (cls == (id)NSNull.null) continue;
+            Method method = class_getInstanceMethod(cls, selector);
+            NSString *key = NSStringFromClass(cls);
+            if (!method) { shape[key] = @{@"present": @NO}; continue; }
+            char *ret = method_copyReturnType(method);
+            NSMutableArray *args = [NSMutableArray array];
+            for (unsigned int index = 2; index < method_getNumberOfArguments(method); index++) {
+                char *type = method_copyArgumentType(method, index);
+                [args addObject:[NSString stringWithUTF8String:type ?: "?"]];
+                free(type);
+            }
+            shape[key] = @{@"present": @YES,
+                           @"return": [NSString stringWithUTF8String:ret ?: "?"],
+                           @"arguments": args};
+            free(ret);
+        }
+        methods[name] = shape;
+    }
+    report[@"methods"] = methods;
+    return report;
+}
+
 static void SRShowMenuToast(NSString *text) {
     if (!text.length) return;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -419,7 +467,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 5; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     section = SRPanelSection(section);
-    if (section == 0) return 13;
+    if (section == 0) return 14;
     if (section == 1) return 4;
     if (section == 2) return 1;
     if (section == 4) return 8;
@@ -505,6 +553,11 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
         }
         /* Explicit opt-in for the production library entry. Off by default and
          * unrelated to the temporary observation session above. */
+        if (path.row == 13) {
+            cell.textLabel.text = @"目标上限（超管）";
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"当前 %ld 个群，最多 600",
+                (long)self.entryPreferences.maxTargetsPerTask];
+        }
         if (path.row == 12) {
             cell.textLabel.text = @"菜单入库（长按文字）";
             cell.detailTextLabel.text = @"长按文字消息后从菜单存入库";
@@ -966,6 +1019,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     // Bounded numeric status for the production library menu: no account, body,
     // message id or selector strings leave the device.
     report[@"libraryMenu"] = SRMenuLibraryStatus();
+    report[@"targetPicker"] = SRTargetPickerProbeReport();
     report[@"imageSource"] = self.imageSource.diagnostics ?: @{};
     report[@"imageSendPreparation"] = self.imageSendProbe.diagnostics ?: @{};
     report[@"sourceCapture"] = self.capture.diagnostics ?: @{@"state": @"unavailable"};
@@ -1392,6 +1446,59 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     }]];
     SRPresentAlert(self, alert);
 }
+- (void)promptTargetLimit {
+    // Development gate: a fixed admin passphrase protects the ceiling. Replace
+    // it with a stored credential before a public release.
+    UIAlertController *auth = [UIAlertController alertControllerWithTitle:@"超管密码"
+        message:@"修改单次任务的目标上限需要超管密码。" preferredStyle:UIAlertControllerStyleAlert];
+    [auth addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.secureTextEntry = YES;
+        field.placeholder = @"密码";
+    }];
+    __weak typeof(self) weakSelf = self;
+    [auth addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [auth addAction:[UIAlertAction actionWithTitle:@"继续" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        NSString *typed = auth.textFields.firstObject.text ?: @"";
+        if (![typed isEqual:@"sr-admin-2026"]) {
+            [weakSelf promptTargetLimitFailure];
+            return;
+        }
+        [weakSelf promptTargetLimitValue];
+    }]];
+    [self presentViewController:auth animated:YES completion:nil];
+}
+
+- (void)promptTargetLimitFailure {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"密码不正确"
+        message:@"未修改任何设置。" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptTargetLimitValue {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"目标上限"
+        message:@"输入 1–600 之间的整数。超过 100 会有风控风险提示。" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.keyboardType = UIKeyboardTypeNumberPad;
+        field.text = [NSString stringWithFormat:@"%ld", (long)self.entryPreferences.maxTargetsPerTask];
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        NSInteger value = [alert.textFields.firstObject.text integerValue];
+        if (value < 1 || value > 600) {
+            UIAlertController *bad = [UIAlertController alertControllerWithTitle:@"数值无效"
+                message:@"请输入 1–600。" preferredStyle:UIAlertControllerStyleAlert];
+            [bad addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+            [weakSelf presentViewController:bad animated:YES completion:nil];
+            return;
+        }
+        weakSelf.entryPreferences.maxTargetsPerTask = value;
+        [weakSelf.tableView reloadData];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)libraryMenuEntryToggled:(UISwitch *)toggle {
     // The switch is the only writer of this preference; the menu hook reads it
     // at build and click time, so turning it off also refuses old items.
@@ -1412,6 +1519,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
         if (path.row == 9) [self toggleSourceTimeProbe];
         if (path.row == 10) [self confirmMenuABIDiagnostic];
         if (path.row == 11) [self confirmMenuCallObservation];
+    if (path.row == 13) { [self promptTargetLimit]; return; }
         return;
     }
     if (![self checkAccount]) return;

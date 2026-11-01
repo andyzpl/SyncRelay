@@ -17,7 +17,7 @@ int main(void) {
         NSError *error = nil;
         SRStore *store = [[SRStore alloc] initWithPath:path error:&error];
         assert(store && !error);
-        assert(store.schemaVersion == 14);
+        assert(store.schemaVersion == 15);
         assert(![[store operationsEnabledForAccount:@"account" error:&error] boolValue]);
         assert(![store setOperationsEnabled:YES account:@"account" error:NULL]);
         assert(![store setOperationsEnabled:YES account:@"" error:NULL]);

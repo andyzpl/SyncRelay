@@ -129,7 +129,7 @@ class SettingsUIContractTests(unittest.TestCase):
 
     def test_menu_abi_row_is_appended_without_an_account_gate(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
-        self.assertIn('if (section == 0) return 13;', panel)
+        self.assertIn('if (section == 0) return 14;', panel)
         self.assertIn('if (path.row == 10) [self confirmMenuABIDiagnostic];', panel)
         # "more settings" is the logical section 0; the new row is handled before
         # the account gate, so it never touches identity or storage.
@@ -191,7 +191,7 @@ class SettingsUIContractTests(unittest.TestCase):
 
     def test_menu_call_observation_row_shares_one_observer_and_never_self_starts(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
-        self.assertIn('if (section == 0) return 13;', panel)
+        self.assertIn('if (section == 0) return 14;', panel)
         self.assertIn('if (path.row == 11) [self confirmMenuCallObservation];', panel)
         self.assertIn(u'@"\u83dc\u5355\u8c03\u7528\u89c2\u5bdf\uff08\u4e34\u65f6\uff09"', panel)
         # One observer, created by the entry assembly and injected into both paths.

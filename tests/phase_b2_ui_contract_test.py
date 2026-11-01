@@ -342,8 +342,8 @@ class PhaseB2UI(unittest.TestCase):
         self.assertIn("不会截取前 %lu 群", project_source())
         # The store still refuses >20 targets; the page only displays it.
         store = (ROOT / "Core/SRStore.m").read_text(encoding="utf-8")
-        self.assertIn("targets.count > 0 && targets.count <= 20", store)
-        self.assertIn("SRRunProjectionTargetLimit = 20", project_source())
+        self.assertIn("targets.count > 0 && targets.count <= 600", store)
+        self.assertIn("SRRunProjectionTargetLimit = 600", project_source())
 
     # --- 执行详情 ---
 

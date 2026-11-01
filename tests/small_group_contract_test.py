@@ -34,7 +34,7 @@ class SmallGroupContracts(unittest.TestCase):
 
     def test_sql_scope_limits_and_restart_ledgers(self):
         text = self.text('Core/SRStore.m')
-        self.assertIn('targets.count > 0 && targets.count <= 20', text)
+        self.assertIn('targets.count > 0 && targets.count <= 600', text)
         self.assertIn('CREATE TABLE IF NOT EXISTS small_group_runs', text)
         self.assertIn('CREATE TABLE IF NOT EXISTS native_attempt_claims', text)
         self.assertIn('delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id)', text)

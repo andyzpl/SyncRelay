@@ -18,7 +18,7 @@ NSString *const SRGroupFilterActive = @"active";
 NSString *const SRGroupFilterCompleted = @"completed";
 NSString *const SRGroupFilterAbnormal = @"abnormal";
 
-NSUInteger const SRRunProjectionTargetLimit = 20;
+NSUInteger const SRRunProjectionTargetLimit = 600;
 
 static NSArray<NSString *> *SRProjectionCountKeys(void) {
     return @[@"pending", @"submitting", @"submitted", @"confirmed", @"failed", @"uncertain", @"cancelled"];

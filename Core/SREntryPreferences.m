@@ -4,6 +4,7 @@
 NSNotificationName const SREntryPreferencesChangedNotification = @"andyz.syncrelay.entryPreferencesChanged";
 static NSString *const SRFloatingEntryKey = @"andyz.syncrelay.floatingEntryEnabled";
 static NSString *const SRLibraryMenuEntryKey = @"andyz.syncrelay.libraryMenuEntryEnabled";
+static NSString *const SRMaxTargetsKey = @"andyz.syncrelay.maxTargetsPerTask";
 static NSString *const SRFloatingEntryUnitXKey = @"andyz.syncrelay.floatingEntryUnitX";
 static NSString *const SRFloatingEntryUnitYKey = @"andyz.syncrelay.floatingEntryUnitY";
 static NSString *const SRFloatingEntryLeftEdgeKey = @"andyz.syncrelay.floatingEntryLeftEdge";
@@ -32,6 +33,25 @@ static NSString *const SRFloatingEntryPlacementSetKey = @"andyz.syncrelay.floati
     id value = [self.defaults objectForKey:SRLibraryMenuEntryKey];
     return [value isKindOfClass:NSNumber.class] && [value boolValue];
 }
+NSInteger SREntryMaxTargetsPerTask(void) {
+    id value = [NSUserDefaults.standardUserDefaults objectForKey:SRMaxTargetsKey];
+    NSInteger limit = [value isKindOfClass:NSNumber.class] ? [value integerValue] : 200;
+    return MIN(MAX(limit, 1), 600);
+}
+
+- (NSInteger)maxTargetsPerTask {
+    id value = [self.defaults objectForKey:SRMaxTargetsKey];
+    NSInteger limit = [value isKindOfClass:NSNumber.class] ? [value integerValue] : 200;
+    return MIN(MAX(limit, 1), 600);
+}
+
+- (void)setMaxTargetsPerTask:(NSInteger)maxTargetsPerTask {
+    NSInteger clamped = MIN(MAX(maxTargetsPerTask, 1), 600);
+    BOOL changed = self.maxTargetsPerTask != clamped;
+    [self.defaults setInteger:clamped forKey:SRMaxTargetsKey];
+    if (changed) [NSNotificationCenter.defaultCenter postNotificationName:SREntryPreferencesChangedNotification object:self];
+}
+
 - (void)setLibraryMenuEntryEnabled:(BOOL)enabled {
     BOOL changed = self.libraryMenuEntryEnabled != enabled;
     [self.defaults setBool:enabled forKey:SRLibraryMenuEntryKey];

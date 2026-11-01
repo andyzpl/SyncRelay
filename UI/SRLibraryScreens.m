@@ -2,6 +2,7 @@
 #import "SRNativeStyle.h"
 #import "SRPlanScreens.h"
 #import "Core/SRStore.h"
+#import "Core/SREntryPreferences.h"
 #import "Core/SRMediaProjection.h"
 #import "Core/SRRunProjection.h"
 
@@ -138,7 +139,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(__unused NSInteger)section {
     if (self.masked) return @"离开前台时已清除本页显示；回到前台会重新核对账号后再读取。";
     if (self.accountInvalid) return @"当前账号无法核对或已经改变，旧条目已隐藏。请返回重新读取账号。";
-    if (self.problem) return @"本页只读，不会创建、删除或发送任何条目。";
+    if (self.problem) return @"读取失败时不提供任何操作。";
     return @"条目来自本账号的消息库；左滑可删除条目，详情页可把普通文字转发到群。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
@@ -249,6 +250,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, copy) NSString *item;
 @property(nonatomic, copy, nullable) NSDictionary *entry;
 @property(nonatomic, strong) NSArray *versions;
+@property(nonatomic, strong) NSArray *tasks;
 @property(nonatomic, copy, nullable) NSDictionary *problem;
 @property(nonatomic) BOOL accountInvalid;
 @property(nonatomic) BOOL masked;
@@ -291,39 +293,19 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 }
 
 - (void)promptForward {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"转发到群"
-        message:@"输入目标群 wxid，多个用逗号、空格或换行分隔（1–20 个）。仅普通文字条目可用。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"wxid1, wxid2";
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确认转发" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *a) {
-        [weakSelf forwardToGroups:alert.textFields.firstObject.text];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    UIViewController *picker = SRCreateTargetPicker(self.store, self.account,
+        (NSUInteger)SREntryMaxTargetsPerTask(), ^(NSArray<NSString *> *targets) {
+        [weakSelf forwardToGroups:targets];
+    });
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
-- (void)forwardToGroups:(NSString *)raw {
-    NSMutableArray<NSString *> *targets = [NSMutableArray array];
-    for (NSString *part in [raw componentsSeparatedByCharactersInSet:
-            [NSCharacterSet characterSetWithCharactersInString:@",， \n\t"]]) {
-        NSString *trimmed = [part stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (trimmed.length && ![targets containsObject:trimmed]) [targets addObject:trimmed];
-    }
-    if (targets.count < 1 || targets.count > 20) {
-        [self showFailure:@"目标数量不对" error:nil];
+- (void)forwardToGroups:(NSArray<NSString *> *)targets {
+    NSUInteger limit = (NSUInteger)SREntryMaxTargetsPerTask();
+    if (targets.count < 1 || targets.count > limit) {
+        [self showFailure:[NSString stringWithFormat:@"目标数量需在 1–%lu 之间", (unsigned long)limit] error:nil];
         return;
-    }
-    for (NSString *target in targets) {
-        if (![target hasSuffix:@"@chatroom"]) {
-            [self showFailure:@"目标必须是群 wxid（以 @chatroom 结尾）" error:nil];
-            return;
-        }
     }
     NSError *error = nil;
     NSString *confirmation = [NSUUID.UUID.UUIDString copy];
@@ -395,30 +377,34 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         self.entry = entry;
         NSArray *versions = [entry[@"versions"] isKindOfClass:NSArray.class] ? entry[@"versions"] : @[];
         self.versions = versions;
+        self.tasks = [self.store libraryTasksForItem:self.item account:self.account limit:20 error:NULL] ?: @[];
     }
     [self.refreshControl endRefreshing];
     [self.tableView reloadData];
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView {
-    return (self.masked || self.accountInvalid || self.problem) ? 1 : 2;
+    return (self.masked || self.accountInvalid || self.problem) ? 1 : 3;
 }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.masked || self.accountInvalid || self.problem) return 1;
     if (section == 0) return 5;
-    return self.versions.count ? (NSInteger)self.versions.count : 1;
+    if (section == 1) return self.versions.count ? (NSInteger)self.versions.count : 1;
+    return self.tasks.count ? (NSInteger)self.tasks.count : 1;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (self.masked) return @"内容已隐藏";
     if (self.accountInvalid) return @"账号";
     if (self.problem) return @"读取已停止";
-    return section == 0 ? @"条目" : @"版本（只读）";
+    if (section == 0) return @"条目";
+    return section == 1 ? @"版本（只读）" : @"发送记录";
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (self.masked) return @"离开前台时已清除本页显示；回到前台会重新核对账号后再读取。";
     if (self.accountInvalid) return @"当前账号无法核对或已经改变，本页已失去显示资格。";
     if (self.problem) return @"本页只读，不会创建、删除或发送任何条目。";
     if (section == 0) return @"条目只属于打开本页时的账号；数量与版本以持久记录为准。";
-    return @"文字版本可转发到群；删除只隐藏条目，不删除历史版本与媒体。";
+    if (section == 1) return @"文字版本可转发到群；删除只隐藏条目，不删除历史版本与媒体。";
+    return @"发送记录只读：显示每次冻结任务的目标数、运行状态与创建时间。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"library-item"] ?:
@@ -458,6 +444,21 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (!self.versions.count) {
         cell.textLabel.text = @"没有版本记录";
         cell.detailTextLabel.text = @"该条目没有可显示的版本；不会重建或导入。";
+        return cell;
+    }
+    if (path.section == 2) {
+        if (!self.tasks.count) {
+            cell.textLabel.text = @"还没有发送记录";
+            cell.detailTextLabel.text = @"从本条目转发后，这里会显示每次任务。";
+            return cell;
+        }
+        NSDictionary *task = self.tasks[(NSUInteger)path.row];
+        NSString *state = [task[@"run_state"] isKindOfClass:NSString.class] ? task[@"run_state"] : @"未启动";
+        cell.textLabel.text = [NSString stringWithFormat:@"%@ · %@ 个群",
+            state, task[@"target_count"] ?: @0];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"创建 %@%@",
+            [SRRunProjection localDateTimeText:task[@"created_at"]],
+            [task[@"started_at"] isKindOfClass:NSNumber.class] ? @"" : @" · 尚未启动"];
         return cell;
     }
     NSDictionary *version = self.versions[(NSUInteger)path.row];
@@ -669,6 +670,147 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (path.section == 1 && self.listProblem) { [self reload]; return; }
 }
 @end
+
+
+/* ------------------------------------------------------------------------ */
+/* 目标选择器（后续图片/视频转发共用）                                          */
+/* ------------------------------------------------------------------------ */
+
+@interface SRTargetPickerScreen : UITableViewController
+@property(nonatomic, strong) SRStore *store;
+@property(nonatomic, copy) NSString *account;
+@property(nonatomic) NSUInteger limit;
+@property(nonatomic, strong) NSArray *plans;
+@property(nonatomic, strong) NSMutableSet *selected;
+@property(nonatomic, copy) void (^completion)(NSArray<NSString *> *targets);
+@property(nonatomic, copy, nullable) NSDictionary *problem;
+@end
+
+@implementation SRTargetPickerScreen
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"选择转发目标";
+    self.selected = [NSMutableSet set];
+    SRStyleSettingsTable(self);
+    NSError *error = nil;
+    NSArray *plans = [self.store plansForAccount:self.account limit:100 offset:0 error:&error];
+    if (plans) self.plans = plans;
+    else self.problem = @{@"title": @"读取失败", @"message": error.localizedDescription ?: @"无法读取已分组的列表"};
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"完成"
+        style:UIBarButtonItemStyleDone target:self action:@selector(finish)];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 2; }
+
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 0) return self.problem ? 1 : MAX((NSInteger)self.plans.count, 1);
+    return 1;
+}
+
+- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return section == 0 ? @"已分组的列表" : @"微信原生选择器";
+}
+
+- (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == 0) return [NSString stringWithFormat:@"最多可选 %lu 个群；超过 100 个会有风控风险。", (unsigned long)self.limit];
+    return @"微信原生群选择器需要一次 ABI 取证后才能启用；当前版本隐藏该入口。";
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"picker"] ?:
+        [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"picker"];
+    SRStyleSettingsCell(cell);
+    cell.textLabel.text = nil; cell.detailTextLabel.text = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    if (path.section == 0) {
+        if (self.problem) {
+            cell.textLabel.text = self.problem[@"title"];
+            cell.detailTextLabel.text = self.problem[@"message"];
+            return cell;
+        }
+        if (!self.plans.count) {
+            cell.textLabel.text = @"还没有已分组的列表";
+            cell.detailTextLabel.text = @"先在计划页创建规则与目标，之后这里就能直接选取。";
+            return cell;
+        }
+        NSDictionary *plan = self.plans[(NSUInteger)path.row];
+        NSString *identifier = plan[@"id"];
+        NSString *name = [plan[@"source_group"] isKindOfClass:NSString.class] && [plan[@"source_group"] length]
+            ? plan[@"source_group"] : [NSString stringWithFormat:@"计划 %@", SRLibraryShortID(identifier)];
+        cell.textLabel.text = name;
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 个群 · %@ 条规则",
+            plan[@"targetCount"] ?: @0, plan[@"ruleCount"] ?: @0];
+        cell.accessoryType = [self.selected containsObject:identifier] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
+    cell.textLabel.text = @"选择微信群…";
+    cell.detailTextLabel.text = @"暂未启用（需要原生选择器 ABI）";
+    cell.textLabel.enabled = NO; cell.detailTextLabel.enabled = NO;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
+    [tableView deselectRowAtIndexPath:path animated:YES];
+    if (path.section != 0 || self.problem || !self.plans.count) return;
+    NSString *identifier = self.plans[(NSUInteger)path.row][@"id"];
+    if (!identifier.length) return;
+    if ([self.selected containsObject:identifier]) [self.selected removeObject:identifier];
+    else [self.selected addObject:identifier];
+    [tableView reloadData];
+}
+
+- (void)finish {
+    NSMutableArray<NSString *> *targets = [NSMutableArray array];
+    NSError *error = nil;
+    for (NSDictionary *plan in self.plans) {
+        if (![self.selected containsObject:plan[@"id"]]) continue;
+        NSArray *allocated = [self.store allocatedTargetsForPlan:plan[@"id"] error:&error];
+        if (!allocated) continue;   // one unreadable plan never silently shrinks the scope
+        for (NSString *target in allocated)
+            if ([target hasSuffix:@"@chatroom"] && ![targets containsObject:target]) [targets addObject:target];
+    }
+    if (targets.count > self.limit) {
+        [self alert:@"超过目标上限" message:[NSString stringWithFormat:@"已选 %lu 个群，当前上限 %lu。",
+            (unsigned long)targets.count, (unsigned long)self.limit]];
+        return;
+    }
+    if (targets.count > 100) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"风控提示"
+            message:[NSString stringWithFormat:@"本次将发送到 %lu 个群，建议先发 100 个以内观察稳定性。",
+                (unsigned long)targets.count] preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        __weak typeof(self) weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:@"仍然继续" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+            [weakSelf deliver:targets];
+        }]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    [self deliver:targets];
+}
+
+- (void)deliver:(NSArray<NSString *> *)targets {
+    if (!targets.count) { [self alert:@"没有选择目标" message:@"请先选择至少一个已分组的列表。"]; return; }
+    void (^completion)(NSArray<NSString *> *) = self.completion;
+    [self.navigationController popViewControllerAnimated:YES];
+    if (completion) completion(targets);
+}
+
+- (void)alert:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+@end
+
+UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account, NSUInteger limit,
+                                      void (^completion)(NSArray<NSString *> *targets)) {
+    SRTargetPickerScreen *screen = [[SRTargetPickerScreen alloc] initWithStyle:UITableViewStyleGrouped];
+    screen.store = store; screen.account = account; screen.limit = limit; screen.completion = completion;
+    return screen;
+}
 
 UIViewController *SRCreateLibraryList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void)) {
     SRLibraryListScreen *screen = [[SRLibraryListScreen alloc] initWithStyle:UITableViewStyleGrouped];

@@ -10,6 +10,11 @@ FOUNDATION_EXPORT NSNotificationName const SREntryPreferencesChangedNotification
 /* Independent UI preference: whether the chat long-press menu gets the
  * SyncRelay entry. Off by default; never part of the frozen business draft. */
 @property(nonatomic) BOOL libraryMenuEntryEnabled;
+/* Upper bound for one frozen task. Defaults to 200; the admin setting may
+ * raise it to 600. The store keeps 600 as its absolute ceiling. */
+@property(nonatomic) NSInteger maxTargetsPerTask;
+/* The same bound for callers that only have defaults (screens). */
+FOUNDATION_EXPORT NSInteger SREntryMaxTargetsPerTask(void);
 @property(nonatomic, readonly) CGFloat floatingEntryUnitX;
 @property(nonatomic, readonly) CGFloat floatingEntryUnitY;
 @property(nonatomic, readonly) BOOL floatingEntryLeftEdge;

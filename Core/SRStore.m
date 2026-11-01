@@ -172,7 +172,7 @@ static NSArray *SRImagePayloadKeys(void) {
             // IF NOT EXISTS would preserve an older guard forever.
             @"DROP TRIGGER IF EXISTS plan_sources_library_source",
             @"CREATE TRIGGER plan_sources_library_source BEFORE INSERT ON plan_sources WHEN NEW.source_kind='message_library' AND (SELECT source_group FROM plans WHERE id=NEW.plan_id)<>'' BEGIN SELECT RAISE(ABORT,'A message-library plan may not carry a source group'); END",
-            @"CREATE TABLE IF NOT EXISTS library_tasks(id TEXT PRIMARY KEY, account TEXT NOT NULL, confirmation_id TEXT NOT NULL, item_id TEXT NOT NULL REFERENCES library_items(id), version_id TEXT NOT NULL REFERENCES library_versions(id), plan_id TEXT NOT NULL UNIQUE REFERENCES plans(id), rule_id TEXT NOT NULL UNIQUE REFERENCES rules(id), run_id TEXT UNIQUE REFERENCES runs(id), frozen_snapshot TEXT NOT NULL, frozen_sha256 TEXT NOT NULL, media_token TEXT, target_sha256 TEXT NOT NULL, target_count INTEGER NOT NULL CHECK(target_count BETWEEN 1 AND 200), origin_task_id TEXT REFERENCES library_tasks(id), created_at REAL NOT NULL, started_at REAL, UNIQUE(account,confirmation_id))",
+            @"CREATE TABLE IF NOT EXISTS library_tasks(id TEXT PRIMARY KEY, account TEXT NOT NULL, confirmation_id TEXT NOT NULL, item_id TEXT NOT NULL REFERENCES library_items(id), version_id TEXT NOT NULL REFERENCES library_versions(id), plan_id TEXT NOT NULL UNIQUE REFERENCES plans(id), rule_id TEXT NOT NULL UNIQUE REFERENCES rules(id), run_id TEXT UNIQUE REFERENCES runs(id), frozen_snapshot TEXT NOT NULL, frozen_sha256 TEXT NOT NULL, media_token TEXT, target_sha256 TEXT NOT NULL, target_count INTEGER NOT NULL CHECK(target_count BETWEEN 1 AND 600), origin_task_id TEXT REFERENCES library_tasks(id), created_at REAL NOT NULL, started_at REAL, UNIQUE(account,confirmation_id))",
             @"CREATE INDEX IF NOT EXISTS library_tasks_by_account ON library_tasks(account, created_at)",
             // The only legal update is attaching the task's single run once:
             // run_id and started_at go NULL -> value together. Everything that
@@ -432,7 +432,7 @@ static NSArray *SRImagePayloadKeys(void) {
             values:@[account, message[@"group"], message[@"messageID"], plan[@"id"]]].count == 1, @"Legacy source claim is missing or inconsistent");
         NSArray *targets = [self query:@"SELECT target,position FROM deliveries WHERE run_id=? ORDER BY position" values:@[run]];
         NSArray *allocated = [self query:@"SELECT target,position FROM allocations WHERE plan_id=? AND rule_id=? ORDER BY position" values:@[plan[@"id"], batch[@"rule_id"]]];
-        SRRequire(targets.count > 0 && targets.count <= 200 && [targets isEqual:allocated], @"Legacy targets differ from the authorized rule");
+        SRRequire(targets.count > 0 && targets.count <= 600 && [targets isEqual:allocated], @"Legacy targets differ from the authorized rule");
         NSString *identifier = NSUUID.UUID.UUIDString;
         // Zero is only a storage sentinel for a pre-upgrade unknown capture time.
         [self query:@"INSERT INTO operations_contents(id,account,source_group,message_id,configuration,envelope,captured_at,plan_id) VALUES(?,?,?,?,?,?,0,?)"
@@ -552,7 +552,7 @@ static NSArray *SRImagePayloadKeys(void) {
         SRRequire([self query:[NSString stringWithFormat:@"SELECT target FROM %@ WHERE account=? AND source_group=? AND source_message_id=?", table]
             values:@[account, source[@"group"], source[@"messageID"]]].count == 0, @"This source already has a single-target attempt; capture a new message");
     NSArray *targets = [self query:@"SELECT target FROM allocations WHERE rule_id=?" values:@[rule]];
-    SRRequire(targets.count > 0 && targets.count <= 200, @"This build allows 1 to 200 target groups per rule");
+    SRRequire(targets.count > 0 && targets.count <= 600, @"This build allows 1 to 600 target groups per rule");
     for (NSDictionary *target in targets) SRRequire([target[@"target"] hasSuffix:@"@chatroom"] && ![target[@"target"] isEqual:source[@"group"]], @"Source group cannot be a target");
     if ([source[@"type"] isEqual:@"image"])
         SRRequire([self.imageAssets dataForPayload:source[@"payload"] source:source error:NULL] != nil, @"Image snapshot is missing or changed");
@@ -583,7 +583,7 @@ static NSArray *SRImagePayloadKeys(void) {
     SRRequire([row[@"snapshot"] isEqual:[self json:source]], @"Run source differs from the authorized plan");
     NSArray *targets = [self query:@"SELECT target FROM deliveries WHERE run_id=? ORDER BY position" values:@[run]];
     NSArray *allocated = [self query:@"SELECT target FROM allocations WHERE rule_id=? ORDER BY position" values:@[row[@"rule_id"]]];
-    SRRequire(targets.count > 0 && targets.count <= 200 && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
+    SRRequire(targets.count > 0 && targets.count <= 600 && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
     row[@"source"] = source; row[@"targets"] = [targets valueForKey:@"target"];
     row[@"counts"] = [self countsForRun:run];
     return row;
@@ -1202,8 +1202,8 @@ static BOOL SRSameOptionalValue(id left, id right) {
                                          origin:(NSString *)origin {
     SRPacing pacing = {0};
     SRRequire(SRPacingConfigure(&pacing, minimum, maximum), @"Interval must satisfy 3 <= minimum <= maximum");
-    SRRequire([targets isKindOfClass:NSArray.class] && targets.count > 0 && targets.count <= 200,
-              @"A frozen task needs 1 to 200 target groups");
+    SRRequire([targets isKindOfClass:NSArray.class] && targets.count > 0 && targets.count <= 600,
+              @"A frozen task needs 1 to 600 target groups");
     SRRequire([NSSet setWithArray:targets].count == targets.count, @"Duplicate targets");
     for (NSString *target in targets)
         SRRequire([target isKindOfClass:NSString.class] && [target hasSuffix:@"@chatroom"], @"Invalid target group");
@@ -1310,7 +1310,7 @@ static BOOL SRSameOptionalValue(id left, id right) {
     SRRequire([self query:@"SELECT id FROM library_versions WHERE id=? AND item_id=? AND account=?"
         values:@[row[@"version_id"], row[@"item_id"], account]].count == 1, @"Frozen library version is missing");
     NSArray *targets = [self query:@"SELECT target,position FROM allocations WHERE rule_id=? ORDER BY position ASC" values:@[row[@"rule_id"]]];
-    SRRequire(targets.count == [row[@"target_count"] unsignedIntegerValue] && targets.count <= 200,
+    SRRequire(targets.count == [row[@"target_count"] unsignedIntegerValue] && targets.count <= 600,
               @"Frozen target count was altered");
     SRRequire([SRTargetDigest([targets valueForKey:@"target"]) isEqual:row[@"target_sha256"]],
               @"Frozen target scope was altered");
