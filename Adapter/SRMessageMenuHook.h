@@ -136,6 +136,9 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
 - (void)rememberResponder:(nullable id)responder forMenu:(nullable id)menu;
 /* Optional host icon object (UIImage) supplied by the UI layer. */
 - (void)configureMenuIcon:(nullable id)icon;
+/* Bounded, numeric-only status for diagnostics: no account, body or IDs. */
+- (NSDictionary<NSString *, NSNumber *> *)status;
+FOUNDATION_EXPORT NSDictionary<NSString *, id> *SRMenuLibraryStatus(void);
 - (nullable NSArray *)appendHostItemToItems:(nullable NSArray *)items menu:(nullable id)menu
                                      source:(nullable SRMenuMessageContext *)source
                                   itemClass:(nullable Class)itemClass generation:(nonnull NSString *)generation;
@@ -203,6 +206,9 @@ typedef NS_ENUM(NSUInteger, SRMenuCallObserverState) {
  * trampolines: the originals were not written back, the interceptors stay in
  * place and keep forwarding lazily, and `installed` stays YES. */
 @property(nonatomic, readonly) BOOL restoreRefused;
+@property(nonatomic, readonly) BOOL showInstalled;
+@property(nonatomic, readonly) NSUInteger prepareCount;
+/* YES when the presentation hook (setMenuVisible:responder:animated:) is live. */
 
 /* One-time placement of the observers. Fails closed if a candidate method is
  * missing, already installed, or the pair is invalid. Places interceptors only;
@@ -273,5 +279,7 @@ NS_ASSUME_NONNULL_BEGIN
 /* YES when a later hook owned the method: nothing was restored, the trampoline
  * keeps forwarding and `installed` stays YES. */
 @property(nonatomic, readonly) BOOL restoreRefused;
+@property(nonatomic, readonly) BOOL showInstalled;
+@property(nonatomic, readonly) NSUInteger prepareCount;
 @end
 NS_ASSUME_NONNULL_END

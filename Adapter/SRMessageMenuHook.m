@@ -1,6 +1,19 @@
 #import "SRMessageMenuHook.h"
 #import "Core/SRLibraryIntake.h"
 #import "SRRuntime.h"
+
+static __weak SRMessageMenuHook *SRMenuStatusHook;
+static __weak SRMenuBuildHook *SRMenuStatusBuildHook;
+NSDictionary<NSString *, id> *SRMenuLibraryStatus(void) {
+    NSMutableDictionary *status = [NSMutableDictionary dictionary];
+    SRMessageMenuHook *hook = SRMenuStatusHook;
+    SRMenuBuildHook *build = SRMenuStatusBuildHook;
+    status[@"hook"] = hook ? [hook status] : @{};
+    status[@"showInstalled"] = @(build ? build.showInstalled : NO);
+    status[@"prepares"] = @(build ? build.prepareCount : 0);
+    return status;
+}
+
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <stdlib.h>
@@ -133,6 +146,9 @@
 @property(nonatomic, copy) unsigned long long (^epochProvider)(void);
 @property(nonatomic, strong) NSMapTable *menuResponders;
 @property(nonatomic, strong) id menuIcon;
+@property(nonatomic) NSUInteger publishCount;
+@property(nonatomic) NSInteger lastIntent;
+@property(nonatomic) NSUInteger prepareCount;
 @property(nonatomic, weak) id activeMenu;
 @end
 
@@ -459,6 +475,7 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
                                                      valueOptions:NSPointerFunctionsStrongMemory capacity:0];
         _menuResponders = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                                     valueOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality) capacity:0];
+        SRMenuStatusHook = self;
         _menus = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                            valueOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                                capacity:0];
@@ -719,6 +736,15 @@ static BOOL SRImplicitParametersMatch(Method method) {
     return [[NSString alloc] initWithFormat:@"menu:%p", menu];
 }
 
+- (NSDictionary<NSString *, NSNumber *> *)status {
+    @synchronized(self.lock) {
+        return @{ @"classes": @(self.hostMenuClass != Nil),
+                  @"publishes": @(self.publishCount),
+                  @"lastIntent": @(self.lastIntent),
+                  @"enabled": @(self.enabled ? self.enabled() : NO) };
+    }
+}
+
 - (void)configureMenuIcon:(id)icon {
     @synchronized(self.lock) { self.menuIcon = icon; }
 }
@@ -797,6 +823,7 @@ static BOOL SRImplicitParametersMatch(Method method) {
             if (![self.contexts objectForKey:existing]) [published addObject:existing];
         }
         [published addObject:item];
+        self.publishCount++;
         return [published copy];
     }
 }
@@ -887,7 +914,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
         if (!item || ![self ownsItem:item]) return;
         id menu = nil;
         @synchronized(self.lock) { menu = [self.menus objectForKey:item] ?: self.activeMenu; }
-        [self handleSelection:item current:[self currentIdentityForMenu:menu]];
+        NSInteger intent = (NSInteger)[self handleSelection:item current:[self currentIdentityForMenu:menu]];
+        @synchronized(self.lock) { self.lastIntent = intent; }
     } @catch (__unused NSException *exception) {
     }
 }
@@ -1299,6 +1327,7 @@ static Method SRMenuDeclaredMethodInfo(id target, SEL action, NSUInteger *argume
 @property(nonatomic) BOOL installed;
 @property(nonatomic) BOOL sampling;
 @property(nonatomic) BOOL restoreRefused;
+@property(nonatomic) NSUInteger prepareCount;
 @property(nonatomic) SRMenuCallObserverState state;
 @property(nonatomic, copy) NSString *stopReason;
 @property(nonatomic) NSTimeInterval deadline;
@@ -2043,6 +2072,7 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
 @property(nonatomic) BOOL installed;
 @property(nonatomic) BOOL restoreRefused;
 @property(nonatomic) NSUInteger buildCounter;
+@property(nonatomic) NSUInteger prepareCount;
 /* Last successful freeze for a menu, reused only for a rebuild within the same
  * short long-press window (the host may rebuild the array several times). */
 @property(nonatomic, strong) NSMapTable *recentContexts;
@@ -2061,6 +2091,7 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
         _coverClass = coverClass;
         _cellClass = cellClass;
         _itemClass = itemClass;
+        SRMenuStatusBuildHook = self;
         _recentContexts = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                                     valueOptions:NSPointerFunctionsStrongMemory capacity:0];
         _recentBuildTimes = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
@@ -2070,6 +2101,8 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     return self;
 }
 - (BOOL)installed { return _installed; }
+- (BOOL)showInstalled { return SRMenuBuildShowMethod != NULL; }
+- (NSUInteger)prepareCount { return _prepareCount; }
 - (id)publishItems:(id)items menu:(id)menu {
     if (!self.hook || !menu) return items;
     if (!self.hook.enabled || !self.hook.enabled()) return items;
@@ -2099,6 +2132,7 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
 }
 - (void)prepareMenu:(id)menu responder:(id)responder {
     if (!self.hook || !menu) return;
+    _prepareCount++;
     if (!self.hook.enabled || !self.hook.enabled()) return;
     if (responder) [self.hook rememberResponder:responder forMenu:menu];
     id items = SRMenuHookReadObject(menu, NSSelectorFromString(@"currentMenuItems"));

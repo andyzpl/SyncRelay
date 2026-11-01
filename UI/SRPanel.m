@@ -914,6 +914,9 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     /* Fixed, read-only projection of the bounded call observation. Viewing,
      * refreshing or exporting the report never installs or starts it. */
     report[@"menuCallObservation"] = self.menuCallObserver.diagnostics ?: @{@"state": @"unavailable"};
+    // Bounded numeric status for the production library menu: no account, body,
+    // message id or selector strings leave the device.
+    report[@"libraryMenu"] = SRMenuLibraryStatus();
     report[@"imageSource"] = self.imageSource.diagnostics ?: @{};
     report[@"imageSendPreparation"] = self.imageSendProbe.diagnostics ?: @{};
     report[@"sourceCapture"] = self.capture.diagnostics ?: @{@"state": @"unavailable"};

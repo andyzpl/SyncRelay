@@ -359,6 +359,14 @@ class SettingsUIContractTests(unittest.TestCase):
         self.assertGreaterEqual(panel.count('!panel.menuCallObservationActive'), 1)
         self.assertGreaterEqual(panel.count('!entry.menuCallObservationActive'), 3)
 
+    def test_library_menu_status_is_bounded_and_numeric(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        self.assertIn('report[@"libraryMenu"] = SRMenuLibraryStatus();', panel)
+        self.assertIn('FOUNDATION_EXPORT NSDictionary<NSString *, id> *SRMenuLibraryStatus(void);',
+                      (ROOT / 'Adapter/SRMessageMenuHook.h').read_text(encoding='utf-8'))
+        for token in ('@"classes"', '@"publishes"', '@"lastIntent"', '@"enabled"'):
+            self.assertIn(token, (ROOT / 'Adapter/SRMessageMenuHook.m').read_text(encoding='utf-8'), token)
+
     def test_library_menu_entry_reads_back_through_the_verified_service(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
         entry = panel.split('void SRInstallPanelEntry', 1)[1]
