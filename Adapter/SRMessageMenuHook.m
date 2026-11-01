@@ -733,6 +733,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
 }
 
 - (SRMenuMessageContext *)contextForMenu:(id)menu generation:(NSString *)generation responder:(id)responder {
+    if (!responder) responder = SRMenuHookReadObject(menu, NSSelectorFromString(@"responder"));
+    if (responder) [self rememberResponder:responder forMenu:menu];
     if (!menu || !generation.length) return nil;
     if (!self.currentAccount) return nil;
     NSString *account = self.currentAccount();
@@ -2101,6 +2103,9 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     if (responder) [self.hook rememberResponder:responder forMenu:menu];
     id items = SRMenuHookReadObject(menu, NSSelectorFromString(@"currentMenuItems"));
     if (![items isKindOfClass:NSArray.class]) return;
+    for (id existing in (NSArray *)items) {
+        if (SRMenuHookReadObject(existing, NSSelectorFromString(@"target")) == self.hook) return;
+    }
     NSString *generation = [[NSString alloc] initWithFormat:@"show:%lu", (unsigned long)++self.buildCounter];
     SRMenuMessageContext *context = [self.hook contextForMenu:menu generation:generation responder:responder];
     if (!context) return;

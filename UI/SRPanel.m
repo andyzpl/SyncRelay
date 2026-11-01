@@ -2115,7 +2115,10 @@ void SRInstallPanelEntry(SRStore *store) {
             }
             enabled:^BOOL { return weakEntry.entryPreferences.libraryMenuEntryEnabled; }];
         if ([UIImage respondsToSelector:@selector(systemImageNamed:)]) {
-            [entry.libraryMenuHook configureMenuIcon:[UIImage systemImageNamed:@"tray.and.arrow.down"]];
+            UIImage *icon = [UIImage systemImageNamed:@"tray.and.arrow.down"];
+            // Keep our own colours: the menu otherwise tints a template image and
+            // it no longer matches the host icons.
+            [entry.libraryMenuHook configureMenuIcon:[icon imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]];
         }
         [entry.libraryMenuHook configureReadbackProvider:^id {
             // Verified 8.0.79 path: MMContext.currentContext -> getService: returns

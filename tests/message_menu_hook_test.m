@@ -802,6 +802,15 @@ int main(void) {
         CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == savedBeforeHostClick);
         preferences.libraryMenuEntryEnabled = YES;
 
+        // The responder captured at build time is used when the menu no longer
+        // exposes one at click time.
+        hostMenu.responder = nil;
+        rebuild();
+        NSUInteger beforeRemembered = [[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count];
+        SRDispatchMenuAction(itemView.menuItem, itemView);
+        CHECK([[store libraryItemsForAccount:@"account" limit:50 offset:0 error:NULL] count] == beforeRemembered + 1);
+        hostMenu.responder = cover;
+
         // 7) a sender carrying a foreign item is refused by the entry itself:
         // dispatch through our own published item, not the foreign one.
         SRFakeMenuItemView *foreignView = [SRFakeMenuItemView new];
@@ -1031,6 +1040,13 @@ int main(void) {
         CHECK(showMenu.showCalls == 1);
         CHECK(showMenu.currentMenuItems.count == 2);
         CHECK([hook ownsItem:showMenu.currentMenuItems.lastObject]);
+        // A second presentation must not rebuild the array again: other tweaks
+        // hook setMenuItems: and would append their own item a second time.
+        NSUInteger setCallsAfterFirstShow = gBuildSetCalls;
+        [showMenu setMenuVisible:YES responder:cover animated:NO];
+        CHECK(showMenu.showCalls == 2);
+        CHECK(gBuildSetCalls == setCallsAfterFirstShow);
+        CHECK(showMenu.currentMenuItems.count == 2);
         [showHook uninstall];
         CHECK(!showHook.installed);
 
