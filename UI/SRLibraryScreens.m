@@ -734,24 +734,20 @@ static id SRLibraryReadGetter(id object, NSString *name) {
         style:UIBarButtonItemStyleDone target:self action:@selector(finish)];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return self.problem ? 1 : MAX((NSInteger)self.rules.count, 1);
-    if (section == 1) return MAX((NSInteger)self.plans.count, 1);
-    return 1;
+    return MAX((NSInteger)self.plans.count, 1);
 }
 
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if (section == 0) return @"已分组的列表";
-    if (section == 1) return @"已确认的计划";
-    return @"微信原生选择器";
+    return section == 0 ? @"已分组的列表" : @"已确认的计划";
 }
 
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) return [NSString stringWithFormat:@"来自设置页保存的分组规则；最多可选 %lu 个群，超过 100 个会有风控风险。", (unsigned long)self.limit];
-    if (section == 1) return @"已冻结的计划目标；与上方的规则可以叠加选择。";
-    return @"微信原生群选择器需要一次 ABI 取证后才能启用；当前版本隐藏该入口。";
+    return @"已冻结的计划目标；与上方的规则可以叠加选择。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
@@ -798,15 +794,6 @@ static id SRLibraryReadGetter(id object, NSString *name) {
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         return cell;
     }
-    cell.textLabel.text = @"选择微信群…";
-    Class picker = NSClassFromString(@"SessionSelectController")
-        ?: NSClassFromString(@"MultiSelectContactsViewController");
-    BOOL available = picker && [picker isSubclassOfClass:UIViewController.class] &&
-        [picker instancesRespondToSelector:NSSelectorFromString(@"init")];
-    cell.detailTextLabel.text = available ? @"打开微信原生的多选联系人界面"
-                                          : @"当前版本不可用（原生选择器缺失）";
-    cell.textLabel.enabled = available; cell.detailTextLabel.enabled = available;
-    cell.selectionStyle = available ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
     return cell;
 }
 
@@ -828,7 +815,6 @@ static id SRLibraryReadGetter(id object, NSString *name) {
         [tableView reloadData];
         return;
     }
-    if (path.section == 2) [self openNativePicker];
 }
 
 - (void)openNativePicker {
