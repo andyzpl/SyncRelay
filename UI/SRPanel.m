@@ -79,6 +79,23 @@ static NSDictionary *SRTargetPickerProbeReport(void) {
         methods[name] = shape;
     }
     report[@"methods"] = methods;
+    // Names only: the 8.0.79 API differs from older notes, so the catalog is
+    // what lets the picker bind to a real method instead of guessing.
+    NSMutableDictionary *catalog = [NSMutableDictionary dictionary];
+    for (NSString *name in classes) {
+        Class cls = NSClassFromString(name);
+        if (!cls) continue;
+        unsigned int count = 0;
+        Method *list = class_copyMethodList(cls, &count);
+        NSMutableArray *names = [NSMutableArray array];
+        for (unsigned int index = 0; index < count && names.count < 160; index++) {
+            NSString *selector = NSStringFromSelector(method_getName(list[index]));
+            if (selector.length) [names addObject:selector];
+        }
+        free(list);
+        catalog[name] = [names sortedArrayUsingSelector:@selector(compare:)];
+    }
+    report[@"catalog"] = catalog;
     return report;
 }
 
