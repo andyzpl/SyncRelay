@@ -475,10 +475,23 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
     if (!responder) responder = SRMenuHookResponder(menu);
     if (!responder) { SRMenuStage(2); return nil; }
     SRMenuLastResponderClass = responder ? NSStringFromClass(object_getClass(responder)) : nil;
-    if (!SRMenuHookClassIsKindOf(object_getClass(responder), coverClass)) { SRMenuStage(3); return nil; }
-    id delegate = SRMenuHookReadObject(responder, NSSelectorFromString(@"delegate"));
-    if (!delegate) { SRMenuStage(4); return nil; }
-    if (!SRMenuHookClassIsKindOf(object_getClass(delegate), cellClass)) { SRMenuStage(5); return nil; }
+    id delegate = nil;
+    if (SRMenuHookClassIsKindOf(object_getClass(responder), coverClass)) {
+        delegate = SRMenuHookReadObject(responder, NSSelectorFromString(@"delegate"));
+        if (!delegate) { SRMenuStage(4); return nil; }
+        if (!SRMenuHookClassIsKindOf(object_getClass(delegate), cellClass)) { SRMenuStage(5); return nil; }
+    } else {
+        // Image and media long-presses start at the cell's content view instead of
+        // the rich-text cover. Accept a real cell that declares the wrap getter,
+        // found on the responder itself or on an ancestor.
+        id candidate = responder;
+        for (NSUInteger depth = 0; candidate && depth < 12; depth++) {
+            SEL getter = NSSelectorFromString(@"getCurrentMessageWrap");
+            if (SRMenuHookMethod(object_getClass(candidate), getter)) { delegate = candidate; break; }
+            candidate = SRMenuHookReadObject(candidate, NSSelectorFromString(@"superview"));
+        }
+        if (!delegate) { SRMenuStage(5); return nil; }
+    }
     id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
     if (!wrap) { SRMenuStage(6); return nil; }
     unsigned long long localID = 0;
