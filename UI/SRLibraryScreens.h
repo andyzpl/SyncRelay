@@ -14,10 +14,13 @@ NS_ASSUME_NONNULL_BEGIN
 /* Reusable target picker: grouped plans -> frozen targets. */
 FOUNDATION_EXPORT UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account, NSUInteger limit,
                                                          void (^completion)(NSArray<NSString *> *targets));
+@class SRSmallGroupSession;
 FOUNDATION_EXPORT UIViewController *SRCreateLibraryList(SRStore *store, NSString *account,
-                                                        BOOL (^verifyAccount)(void));
+                                                        BOOL (^verifyAccount)(void),
+                                                        SRSmallGroupSession * _Nullable session);
 FOUNDATION_EXPORT UIViewController *SRCreateLibraryItem(SRStore *store, NSString *account,
-                                                        BOOL (^verifyAccount)(void), NSString *item);
+                                                        BOOL (^verifyAccount)(void), NSString *item,
+                                                        SRSmallGroupSession * _Nullable session);
 FOUNDATION_EXPORT UIViewController *SRCreateMediaResources(SRStore *store, NSString *account,
                                                            BOOL (^verifyAccount)(void));
 NS_ASSUME_NONNULL_END

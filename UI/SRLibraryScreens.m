@@ -3,6 +3,7 @@
 #import "SRPlanScreens.h"
 #import "Core/SRStore.h"
 #import "Core/SREntryPreferences.h"
+#import "Adapter/SRSmallGroupSession.h"
 #import "Core/SRMediaProjection.h"
 #import "Core/SRRunProjection.h"
 
@@ -56,6 +57,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, strong, nullable) SRSmallGroupSession *session;
 @property(nonatomic, strong) NSMutableArray *rows;
 @property(nonatomic, copy, nullable) NSDictionary *problem;
 @property(nonatomic) BOOL accountInvalid;
@@ -235,7 +237,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     id identifier = row[@"id"];
     if (![identifier isKindOfClass:NSString.class] || ![identifier length]) return;
     [self.navigationController pushViewController:SRCreateLibraryItem(self.store, self.account,
-        self.verifyAccount, identifier) animated:YES];
+        self.verifyAccount, identifier, self.session) animated:YES];
 }
 @end
 
@@ -247,6 +249,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, strong, nullable) SRSmallGroupSession *session;
 @property(nonatomic, copy) NSString *item;
 @property(nonatomic, copy, nullable) NSDictionary *entry;
 @property(nonatomic, strong) NSArray *versions;
@@ -313,7 +316,9 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         version:self.entry[@"current_version_id"] confirmationID:confirmation targets:targets
         minimum:5 maximum:8 error:&error];
     if (!task.length) { [self showFailure:@"创建转发任务失败" error:error]; return; }
-    if (![self.store startLibraryTask:task account:self.account error:&error]) {
+    NSDictionary *frozen = [self.store libraryTask:task account:self.account error:&error];
+    NSString *rule = frozen[@"ruleID"];
+    if (!rule.length || !self.session || ![self.session startRule:rule account:self.account error:&error]) {
         [self showFailure:@"启动转发任务失败" error:error];
         return;
     }
@@ -858,16 +863,16 @@ UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account, NSUInt
     return screen;
 }
 
-UIViewController *SRCreateLibraryList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void)) {
+UIViewController *SRCreateLibraryList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *session) {
     SRLibraryListScreen *screen = [[SRLibraryListScreen alloc] initWithStyle:UITableViewStyleGrouped];
-    screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount;
+    screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount; screen.session = session;
     screen.rows = [NSMutableArray array];
     return screen;
 }
-UIViewController *SRCreateLibraryItem(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), NSString *item) {
+UIViewController *SRCreateLibraryItem(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), NSString *item, SRSmallGroupSession *session) {
     SRLibraryItemScreen *screen = [[SRLibraryItemScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount;
-    screen.item = item; screen.versions = @[];
+    screen.item = item; screen.versions = @[]; screen.session = session;
     return screen;
 }
 UIViewController *SRCreateMediaResources(SRStore *store, NSString *account, BOOL (^verifyAccount)(void)) {

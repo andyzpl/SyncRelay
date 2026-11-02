@@ -1151,7 +1151,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
 - (void)openLibrary {
     if (![self canOpenReadOnlyPage]) return;
     [self.navigationController pushViewController:SRCreateLibraryList(self.store, self.account,
-        [self readOnlyVerifier]) animated:YES];
+        [self readOnlyVerifier], self.smallGroupSession) animated:YES];
 }
 - (void)openMediaResources {
     if (![self canOpenReadOnlyPage]) return;

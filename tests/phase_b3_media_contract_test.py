@@ -39,7 +39,7 @@ class B3ReadOnlyPages(unittest.TestCase):
                           "resendLibraryTask",
                           "pruneTemporaryFiles", "pruneUnreferenced", "reserveBytes",
                           "commitReservation", "claimNextForRun", "submitDelivery",
-                          "startRule:", "resumeRun:", "cancelRun:", "endRun:",
+                          "resumeRun:", "cancelRun:", "endRun:",
                           "setSourceMode:", "saveConfiguration"):
             self.assertNotIn(forbidden, source, forbidden)
 

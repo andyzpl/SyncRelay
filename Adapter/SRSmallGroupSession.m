@@ -182,8 +182,14 @@ static BOOL SRSmallSubmitted(NSDictionary *evidence, NSDictionary *source, NSStr
             self.host = nil; completion(@"uncertain", nil, self.nativeProblem); return;
         }
         id<SRSmallGroupHost> host = self.host;
-        NSDictionary *request = @{@"account": source[@"account"], @"target": delivery[@"target"], @"sourceGroup": source[@"group"],
-            @"sourceSender": source[@"sender"], @"sourceMessageID": source[@"messageID"], @"type": source[@"type"], @"payload": source[@"payload"]};
+        // Library snapshots intentionally carry no group/sender/message identity.
+        // The host request needs one anyway, so a fixed synthetic origin is used
+        // for that wire field only; nothing is written back to the snapshot.
+        NSString *sourceGroup = source[@"group"] ?: @"sync_relay_library@chatroom";
+        NSString *sourceSender = source[@"sender"] ?: @"sync_relay_library";
+        NSString *sourceMessageID = source[@"messageID"] ?: (delivery[@"id"] ?: @"sync-relay-library");
+        NSDictionary *request = @{@"account": source[@"account"], @"target": delivery[@"target"], @"sourceGroup": sourceGroup,
+            @"sourceSender": sourceSender, @"sourceMessageID": sourceMessageID, @"type": source[@"type"], @"payload": source[@"payload"]};
         __block BOOL finished = NO;
         [host submitRequest:request completion:^(NSString *state, __unused NSString *messageID, NSString *reason) {
             void (^finish)(void) = ^{

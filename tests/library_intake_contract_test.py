@@ -71,7 +71,7 @@ class IntakeContracts(unittest.TestCase):
 
     def test_intake_never_creates_tasks_or_sends(self):
         source = read("Core/SRLibraryIntake.m")
-        for forbidden in ("library_tasks", "createLibraryTask", "startLibraryTask", "sqlite3",
+        for forbidden in ("library_tasks", "createLibraryTask", "startRule:", "sqlite3",
                           "submitDelivery", "startRule", "saveLibraryImageData",
                           "claimNext"):
             self.assertNotIn(forbidden, source, forbidden)
@@ -98,7 +98,7 @@ class IntakeContracts(unittest.TestCase):
         """The library started read-only. It now exposes deletion and text
         forwarding through the frozen-task API, and nothing else."""
         screens = read("UI/SRLibraryScreens.m")
-        for token in ("deleteLibraryEntry", "createLibraryTaskForAccount", "startLibraryTask",
+        for token in ("deleteLibraryEntry", "createLibraryTaskForAccount", "startRule:",
                       "deleteLibraryEntry:item account:error:"[:0] or "删除条目", "转发到群"):
             self.assertIn(token, screens, token)
         # Intake and sending stay outside the pages.
