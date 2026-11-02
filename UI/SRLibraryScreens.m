@@ -264,11 +264,11 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)showActions {
     if (self.masked || self.accountInvalid || self.problem || ![self verified]) return;
     NSString *kind = [self.entry[@"kind"] isKindOfClass:NSString.class] ? self.entry[@"kind"] : @"";
-    BOOL text = [kind isEqual:@"text"];
+    BOOL forwardable = [kind isEqual:@"text"] || [kind isEqual:@"image"];
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    if (text) {
+    if (forwardable) {
         [sheet addAction:[UIAlertAction actionWithTitle:@"转发到群…" style:UIAlertActionStyleDefault
             handler:^(__unused UIAlertAction *a) { [weakSelf promptForward]; }]];
     }
@@ -415,7 +415,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (self.accountInvalid) return @"当前账号无法核对或已经改变，本页已失去显示资格。";
     if (self.problem) return @"本页只读，不会创建、删除或发送任何条目。";
     if (section == 0) return @"条目只属于打开本页时的账号；数量与版本以持久记录为准。";
-    if (section == 1) return @"文字版本可转发到群；删除只隐藏条目，不删除历史版本与媒体。";
+    if (section == 1) return @"文字与图片版本可转发到群；删除只隐藏条目，不删除历史版本与媒体。";
     return @"发送记录只读：显示每次冻结任务的目标数、运行状态与创建时间。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
