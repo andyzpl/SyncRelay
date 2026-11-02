@@ -96,6 +96,36 @@ static NSDictionary *SRTargetPickerProbeReport(void) {
         catalog[name] = [names sortedArrayUsingSelector:@selector(compare:)];
     }
     report[@"catalog"] = catalog;
+    // Signatures for the shortlist that can actually drive a picker: argument
+    // count and type tokens only, never an invocation.
+    NSArray<NSString *> *shortlist = @[
+        @"OnSelectSession:SelectView:", @"OnSelectSessions:SelectView:",
+        @"getSelectedContacts", @"beginMultiSelect", @"endMultiSelect",
+        @"initWithFrame:delegate:", @"getTotalSelectCount", @"isSelected:",
+        @"init", @"actionDone", @"getContactSelectView",
+        @"historyGroupSelectViewController:didSeletedContacts:",
+        @"initWithData:", @"setCallbackDelegate:"];
+    NSMutableDictionary *shapes = [NSMutableDictionary dictionary];
+    for (NSString *name in shortlist) {
+        SEL selector = NSSelectorFromString(name);
+        for (NSString *className in classes) {
+            Class cls = NSClassFromString(className);
+            if (!cls) continue;
+            Method method = class_getInstanceMethod(cls, selector);
+            if (!method) continue;
+            char *ret = method_copyReturnType(method);
+            NSMutableArray *args = [NSMutableArray array];
+            for (unsigned int index = 0; index < method_getNumberOfArguments(method); index++) {
+                char *type = method_copyArgumentType(method, index);
+                [args addObject:[NSString stringWithUTF8String:type ?: "?"]];
+                free(type);
+            }
+            shapes[[NSString stringWithFormat:@"%@ %@", className, name]] =
+                @{@"return": [NSString stringWithUTF8String:ret ?: "?"], @"arguments": args};
+            free(ret);
+        }
+    }
+    report[@"shapes"] = shapes;
     return report;
 }
 
