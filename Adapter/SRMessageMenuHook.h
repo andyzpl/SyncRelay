@@ -142,6 +142,8 @@ typedef NS_ENUM(NSUInteger, SRMenuIntentResult) {
 - (void)configureSelectionHandler:(nullable void (^)(SRMenuIntentResult result))handler;
 /* Optional host icon object (UIImage) supplied by the UI layer. */
 - (void)configureMenuIcon:(nullable id)icon;
+/* Supplies the frozen image bytes for an image message; nil refuses the entry. */
+- (void)configureImageProvider:(nullable NSData * _Nullable (^)(id _Nullable wrap, NSError **error))provider;
 /* Bounded, numeric-only status for diagnostics: no account, body or IDs. */
 - (NSDictionary<NSString *, id> *)status;
 FOUNDATION_EXPORT NSDictionary<NSString *, id> *SRMenuLibraryStatus(void);
@@ -170,6 +172,7 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> *SRMenuLibraryStatus(void);
 @property(nonatomic, copy, readonly, nullable) NSString *createdAt;
 @property(nonatomic) unsigned long long localID;
 @property(nonatomic, readonly) BOOL isText;
+@property(nonatomic, readonly) BOOL isImage;
 @end
 
 /* Interceptor state. `installed` means the three IMPs are replaced and every

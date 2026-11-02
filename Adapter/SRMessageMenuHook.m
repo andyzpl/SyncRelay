@@ -30,6 +30,10 @@ NSDictionary<NSString *, id> *SRMenuLibraryStatus(void) {
 /* Private storage with hand-written getters. The public header declares only
  * readonly properties, and no setter is synthesised here, so a frozen
  * confirmation cannot be rewritten through the runtime after the fact. */
+@interface SRMenuMessageContext ()
+@property(nonatomic, strong, nullable) NSData *imageData;
+@end
+
 @implementation SRMenuMessageContext {
     NSString *_account;
     NSString *_body;
@@ -144,6 +148,7 @@ NSDictionary<NSString *, id> *SRMenuLibraryStatus(void) {
 /* Account-context manager instance and the receiver's generation token. */
 @property(nonatomic, copy) id (^readbackProvider)(void);
 @property(nonatomic, copy) unsigned long long (^epochProvider)(void);
+@property(nonatomic, copy, nullable) NSData * (^imageProvider)(id wrap, NSError **error);
 @property(nonatomic, strong) NSMapTable *menuResponders;
 @property(nonatomic, strong) id menuIcon;
 @property(nonatomic, copy) id (^responderProvider)(void);
@@ -449,6 +454,8 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
     NSString *_messageType;
     NSString *_createdAt;
     BOOL _isText;
+    BOOL _isImage;
+    __weak id _wrap;
 }
 + (instancetype)sourceForMenu:(id)menu menuClass:(Class)menuClass
                    coverClass:(Class)coverClass cellClass:(Class)cellClass
@@ -490,7 +497,12 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
     else { SRMenuStage(11); return nil; }
     if (!sessionObject.length) { SRMenuStage(12); return nil; }
     id bodyObject = SRMenuHookReadObject(wrap, NSSelectorFromString(@"m_nsContent"));
-    if (![bodyObject isKindOfClass:NSString.class] || [bodyObject length] == 0) { SRMenuStage(13); return nil; }
+    BOOL imageMessage = (messageType == 3);
+    if (!imageMessage && ([bodyObject isKindOfClass:NSString.class] == NO || [bodyObject length] == 0)) {
+        SRMenuStage(13); return nil;
+    }
+    if (![bodyObject isKindOfClass:NSString.class]) bodyObject = imageMessage ? @"[图片]" : nil;
+    if (imageMessage && [(NSString *)bodyObject length] == 0) bodyObject = @"[图片]";
     SRMenuHostSource *source = [SRMenuHostSource new];
     source->_messageIdentity = [[NSString alloc] initWithFormat:@"local:%llu", localID];
     source.localID = localID;
@@ -499,6 +511,8 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
     source->_messageType = [[NSString alloc] initWithFormat:@"%llu", messageType];
     source->_createdAt = [[NSString alloc] initWithFormat:@"%llu", createdAt];
     source->_isText = (messageType == 1);
+    source->_isImage = imageMessage;
+    source->_wrap = wrap;
     return source;
 }
 - (NSString *)messageIdentity { return _messageIdentity; }
@@ -507,6 +521,8 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
 - (NSString *)messageType { return _messageType; }
 - (NSString *)createdAt { return _createdAt; }
 - (BOOL)isText { return _isText; }
+- (BOOL)isImage { return _isImage; }
+- (id)wrap { return _wrap; }
 @end
 
 @implementation SRMessageMenuHook
@@ -754,9 +770,16 @@ static BOOL SRImplicitParametersMatch(Method method) {
     // not maintain a second success ledger that could hide a store failure or
     // answer a replay without consulting the durable source of truth.
     SRLibraryIntakeResult result = SRLibraryIntakeWriteFailed;
-    NSString *itemID = [self.intake saveMessageOfType:@"text" payload:@{@"text": context.body}
-        operationKey:context.operationKey account:context.account
-        capturedAt:NSDate.date.timeIntervalSince1970 result:&result error:NULL];
+    NSString *itemID = nil;
+    if (context.imageData.length) {
+        itemID = [self.intake saveImageData:context.imageData account:context.account
+            operationKey:context.operationKey capturedAt:NSDate.date.timeIntervalSince1970
+            result:&result error:NULL];
+    } else {
+        itemID = [self.intake saveMessageOfType:@"text" payload:@{@"text": context.body}
+            operationKey:context.operationKey account:context.account
+            capturedAt:NSDate.date.timeIntervalSince1970 result:&result error:NULL];
+    }
     switch (result) {
         case SRLibraryIntakeSaved: return SRMenuIntentSaved;
         case SRLibraryIntakeDuplicate: return SRMenuIntentDuplicate;
@@ -838,6 +861,10 @@ static BOOL SRImplicitParametersMatch(Method method) {
     @synchronized(self.lock) { self.responderProvider = [provider copy]; }
 }
 
+- (void)configureImageProvider:(NSData * _Nullable (^)(id, NSError **))provider {
+    @synchronized(self.lock) { self.imageProvider = [provider copy]; }
+}
+
 - (void)configureMenuIcon:(id)icon {
     @synchronized(self.lock) { self.menuIcon = icon; }
 }
@@ -867,7 +894,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
                                                     coverClass:self.hostCoverClass cellClass:self.hostCellClass
                                                        account:account responder:provided];
     }
-    if (!source || !source.isText || !source.body.length || !source.messageIdentity.length) return nil;
+    if (!source || (!source.isText && !source.isImage) || !source.messageIdentity.length) return nil;
+    if (source.isText && !source.body.length) return nil;
     NSString *owner = [self ownerTokenForMenu:menu];
     NSString *operationKey = [[NSString alloc] initWithFormat:@"menu:%@:%@:%@", owner, generation, source.messageIdentity];
     @synchronized(self.lock) { [self.menuGenerations setObject:[generation copy] forKey:menu]; }
@@ -875,10 +903,19 @@ static BOOL SRImplicitParametersMatch(Method method) {
     unsigned long long epochValue = self.epochProvider();
     if (epochValue == ULLONG_MAX) return nil;
     NSString *epoch = [[NSString alloc] initWithFormat:@"%llu", epochValue];
-    return [[SRMenuMessageContext alloc] initWithAccount:account body:source.body generation:generation
+    NSData *imageData = nil;
+    if (source.isImage) {
+        NSData * (^provider)(id, NSError **) = self.imageProvider;
+        if (!provider) return nil;
+        imageData = provider(source.wrap, NULL);
+        if (!imageData.length) return nil;
+    }
+    SRMenuMessageContext *context = [[SRMenuMessageContext alloc] initWithAccount:account body:source.body generation:generation
                                               ownerToken:owner messageIdentity:source.messageIdentity
                                                  session:source.session messageType:source.messageType
                                                createdAt:source.createdAt epoch:epoch operationKey:operationKey];
+    context.imageData = imageData;
+    return context;
 }
 
 - (NSArray *)appendHostItemToItems:(NSArray *)items menu:(id)menu source:(SRMenuMessageContext *)source

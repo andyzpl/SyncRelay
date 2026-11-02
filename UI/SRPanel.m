@@ -2359,6 +2359,17 @@ void SRInstallPanelEntry(SRStore *store) {
             // ULLONG_MAX means "no authoritative token"; 0 is a real value.
             return strong.receiver ? [strong.receiver generationToken] : ULLONG_MAX;
         }];
+        [entry.libraryMenuHook configureImageProvider:^NSData *(id wrap, NSError **error) {
+            SREntry *strong = weakEntry;
+            if (!strong.imageSource) return nil;
+            UIImage *image = [strong.imageSource imageForWrap:wrap error:error];
+            if (!image) return nil;
+            CGImageRef raster = image.CGImage;
+            size_t width = raster ? CGImageGetWidth(raster) : 0, height = raster ? CGImageGetHeight(raster) : 0;
+            if (!width || !height || width > 12000 || height > 12000 ||
+                (uint64_t)width * height > 32000000ULL) return nil;
+            return UIImagePNGRepresentation(image);
+        }];
         Class menuClass = NSClassFromString(@"MMMenuController");
         Class coverClass = NSClassFromString(@"MMRichTextCoverView");
         Class cellClass = NSClassFromString(@"TextMessageCellView");
