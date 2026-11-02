@@ -799,7 +799,8 @@ static id SRLibraryReadGetter(id object, NSString *name) {
         return cell;
     }
     cell.textLabel.text = @"选择微信群…";
-    Class picker = NSClassFromString(@"MultiSelectContactsViewController");
+    Class picker = NSClassFromString(@"SessionSelectController")
+        ?: NSClassFromString(@"MultiSelectContactsViewController");
     BOOL available = picker && [picker isSubclassOfClass:UIViewController.class] &&
         [picker instancesRespondToSelector:NSSelectorFromString(@"init")];
     cell.detailTextLabel.text = available ? @"打开微信原生的多选联系人界面"
@@ -831,14 +832,60 @@ static id SRLibraryReadGetter(id object, NSString *name) {
 }
 
 - (void)openNativePicker {
-    Class pickerClass = NSClassFromString(@"MultiSelectContactsViewController");
+    // Group chats live in the session list; the contacts controller only offers
+    // the address book, so it is the fallback, never the first choice.
+    Class pickerClass = NSClassFromString(@"SessionSelectController");
+    if (!pickerClass || ![pickerClass isSubclassOfClass:UIViewController.class])
+        pickerClass = NSClassFromString(@"MultiSelectContactsViewController");
     if (!pickerClass || ![pickerClass isSubclassOfClass:UIViewController.class]) return;
     UIViewController *controller = nil;
     @try { controller = [[pickerClass alloc] init]; } @catch (__unused NSException *exception) { return; }
     if (!controller) return;
+    SEL multi = NSSelectorFromString(@"beginMultiSelect");
+    if ([controller respondsToSelector:multi]) {
+        IMP imp = [controller methodForSelector:multi];
+        if (imp) ((void (*)(id, SEL))imp)(controller, multi);
+    }
     self.nativePicker = controller;
-    controller.modalPresentationStyle = UIModalPresentationFullScreen;
-    [self presentViewController:controller animated:YES completion:nil];
+    // The host picker ships without a cancel affordance of its own, so it is
+    // wrapped in a navigation controller that carries explicit 取消 / 完成.
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
+    controller.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"取消"
+        style:UIBarButtonItemStylePlain target:self action:@selector(cancelNativePicker)];
+    controller.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"完成"
+        style:UIBarButtonItemStyleDone target:self action:@selector(finishNativePicker)];
+    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:navigation animated:YES completion:nil];
+}
+
+- (void)cancelNativePicker {
+    id picker = self.nativePicker;
+    self.nativePicker = nil;
+    if (picker) [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)finishNativePicker {
+    id picker = self.nativePicker;
+    if (!picker) return;
+    NSMutableArray<NSString *> *targets = [NSMutableArray array];
+    id contacts = SRLibraryReadGetter(picker, @"getSelectedContacts");
+    if (![contacts isKindOfClass:NSArray.class]) {
+        id selectView = SRLibraryReadGetter(picker, @"getContactSelectView");
+        contacts = SRLibraryReadGetter(selectView, @"getSelectedContacts");
+    }
+    for (id contact in (NSArray *)contacts ?: @[]) {
+        NSString *name = SRLibraryReadGetter(contact, @"m_nsUsrName");
+        if ([name isKindOfClass:NSString.class] && [name hasSuffix:@"@chatroom"] && ![targets containsObject:name])
+            [targets addObject:name];
+    }
+    self.nativePicker = nil;
+    __weak typeof(self) weakSelf = self;
+    [self dismissViewControllerAnimated:YES completion:^{
+        if (!targets.count) return;
+        void (^completion)(NSArray<NSString *> *) = weakSelf.completion;
+        [weakSelf.navigationController popViewControllerAnimated:YES];
+        if (completion) completion(targets);
+    }];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
