@@ -72,6 +72,14 @@ typedef NS_ENUM(NSUInteger, SRLibraryIntakeResult) {
                                    error:(NSError **)error;
 
 /* YES only when this key completed for this account in this process. */
+/* Explicit image capture into the message library. The bytes are stored once
+ * per operation key; the same key with different bytes is a conflicting
+ * request, never a retry. */
+- (nullable NSString *)saveImageData:(NSData *)data account:(NSString *)account
+                        operationKey:(NSString *)operationKey
+                          capturedAt:(NSTimeInterval)capturedAt
+                              result:(SRLibraryIntakeResult *)result error:(NSError **)error;
+
 - (BOOL)hasSavedOperationKey:(NSString *)operationKey account:(NSString *)account;
 
 @end

@@ -1,4 +1,5 @@
 #import "SRLibraryIntake.h"
+#import "SRImageAssetStore.h"
 #import "SRStore.h"
 #include <math.h>
 
@@ -60,6 +61,71 @@ static BOOL SRLibraryIntakeFail(NSError **error, NSString *reason) {
     if (error) *error = [NSError errorWithDomain:@"SyncRelay.LibraryIntake" code:1
         userInfo:@{NSLocalizedDescriptionKey: reason}];
     return NO;
+}
+
+- (NSString *)saveImageData:(NSData *)data account:(NSString *)account
+                operationKey:(NSString *)operationKey
+                  capturedAt:(NSTimeInterval)capturedAt
+                      result:(SRLibraryIntakeResult *)result error:(NSError **)error {
+    if (result) *result = SRLibraryIntakeWriteFailed;
+    if (!account.length) {
+        if (result) *result = SRLibraryIntakeAccountUnavailable;
+        SRLibraryIntakeFail(error, @"当前账号无法核对，这张图片没有加入消息库");
+        return nil;
+    }
+    if (!operationKey.length || ![data isKindOfClass:NSData.class] || !data.length) {
+        if (result) *result = SRLibraryIntakeInvalidInput;
+        SRLibraryIntakeFail(error, @"缺少图片内容或本次操作标识，不能保存");
+        return nil;
+    }
+    NSString *marker = [SRImageAssetStore sha256ForData:data];
+    if (!marker.length) {
+        if (result) *result = SRLibraryIntakeInvalidInput;
+        SRLibraryIntakeFail(error, @"图片内容无法校验，没有保存");
+        return nil;
+    }
+    if (!(capturedAt > 0) || !isfinite(capturedAt)) capturedAt = NSDate.date.timeIntervalSince1970;
+    @synchronized(self.lock) {
+        SRStore *store = self.store;
+        if (!store) {
+            if (result) *result = SRLibraryIntakeStoreUnavailable;
+            SRLibraryIntakeFail(error, @"消息库存储已不可用，这张图片没有保存");
+            return nil;
+        }
+        SRLibraryIntakeRecord *record = self.ledger[operationKey];
+        if (record) {
+            BOOL sameRequest = [record.account isEqual:account] && [record.type isEqual:@"image"] &&
+                [record.body isEqual:marker];
+            if (sameRequest) {
+                if (result) *result = SRLibraryIntakeDuplicate;
+                return record.item;
+            }
+            if (result) *result = SRLibraryIntakeConflictingRequest;
+            SRLibraryIntakeFail(error, @"这次操作标识已经用于另一条消息，本条没有保存");
+            return nil;
+        }
+        NSError *failure = nil;
+        NSDictionary *payload = [store saveLibraryImageData:data account:account error:&failure];
+        if (!payload) {
+            if (result) *result = SRLibraryIntakeWriteFailed;
+            if (error) *error = failure ?: [NSError errorWithDomain:@"SyncRelay.LibraryIntake" code:2
+                userInfo:@{NSLocalizedDescriptionKey: @"图片写入失败，未保存任何内容"}];
+            return nil;
+        }
+        NSString *item = [store createLibraryItemForAccount:account kind:@"image" payload:payload
+            capturedAt:capturedAt error:&failure];
+        if (!item.length) {
+            if (result) *result = SRLibraryIntakeWriteFailed;
+            if (error) *error = failure ?: [NSError errorWithDomain:@"SyncRelay.LibraryIntake" code:2
+                userInfo:@{NSLocalizedDescriptionKey: @"写入消息库失败，未保存任何内容"}];
+            return nil;
+        }
+        SRLibraryIntakeRecord *created = [SRLibraryIntakeRecord new];
+        created.account = account; created.type = @"image"; created.body = marker; created.item = item;
+        self.ledger[operationKey] = created;
+        if (result) *result = SRLibraryIntakeSaved;
+        return item;
+    }
 }
 
 - (BOOL)hasSavedOperationKey:(NSString *)operationKey account:(NSString *)account {

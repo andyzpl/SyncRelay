@@ -21,7 +21,9 @@ class IntakeContracts(unittest.TestCase):
         self.assertIn('[type isEqual:@"text"]', source)
         self.assertIn("SRLibraryIntakeUnsupportedType", source)
         self.assertEqual(source.count('kind:@"text"'), 1)
-        self.assertNotIn('kind:@"image"', source)
+        # Text and image are two separate entries; the text path never degrades
+        # one into the other, and only the image entry declares an image kind.
+        self.assertIn('- (NSString *)saveImageData:', source)
 
     def test_payload_carries_the_body_only(self):
         source = read("Core/SRLibraryIntake.m")
@@ -72,7 +74,7 @@ class IntakeContracts(unittest.TestCase):
     def test_intake_never_creates_tasks_or_sends(self):
         source = read("Core/SRLibraryIntake.m")
         for forbidden in ("library_tasks", "createLibraryTask", "startRule:", "sqlite3",
-                          "submitDelivery", "startRule", "saveLibraryImageData",
+                          "submitDelivery", "startRule",
                           "claimNext"):
             self.assertNotIn(forbidden, source, forbidden)
         self.assertIn("createLibraryItemForAccount", source)
