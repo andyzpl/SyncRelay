@@ -681,7 +681,9 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic) NSUInteger limit;
 @property(nonatomic, strong) NSArray *plans;
-@property(nonatomic, strong) NSMutableSet *selected;
+@property(nonatomic, strong) NSArray *rules;      // saved configuration draft
+@property(nonatomic, strong) NSMutableSet *selectedRules;
+@property(nonatomic, strong) NSMutableSet *selectedPlans;
 @property(nonatomic, copy) void (^completion)(NSArray<NSString *> *targets);
 @property(nonatomic, copy, nullable) NSDictionary *problem;
 @end
@@ -690,29 +692,41 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"选择转发目标";
-    self.selected = [NSMutableSet set];
+    self.selectedRules = [NSMutableSet set];
+    self.selectedPlans = [NSMutableSet set];
     SRStyleSettingsTable(self);
     NSError *error = nil;
+    // The groups the user arranged live in the saved configuration draft; plans
+    // only exist after a capture has been confirmed.
+    NSDictionary *draft = [self.store configurationForAccount:self.account error:&error];
+    NSArray *rules = [draft[@"rules"] isKindOfClass:NSArray.class] ? draft[@"rules"] : @[];
+    self.rules = rules;
     NSArray *plans = [self.store plansForAccount:self.account limit:100 offset:0 error:&error];
     if (plans) self.plans = plans;
-    else self.problem = @{@"title": @"读取失败", @"message": error.localizedDescription ?: @"无法读取已分组的列表"};
+    if (!rules.count && !plans.count && error) {
+        self.problem = @{@"title": @"读取失败", @"message": error.localizedDescription ?: @"无法读取已分组的列表"};
+    }
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"完成"
         style:UIBarButtonItemStyleDone target:self action:@selector(finish)];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return self.problem ? 1 : MAX((NSInteger)self.plans.count, 1);
+    if (section == 0) return self.problem ? 1 : MAX((NSInteger)self.rules.count, 1);
+    if (section == 1) return MAX((NSInteger)self.plans.count, 1);
     return 1;
 }
 
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section == 0 ? @"已分组的列表" : @"微信原生选择器";
+    if (section == 0) return @"已分组的列表";
+    if (section == 1) return @"已确认的计划";
+    return @"微信原生选择器";
 }
 
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return [NSString stringWithFormat:@"最多可选 %lu 个群；超过 100 个会有风控风险。", (unsigned long)self.limit];
+    if (section == 0) return [NSString stringWithFormat:@"来自设置页保存的分组规则；最多可选 %lu 个群，超过 100 个会有风控风险。", (unsigned long)self.limit];
+    if (section == 1) return @"已冻结的计划目标；与上方的规则可以叠加选择。";
     return @"微信原生群选择器需要一次 ABI 取证后才能启用；当前版本隐藏该入口。";
 }
 
@@ -728,9 +742,24 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
             cell.detailTextLabel.text = self.problem[@"message"];
             return cell;
         }
-        if (!self.plans.count) {
+        if (!self.rules.count) {
             cell.textLabel.text = @"还没有已分组的列表";
-            cell.detailTextLabel.text = @"先在计划页创建规则与目标，之后这里就能直接选取。";
+            cell.detailTextLabel.text = @"先在设置页配置分组规则并保存，之后这里就能直接选取。";
+            return cell;
+        }
+        NSDictionary *rule = self.rules[(NSUInteger)path.row];
+        NSArray *targets = [rule[@"targets"] isKindOfClass:NSArray.class] ? rule[@"targets"] : @[];
+        NSString *name = [rule[@"name"] isKindOfClass:NSString.class] ? rule[@"name"] : @"未命名规则";
+        cell.textLabel.text = name;
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群", (unsigned long)targets.count];
+        cell.accessoryType = [self.selectedRules containsObject:@(path.row)] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
+    if (path.section == 1) {
+        if (!self.plans.count) {
+            cell.textLabel.text = @"还没有已确认的计划";
+            cell.detailTextLabel.text = @"确认一次采集后，冻结的目标会出现在这里。";
             return cell;
         }
         NSDictionary *plan = self.plans[(NSUInteger)path.row];
@@ -740,7 +769,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         cell.textLabel.text = name;
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 个群 · %@ 条规则",
             plan[@"targetCount"] ?: @0, plan[@"ruleCount"] ?: @0];
-        cell.accessoryType = [self.selected containsObject:identifier] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        cell.accessoryType = [self.selectedPlans containsObject:identifier] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         return cell;
     }
@@ -752,19 +781,36 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
-    if (path.section != 0 || self.problem || !self.plans.count) return;
-    NSString *identifier = self.plans[(NSUInteger)path.row][@"id"];
-    if (!identifier.length) return;
-    if ([self.selected containsObject:identifier]) [self.selected removeObject:identifier];
-    else [self.selected addObject:identifier];
-    [tableView reloadData];
+    if (path.section == 0) {
+        if (self.problem || !self.rules.count) return;
+        NSNumber *row = @(path.row);
+        if ([self.selectedRules containsObject:row]) [self.selectedRules removeObject:row];
+        else [self.selectedRules addObject:row];
+        [tableView reloadData]; return;
+    }
+    if (path.section == 1) {
+        if (!self.plans.count) return;
+        NSString *identifier = self.plans[(NSUInteger)path.row][@"id"];
+        if (!identifier.length) return;
+        if ([self.selectedPlans containsObject:identifier]) [self.selectedPlans removeObject:identifier];
+        else [self.selectedPlans addObject:identifier];
+        [tableView reloadData];
+    }
 }
 
 - (void)finish {
     NSMutableArray<NSString *> *targets = [NSMutableArray array];
     NSError *error = nil;
+    for (NSNumber *row in self.selectedRules) {
+        NSDictionary *rule = self.rules[row.unsignedIntegerValue];
+        for (NSDictionary *target in rule[@"targets"]) {
+            NSString *identifier = target[@"id"];
+            if ([identifier isKindOfClass:NSString.class] && [identifier hasSuffix:@"@chatroom"] &&
+                ![targets containsObject:identifier]) [targets addObject:identifier];
+        }
+    }
     for (NSDictionary *plan in self.plans) {
-        if (![self.selected containsObject:plan[@"id"]]) continue;
+        if (![self.selectedPlans containsObject:plan[@"id"]]) continue;
         NSArray *allocated = [self.store allocatedTargetsForPlan:plan[@"id"] error:&error];
         if (!allocated) continue;   // one unreadable plan never silently shrinks the scope
         for (NSString *target in allocated)
