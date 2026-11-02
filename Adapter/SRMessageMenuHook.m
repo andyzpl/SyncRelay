@@ -402,6 +402,7 @@ static BOOL SRMenuHookValidLookupService(id service) {
 /* Diagnostic only: which gate refused the last host-source resolution. */
 static NSInteger SRMenuLastSourceStage;
 static NSInteger SRMenuResponderState;
+static NSString *SRMenuLastResponderClass;
 static Class SRMenuStatusMenuClass;
 static void SRMenuStage(NSInteger stage) { SRMenuLastSourceStage = stage; }
 
@@ -473,6 +474,7 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
     if (!SRMenuHookClassIsKindOf(object_getClass(menu), menuClass)) { SRMenuStage(1); return nil; }
     if (!responder) responder = SRMenuHookResponder(menu);
     if (!responder) { SRMenuStage(2); return nil; }
+    SRMenuLastResponderClass = responder ? NSStringFromClass(object_getClass(responder)) : nil;
     if (!SRMenuHookClassIsKindOf(object_getClass(responder), coverClass)) { SRMenuStage(3); return nil; }
     id delegate = SRMenuHookReadObject(responder, NSSelectorFromString(@"delegate"));
     if (!delegate) { SRMenuStage(4); return nil; }
@@ -820,7 +822,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
                                           @"lastIntent": @(self.lastIntent),
                                           @"enabled": @(self.enabled ? self.enabled() : NO),
                                           @"stage": @(SRMenuLastSourceStage),
-                                          @"responderState": @(SRMenuResponderState) } mutableCopy];
+                                          @"responderState": @(SRMenuResponderState),
+                                          @"responderClass": SRMenuLastResponderClass ?: @"<none>" } mutableCopy];
         Class menuClass = SRMenuStatusMenuClass;
         if (menuClass) {
             unsigned int count = 0;
