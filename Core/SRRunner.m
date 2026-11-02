@@ -78,7 +78,12 @@ static NSMapTable *SROwners(void) {
         NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:[summary[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
         if (![snapshot isKindOfClass:NSDictionary.class]) reason = @"Invalid source snapshot";
         else {
-            for (NSString *key in @[@"account", @"group", @"sender", @"messageID", @"type"]) {
+            // A message-library snapshot has no group/sender/message identity by
+            // design; only the account and type are required for dispatch.
+            BOOL librarySource = [snapshot[@"sourceKind"] isEqual:@"message_library"];
+            NSArray *requiredKeys = librarySource ? @[@"account", @"type"]
+                                                  : @[@"account", @"group", @"sender", @"messageID", @"type"];
+            for (NSString *key in requiredKeys) {
                 if (![snapshot[key] isKindOfClass:NSString.class] || ![snapshot[key] length]) reason = @"Incomplete normalized source snapshot";
             }
             if (![snapshot[@"account"] isEqual:account] || ![snapshot[@"generatedByRelay"] isEqual:@NO] ||
