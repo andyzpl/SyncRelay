@@ -531,12 +531,33 @@ static NSArray *SRImagePayloadKeys(void) {
 - (NSDictionary *)smallGroupSourceForRule:(NSString *)rule account:(NSString *)account {
     NSDictionary *row = [self query:@"SELECT p.*,r.id AS rule_id FROM rules r JOIN plans p ON p.id=r.plan_id WHERE r.id=? AND p.account=?" values:@[rule, account]].firstObject;
     SRRequire(row != nil, @"Rule is unavailable for this account");
-    // A library plan has no group source; the group-sync sender must never be
-    // handed one, even if a caller invents a group ID.
-    SRRequire([self sourceKindForPlanUnchecked:row[@"id"]] == nil ||
-              [[self sourceKindForPlanUnchecked:row[@"id"]] isEqual:@"group_sync"],
-              @"This plan belongs to the message library and has no group source");
+    NSString *sourceKind = [self sourceKindForPlanUnchecked:row[@"id"]];
     NSDictionary *source = [NSJSONSerialization JSONObjectWithData:[row[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if ([sourceKind isEqual:@"message_library"]) {
+        // A library plan has no group source. The execution session may still
+        // drive it: the frozen snapshot carries account/type/payload, and the
+        // send bridge supplies a fixed origin for the host request only.
+        SRRequire([source isKindOfClass:NSDictionary.class] &&
+                  [source[@"account"] isEqual:account] &&
+                  [@[@"text", @"image"] containsObject:source[@"type"]] &&
+                  [source[@"payload"] isKindOfClass:NSDictionary.class],
+                  @"Library source is incomplete");
+        SRRequire([self query:@"SELECT plan_id FROM plan_sources WHERE plan_id=? AND account=? AND source_kind='message_library'"
+            values:@[row[@"id"], account]].count == 1, @"A frozen library source is required");
+        NSArray *libraryTargets = [self query:@"SELECT target FROM allocations WHERE rule_id=?" values:@[rule]];
+        SRRequire(libraryTargets.count > 0 && libraryTargets.count <= 600, @"This build allows 1 to 600 target groups per rule");
+        for (NSDictionary *target in libraryTargets)
+            SRRequire([target[@"target"] hasSuffix:@"@chatroom"], @"Invalid target group");
+        if ([source[@"type"] isEqual:@"image"])
+            SRRequire([self.imageAssets dataForPayload:source[@"payload"] source:source error:NULL] != nil,
+                      @"Image snapshot is missing or changed");
+        else
+            SRRequire([source[@"payload"][@"text"] isKindOfClass:NSString.class] && [source[@"payload"][@"text"] length],
+                      @"Text snapshot is empty");
+        return source;
+    }
+    SRRequire(sourceKind == nil || [sourceKind isEqual:@"group_sync"],
+              @"This plan belongs to the message library and has no group source");
     NSArray *senders = [NSJSONSerialization JSONObjectWithData:[row[@"senders"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     NSArray *types = [NSJSONSerialization JSONObjectWithData:[row[@"types"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     SRRequire([source isKindOfClass:NSDictionary.class] && [senders isKindOfClass:NSArray.class] && [types isKindOfClass:NSArray.class], @"Source is unreadable");
