@@ -4,6 +4,7 @@
 #import "Core/SRStore.h"
 #import "Core/SREntryPreferences.h"
 #import "Adapter/SRSmallGroupSession.h"
+#import "Core/SRImageAssetStore.h"
 #import "Core/SRMediaProjection.h"
 #import "Core/SRRunProjection.h"
 
@@ -311,7 +312,13 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         return;
     }
     NSError *error = nil;
-    NSString *confirmation = [NSUUID.UUID.UUIDString copy];
+    // A stable key makes an identical request (same entry, version and ordered
+    // targets) resolve to the frozen task that already exists instead of
+    // creating another plan every time the button is tapped.
+    NSString *version = self.entry[@"current_version_id"] ?: @"";
+    NSString *scope = [NSString stringWithFormat:@"%@|%@|%@", self.item, version,
+                       [targets componentsJoinedByString:@","]];
+    NSString *confirmation = [SRImageAssetStore sha256ForData:[scope dataUsingEncoding:NSUTF8StringEncoding]];
     NSString *task = [self.store createLibraryTaskForAccount:self.account item:self.item
         version:self.entry[@"current_version_id"] confirmationID:confirmation targets:targets
         minimum:5 maximum:8 error:&error];
@@ -677,6 +684,17 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @end
 
 
+/* Read-only helper for host objects: only a declared, zero-argument getter is
+ * called, and only after respondsToSelector:. */
+static id SRLibraryReadGetter(id object, NSString *name) {
+    if (!object) return nil;
+    SEL selector = NSSelectorFromString(name);
+    if (![object respondsToSelector:selector]) return nil;
+    IMP imp = [object methodForSelector:selector];
+    if (!imp) return nil;
+    return ((id (*)(id, SEL))imp)(object, selector);
+}
+
 /* ------------------------------------------------------------------------ */
 /* 目标选择器（后续图片/视频转发共用）                                          */
 /* ------------------------------------------------------------------------ */
@@ -691,6 +709,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, strong) NSMutableSet *selectedPlans;
 @property(nonatomic, copy) void (^completion)(NSArray<NSString *> *targets);
 @property(nonatomic, copy, nullable) NSDictionary *problem;
+@property(nonatomic, strong, nullable) id nativePicker;
 @end
 
 @implementation SRTargetPickerScreen
@@ -780,8 +799,13 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         return cell;
     }
     cell.textLabel.text = @"选择微信群…";
-    cell.detailTextLabel.text = @"暂未启用（需要原生选择器 ABI）";
-    cell.textLabel.enabled = NO; cell.detailTextLabel.enabled = NO;
+    Class picker = NSClassFromString(@"MultiSelectContactsViewController");
+    BOOL available = picker && [picker isSubclassOfClass:UIViewController.class] &&
+        [picker instancesRespondToSelector:NSSelectorFromString(@"init")];
+    cell.detailTextLabel.text = available ? @"打开微信原生的多选联系人界面"
+                                          : @"当前版本不可用（原生选择器缺失）";
+    cell.textLabel.enabled = available; cell.detailTextLabel.enabled = available;
+    cell.selectionStyle = available ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
     return cell;
 }
 
@@ -801,7 +825,43 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         if ([self.selectedPlans containsObject:identifier]) [self.selectedPlans removeObject:identifier];
         else [self.selectedPlans addObject:identifier];
         [tableView reloadData];
+        return;
     }
+    if (path.section == 2) [self openNativePicker];
+}
+
+- (void)openNativePicker {
+    Class pickerClass = NSClassFromString(@"MultiSelectContactsViewController");
+    if (!pickerClass || ![pickerClass isSubclassOfClass:UIViewController.class]) return;
+    UIViewController *controller = nil;
+    @try { controller = [[pickerClass alloc] init]; } @catch (__unused NSException *exception) { return; }
+    if (!controller) return;
+    self.nativePicker = controller;
+    controller.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:controller animated:YES completion:nil];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    id picker = self.nativePicker;
+    if (!picker) return;
+    // The host picker dismissed: read its selection through declared getters only.
+    id contacts = SRLibraryReadGetter(picker, @"getSelectedContacts");
+    if (![contacts isKindOfClass:NSArray.class]) {
+        id selectView = SRLibraryReadGetter(picker, @"getContactSelectView");
+        contacts = SRLibraryReadGetter(selectView, @"getSelectedContacts");
+    }
+    NSMutableArray<NSString *> *targets = [NSMutableArray array];
+    for (id contact in (NSArray *)contacts ?: @[]) {
+        NSString *name = SRLibraryReadGetter(contact, @"m_nsUsrName");
+        if ([name isKindOfClass:NSString.class] && [name hasSuffix:@"@chatroom"] && ![targets containsObject:name])
+            [targets addObject:name];
+    }
+    self.nativePicker = nil;
+    if (!targets.count) return;   // host picker returned nothing usable
+    void (^completion)(NSArray<NSString *> *) = self.completion;
+    [self.navigationController popViewControllerAnimated:YES];
+    if (completion) completion(targets);
 }
 
 - (void)finish {
