@@ -443,9 +443,10 @@ class LibraryTaskTests(unittest.TestCase):
                 self.assertIn(guard, STORE)
         self.assertEqual(1, count('SELECT id,account FROM library_tasks WHERE run_id=?'))
         self.assertEqual(3, STORE.count('[self libraryTaskForRunUnchecked:'))
-        # A library plan can never be started or read as a group-sync source.
-        self.assertIn('A message-library plan must start through its own frozen task entry', STORE)
-        self.assertIn('This plan belongs to the message library and has no group source', STORE)
+        # A library plan may be driven by the execution session, but only from
+        # its frozen library source (no group identity is invented).
+        self.assertIn('[sourceKind isEqual:@"message_library"]', STORE)
+        self.assertIn("source_kind='message_library'", STORE)
         self.assertEqual(1, count('SELECT source_kind FROM plan_sources WHERE plan_id=?'))
         # Re-sending never removes a claim or a receipt.
         section = task_section()

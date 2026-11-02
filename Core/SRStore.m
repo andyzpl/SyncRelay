@@ -508,9 +508,6 @@ static NSArray *SRImagePayloadKeys(void) {
 - (NSString *)startRuleUnchecked:(NSString *)rule replay:(BOOL)replay {
         NSDictionary *config = [self query:@"SELECT r.*,p.account,p.snapshot FROM rules r JOIN plans p ON p.id=r.plan_id WHERE r.id=?" values:@[rule]].firstObject;
         SRRequire(config != nil, @"Unknown rule");
-        SRRequire([self sourceKindForPlanUnchecked:config[@"plan_id"]] == nil ||
-                  [[self sourceKindForPlanUnchecked:config[@"plan_id"]] isEqual:@"group_sync"],
-                  @"A message-library plan must start through its own frozen task entry");
         BOOL history = [self query:@"SELECT id FROM runs WHERE rule_id=? LIMIT 1" values:@[rule]].count > 0;
         SRRequire(history == replay, @"Existing history requires explicit replay; new rules require initial start");
         if (!history) {

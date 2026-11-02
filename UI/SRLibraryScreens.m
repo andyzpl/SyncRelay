@@ -770,7 +770,8 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         NSDictionary *plan = self.plans[(NSUInteger)path.row];
         NSString *identifier = plan[@"id"];
         NSString *name = [plan[@"source_group"] isKindOfClass:NSString.class] && [plan[@"source_group"] length]
-            ? plan[@"source_group"] : [NSString stringWithFormat:@"计划 %@", SRLibraryShortID(identifier)];
+            ? plan[@"source_group"] : [NSString stringWithFormat:@"计划 %ld · %@",
+                (long)(path.row + 1), SRLibraryShortID(identifier)];
         cell.textLabel.text = name;
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 个群 · %@ 条规则",
             plan[@"targetCount"] ?: @0, plan[@"ruleCount"] ?: @0];
