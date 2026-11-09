@@ -154,6 +154,8 @@ NSDictionary<NSString *, id> *SRMenuLibraryStatus(void) {
 @property(nonatomic, copy) id (^responderProvider)(void);
 @property(nonatomic, copy) void (^selectionHandler)(SRMenuIntentResult);
 @property(nonatomic) NSUInteger publishCount;
+@property(nonatomic) NSUInteger lastImageBytes;
+@property(nonatomic) NSInteger lastImageResult;
 @property(nonatomic) NSInteger lastIntent;
 @property(nonatomic) NSUInteger prepareCount;
 @property(nonatomic, weak) id activeMenu;
@@ -1008,9 +1010,11 @@ static BOOL SRImplicitParametersMatch(Method method) {
     SRLibraryIntakeResult result = SRLibraryIntakeWriteFailed;
     NSString *itemID = nil;
     if (context.imageData.length) {
+        @synchronized(self.lock) { self.lastImageBytes = context.imageData.length; }
         itemID = [self.intake saveImageData:context.imageData account:context.account
             operationKey:context.operationKey capturedAt:NSDate.date.timeIntervalSince1970
             result:&result error:NULL];
+        @synchronized(self.lock) { self.lastImageResult = (NSInteger)result; }
     } else {
         itemID = [self.intake saveMessageOfType:@"text" payload:@{@"text": context.body}
             operationKey:context.operationKey account:context.account
@@ -1055,6 +1059,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
                                           @"publishes": @(self.publishCount),
                                           @"lastIntent": @(self.lastIntent),
                                           @"enabled": @(self.enabled ? self.enabled() : NO),
+                  @"imageBytes": @(self.lastImageBytes),
+                  @"imageResult": @(self.lastImageResult),
                                           @"stage": @(SRMenuLastSourceStage),
                                           @"responderState": @(SRMenuResponderState),
                                           @"responderClass": SRMenuLastResponderClass ?: @"<none>",
