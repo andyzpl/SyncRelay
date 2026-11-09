@@ -364,6 +364,23 @@ static SEL SRMenuHookReadAction(id item) {
 /* Image cells keep their wrap only in an ivar and declare no getter. The scan
  * accepts an object ivar whose value is a *MessageWrap* instance; nothing is
  * assumed about offsets, and no KVC is used. */
+static id SRMenuHookWrapInObjectValue(id object, NSString *ivarName) {
+    if (!object || !ivarName.length) return nil;
+    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList(cls, &count);
+        for (unsigned int index = 0; index < count; index++) {
+            const char *rawName = ivar_getName(ivars[index]);
+            if (!rawName || ![ivarName isEqualToString:[NSString stringWithUTF8String:rawName]]) continue;
+            id value = object_getIvar(object, ivars[index]);
+            free(ivars);
+            return value;
+        }
+        free(ivars);
+    }
+    return nil;
+}
+
 static id SRMenuHookWrapInObjectDepth(id object, NSUInteger depth) {
     if (!object || depth > 3) return nil;
     // A declared wrap getter always wins.
@@ -591,6 +608,33 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
             objectNode = SRMenuHookReadObject(objectNode, NSSelectorFromString(@"superview"));
         }
         SRMenuLastObjectIvars = [objects copy];
+        // The cell view is a subview, not a superview: probe it separately.
+        id cellView = nil;
+        for (id node = responder; node; node = SRMenuHookReadObject(node, NSSelectorFromString(@"superview"))) {
+            NSString *name = NSStringFromClass(object_getClass(node));
+            if (![name containsString:@"ChatTableViewCell"]) continue;
+            cellView = SRMenuHookWrapInObjectValue(node, @"m_cellView");
+            break;
+        }
+        if (cellView) {
+            NSMutableArray *pairs = [NSMutableArray array];
+            Class cls = object_getClass(cellView);
+            unsigned int count = 0;
+            Ivar *ivars = class_copyIvarList(cls, &count);
+            for (unsigned int index = 0; index < count && pairs.count < 30; index++) {
+                const char *type = ivar_getTypeEncoding(ivars[index]);
+                const char *rawName = ivar_getName(ivars[index]);
+                if (!rawName) continue;
+                NSString *valueClass = @"<scalar>";
+                if (type && type[0] == '@') {
+                    id value = object_getIvar(cellView, ivars[index]);
+                    valueClass = value ? NSStringFromClass(object_getClass(value)) : @"<nil>";
+                }
+                [pairs addObject:[NSString stringWithFormat:@"%s -> %@", rawName, valueClass]];
+            }
+            free(ivars);
+            SRMenuLastObjectIvars = @{@"ImageMessageCellView": [pairs copy]};
+        }
         if (!delegate) { SRMenuStage(5); return nil; }
     }
     id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
