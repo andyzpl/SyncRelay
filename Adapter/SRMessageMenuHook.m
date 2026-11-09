@@ -403,6 +403,7 @@ static BOOL SRMenuHookValidLookupService(id service) {
 static NSInteger SRMenuLastSourceStage;
 static NSInteger SRMenuResponderState;
 static NSString *SRMenuLastResponderClass;
+static NSArray<NSString *> *SRMenuLastResponderChain;
 static Class SRMenuStatusMenuClass;
 static void SRMenuStage(NSInteger stage) { SRMenuLastSourceStage = stage; }
 
@@ -485,11 +486,14 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
         // the rich-text cover. Accept a real cell that declares the wrap getter,
         // found on the responder itself or on an ancestor.
         id candidate = responder;
+        NSMutableArray *chain = [NSMutableArray array];
         for (NSUInteger depth = 0; candidate && depth < 12; depth++) {
+            if (chain.count < 8) [chain addObject:NSStringFromClass(object_getClass(candidate))];
             SEL getter = NSSelectorFromString(@"getCurrentMessageWrap");
             if (SRMenuHookMethod(object_getClass(candidate), getter)) { delegate = candidate; break; }
             candidate = SRMenuHookReadObject(candidate, NSSelectorFromString(@"superview"));
         }
+        SRMenuLastResponderChain = [chain copy];
         if (!delegate) { SRMenuStage(5); return nil; }
     }
     id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
@@ -836,7 +840,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
                                           @"enabled": @(self.enabled ? self.enabled() : NO),
                                           @"stage": @(SRMenuLastSourceStage),
                                           @"responderState": @(SRMenuResponderState),
-                                          @"responderClass": SRMenuLastResponderClass ?: @"<none>" } mutableCopy];
+                                          @"responderClass": SRMenuLastResponderClass ?: @"<none>",
+                                          @"responderChain": SRMenuLastResponderChain ?: @[] } mutableCopy];
         Class menuClass = SRMenuStatusMenuClass;
         if (menuClass) {
             unsigned int count = 0;
