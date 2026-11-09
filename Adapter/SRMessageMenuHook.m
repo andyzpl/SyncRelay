@@ -637,6 +637,29 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
                 free(ivars);
                 if ([NSStringFromClass(owner) isEqualToString:@"BaseChatCellView"]) break;
             }
+                // The wrap lives in the cell view model; probe that object too.
+            id viewModel = SRMenuHookWrapInObjectValue(cellView, @"m_viewModel");
+            if (viewModel) {
+                for (Class owner = object_getClass(viewModel); owner && pairs.count < 90;
+                     owner = class_getSuperclass(owner)) {
+                    unsigned int count = 0;
+                    Ivar *ivars = class_copyIvarList(owner, &count);
+                    for (unsigned int index = 0; index < count && pairs.count < 90; index++) {
+                        const char *type = ivar_getTypeEncoding(ivars[index]);
+                        const char *rawName = ivar_getName(ivars[index]);
+                        if (!rawName) continue;
+                        NSString *valueClass = @"<scalar>";
+                        if (type && type[0] == '@') {
+                            id value = object_getIvar(viewModel, ivars[index]);
+                            valueClass = value ? NSStringFromClass(object_getClass(value)) : @"<nil>";
+                        }
+                        [pairs addObject:[NSString stringWithFormat:@"%s/%s -> %@",
+                            class_getName(owner), rawName, valueClass]];
+                    }
+                    free(ivars);
+                    if ([NSStringFromClass(owner) isEqualToString:@"BaseMessageViewModel"]) break;
+                }
+            }
             SRMenuLastObjectIvars = @{@"ImageMessageCellView": [pairs copy]};
         }
         if (NO) {
