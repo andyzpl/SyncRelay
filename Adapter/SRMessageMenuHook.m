@@ -1230,7 +1230,7 @@ static BOOL SRImplicitParametersMatch(Method method) {
     // Independent second source: read the same message back through the declared
     // instance API of the account-context message manager.
     id manager = self.readbackProvider ? self.readbackProvider() : nil;
-    if (!SRMenuHookValidLookupService(manager)) return nil;
+    if (!SRMenuHookValidLookupService(manager)) { SRMenuStage(34); return nil; }
     id stored = nil;
     @try {
         stored = SRReadObjectWithObjectAndUnsignedInteger(manager, @"GetMsg:LocalID:",
@@ -1238,7 +1238,7 @@ static BOOL SRImplicitParametersMatch(Method method) {
     } @catch (__unused NSException *exception) {
         return nil;
     }
-    if (!stored) return nil;
+    if (!stored) { SRMenuStage(35); return nil; }
     unsigned long long storedID = 0;
     if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMesLocalID"), &storedID) ||
         storedID != source.localID) return nil;
@@ -1289,13 +1289,13 @@ static BOOL SRImplicitParametersMatch(Method method) {
  * message is re-read independently before anything is written. */
 - (SRMenuCurrentIdentity *)frozenIdentityForItem:(id)item menu:(id)menu {
     SRMenuMessageContext *context = [self contextForOwnItem:item];
-    if (!context) return nil;
+    if (!context) { SRMenuStage(30); return nil; }
     NSString *account = self.currentAccount ? self.currentAccount() : nil;
-    if (!account.length || ![account isEqual:context.account]) return nil;
+    if (!account.length || ![account isEqual:context.account]) { SRMenuStage(31); return nil; }
     NSString *prefix = @"local:";
-    if (![context.messageIdentity hasPrefix:prefix]) return nil;
+    if (![context.messageIdentity hasPrefix:prefix]) { SRMenuStage(32); return nil; }
     unsigned long long localID = strtoull(context.messageIdentity.UTF8String + prefix.length, NULL, 10);
-    if (!localID) return nil;
+    if (!localID) { SRMenuStage(33); return nil; }
     id manager = self.readbackProvider ? self.readbackProvider() : nil;
     if (!SRMenuHookValidLookupService(manager)) return nil;
     id stored = nil;
@@ -1307,7 +1307,7 @@ static BOOL SRImplicitParametersMatch(Method method) {
     }
     if (!stored) return nil;
     unsigned long long storedID = 0;
-    if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMesLocalID"), &storedID) || storedID != localID) return nil;
+    if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMesLocalID"), &storedID) || storedID != localID) { SRMenuStage(36); return nil; }
     unsigned long long storedType = 0;
     if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiMessageType"), &storedType) ||
         ![[NSString stringWithFormat:@"%llu", storedType] isEqual:context.messageType]) return nil;
@@ -1315,25 +1315,25 @@ static BOOL SRImplicitParametersMatch(Method method) {
     if (!SRMenuHookReadUnsigned(stored, NSSelectorFromString(@"m_uiCreateTime"), &storedCreated) ||
         ![[NSString stringWithFormat:@"%llu", storedCreated] isEqual:context.createdAt]) return nil;
     id body = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsContent"));
-    if (![body isKindOfClass:NSString.class] || ![body isEqual:context.body]) return nil;
+    if (![body isKindOfClass:NSString.class] || ![body isEqual:context.body]) { SRMenuStage(37); return nil; }
     id fromObject = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsFromUsr"));
     id toObject = SRMenuHookReadObject(stored, NSSelectorFromString(@"m_nsToUsr"));
     NSString *session = nil;
     if ([fromObject isKindOfClass:NSString.class] && [fromObject isEqual:account]) session = toObject;
     else if ([toObject isKindOfClass:NSString.class] && [toObject isEqual:account]) session = fromObject;
-    if (![session isKindOfClass:NSString.class] || ![session isEqual:context.session]) return nil;
+    if (![session isKindOfClass:NSString.class] || ![session isEqual:context.session]) { SRMenuStage(38); return nil; }
     if (!self.epochProvider) return nil;
     unsigned long long liveEpoch = self.epochProvider();
     if (liveEpoch == ULLONG_MAX) return nil;
     NSString *epoch = [[NSString alloc] initWithFormat:@"%llu", liveEpoch];
-    if (![epoch isEqual:context.epoch]) return nil;
+    if (![epoch isEqual:context.epoch]) { SRMenuStage(39); return nil; }
     NSString *generation = nil;
     @synchronized(self.lock) { generation = [self.menuGenerations objectForKey:menu]; }
     // The menu is usually gone by the time the item is tapped; the frozen context
     // already carries the generation it was built under, so a missing menu must
     // not turn a valid item into a stale one.
     if (!generation.length) generation = context.generation;
-    if (![generation isEqual:context.generation]) return nil;
+    if (![generation isEqual:context.generation]) { SRMenuStage(40); return nil; }
     return [[SRMenuCurrentIdentity alloc] initWithAccount:account ownerToken:context.ownerToken
         generation:context.generation messageIdentity:context.messageIdentity
         session:context.session messageType:context.messageType
