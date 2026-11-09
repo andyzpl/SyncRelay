@@ -158,8 +158,11 @@ class IntakeContracts(unittest.TestCase):
         source = read("Adapter/SRMessageMenuHook.m")
         self.assertIn("NSPointerFunctionsOpaquePersonality", source)
         self.assertIn("activeGeneration", source)
-        self.assertIn("activeItem", source)
-        self.assertIn("context.generation isEqual:self.activeGeneration", source)
+        # Ownership is decided per menu generation, not by a single global
+        # active item: a menu that is already gone must not invalidate a freeze.
+        self.assertIn("menuGenerations", source)
+        self.assertIn("liveGeneration", source)
+        self.assertIn("liveGeneration.length && ![liveGeneration isEqual:context.generation]", source)
         self.assertIn("if (![self.contexts objectForKey:item])", source)
         self.assertIn("hasOtherOwn", source)
         self.assertIn("if (!self.enabled || !self.enabled()) return original;", source)

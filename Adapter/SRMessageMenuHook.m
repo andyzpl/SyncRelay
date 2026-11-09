@@ -981,7 +981,11 @@ static BOOL SRImplicitParametersMatch(Method method) {
         return SRMenuIntentContextStale;
     }
     @synchronized(self.lock) {
-        if (self.activeItem != item || ![context.generation isEqual:self.activeGeneration]) {
+        id owner = [self.menus objectForKey:item];
+        NSString *liveGeneration = owner ? [self.menuGenerations objectForKey:owner] : nil;
+        // A menu that is already gone cannot invalidate a frozen item; otherwise
+        // the item must still belong to the menu's current generation.
+        if (liveGeneration.length && ![liveGeneration isEqual:context.generation]) {
             SRMenuStage(64);
             return SRMenuIntentContextStale;
         }
@@ -1003,7 +1007,9 @@ static BOOL SRImplicitParametersMatch(Method method) {
     // The callbacks above may have rebuilt the menu or flipped the switch.
     if (!self.enabled || !self.enabled()) { SRMenuStage(70); return SRMenuIntentDisabled; }
     @synchronized(self.lock) {
-        if (self.activeItem != item || ![context.generation isEqual:self.activeGeneration]) {
+        id owner = [self.menus objectForKey:item];
+        NSString *liveGeneration = owner ? [self.menuGenerations objectForKey:owner] : nil;
+        if (liveGeneration.length && ![liveGeneration isEqual:context.generation]) {
             SRMenuStage(71);
             return SRMenuIntentContextStale;
         }
