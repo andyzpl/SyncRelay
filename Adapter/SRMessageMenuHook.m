@@ -365,26 +365,36 @@ static SEL SRMenuHookReadAction(id item) {
  * accepts an object ivar whose value is a *MessageWrap* instance; nothing is
  * assumed about offsets, and no KVC is used. */
 static id SRMenuHookWrapInObjectDepth(id object, NSUInteger depth) {
-    if (!object || depth > 2) return nil;
-    id viewModel = nil;
+    if (!object || depth > 3) return nil;
+    // A declared wrap getter always wins.
+    SEL getter = NSSelectorFromString(@"getCurrentMessageWrap");
+    if (SRMenuHookMethod(object_getClass(object), getter)) {
+        id wrap = SRMenuHookReadObject(object, getter);
+        if (wrap) return wrap;
+    }
+    id nested = nil;
     for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
         unsigned int count = 0;
         Ivar *ivars = class_copyIvarList(cls, &count);
         for (unsigned int index = 0; index < count; index++) {
             const char *type = ivar_getTypeEncoding(ivars[index]);
             if (!type || type[0] != '@') continue;
+            const char *rawName = ivar_getName(ivars[index]);
+            NSString *ivarName = rawName ? [NSString stringWithUTF8String:rawName] : @"";
             id value = object_getIvar(object, ivars[index]);
             if (!value) continue;
             NSString *name = NSStringFromClass(object_getClass(value));
             if ([name containsString:@"MessageWrap"]) { free(ivars); return value; }
-            // A cell keeps a view model which in turn owns the wrap.
-            if (!viewModel && ([name containsString:@"ViewModel"] || [name containsString:@"CellView"])) {
-                viewModel = value;
+            // ChatTableViewCell hosts a BaseChatCellView; that view owns the wrap.
+            if (!nested && ([ivarName isEqualToString:@"m_cellView"] ||
+                            [name containsString:@"ChatCellView"] || [name containsString:@"MessageCellView"] ||
+                            [name containsString:@"ViewModel"])) {
+                nested = value;
             }
         }
         free(ivars);
     }
-    return viewModel ? SRMenuHookWrapInObjectDepth(viewModel, depth + 1) : nil;
+    return nested ? SRMenuHookWrapInObjectDepth(nested, depth + 1) : nil;
 }
 
 static id SRMenuHookWrapInObject(id object) {
