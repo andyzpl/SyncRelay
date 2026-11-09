@@ -159,6 +159,9 @@ NSDictionary<NSString *, id> *SRMenuLibraryStatus(void) {
 @property(nonatomic) NSInteger lastIntent;
 @property(nonatomic) NSUInteger prepareCount;
 @property(nonatomic, weak) id activeMenu;
+/* Authoritative publication record: one live item per owner token, with the
+ * generation it was published under. Replacing the item revokes the old one. */
+@property(nonatomic, strong) NSMapTable *publishedByOwner;
 @end
 
 /* -------------------------------------------------------------------------
@@ -784,6 +787,8 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
         _menuResponders = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                                     valueOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality) capacity:0];
         SRMenuStatusHook = self;
+        _publishedByOwner = [[NSMapTable alloc] initWithKeyOptions:NSPointerFunctionsStrongMemory
+                                                     valueOptions:NSPointerFunctionsStrongMemory capacity:0];
         _menus = [[NSMapTable alloc] initWithKeyOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                            valueOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsOpaquePersonality)
                                                capacity:0];
@@ -934,6 +939,7 @@ static BOOL SRImplicitParametersMatch(Method method) {
             epoch:source.epoch operationKey:source.operationKey];
         own.context = frozen;
         [self.contexts setObject:frozen forKey:own];
+        [self.publishedByOwner setObject:@{@"item": own, @"generation": [generation copy]} forKey:source.ownerToken];
         self.activeGeneration = [generation copy];
         self.activeItem = own;
         NSMutableArray *published = [NSMutableArray arrayWithCapacity:original.count + 1];
@@ -976,16 +982,14 @@ static BOOL SRImplicitParametersMatch(Method method) {
         ![context.messageType isEqual:current.messageType] ||
         ![context.createdAt isEqual:current.createdAt] ||
         ![context.epoch isEqual:current.epoch] ||
-        ![context.body isEqual:current.body]) {
+        (![context.messageType isEqual:@"3"] && ![context.body isEqual:current.body])) {
         SRMenuStage(63);
         return SRMenuIntentContextStale;
     }
     @synchronized(self.lock) {
-        id owner = [self.menus objectForKey:item];
-        NSString *liveGeneration = owner ? [self.menuGenerations objectForKey:owner] : nil;
-        // A menu that is already gone cannot invalidate a frozen item; otherwise
-        // the item must still belong to the menu's current generation.
-        if (liveGeneration.length && ![liveGeneration isEqual:context.generation]) {
+        NSDictionary *published = [self.publishedByOwner objectForKey:context.ownerToken];
+        if (!published || published[@"item"] != item ||
+            ![published[@"generation"] isEqual:context.generation]) {
             SRMenuStage(64);
             return SRMenuIntentContextStale;
         }
@@ -1007,9 +1011,9 @@ static BOOL SRImplicitParametersMatch(Method method) {
     // The callbacks above may have rebuilt the menu or flipped the switch.
     if (!self.enabled || !self.enabled()) { SRMenuStage(70); return SRMenuIntentDisabled; }
     @synchronized(self.lock) {
-        id owner = [self.menus objectForKey:item];
-        NSString *liveGeneration = owner ? [self.menuGenerations objectForKey:owner] : nil;
-        if (liveGeneration.length && ![liveGeneration isEqual:context.generation]) {
+        NSDictionary *published = [self.publishedByOwner objectForKey:context.ownerToken];
+        if (!published || published[@"item"] != item ||
+            ![published[@"generation"] isEqual:context.generation]) {
             SRMenuStage(71);
             return SRMenuIntentContextStale;
         }
@@ -1019,7 +1023,12 @@ static BOOL SRImplicitParametersMatch(Method method) {
     // answer a replay without consulting the durable source of truth.
     SRLibraryIntakeResult result = SRLibraryIntakeWriteFailed;
     NSString *itemID = nil;
-    if (context.imageData.length) {
+    BOOL imageMessage = [context.messageType isEqual:@"3"];
+    if (imageMessage && !context.imageData.length) {
+        SRMenuStage(72);
+        return SRMenuIntentWriteFailed;
+    }
+    if (imageMessage) {
         @synchronized(self.lock) { self.lastImageBytes = context.imageData.length; }
         itemID = [self.intake saveImageData:context.imageData account:context.account
             operationKey:context.operationKey capturedAt:NSDate.date.timeIntervalSince1970
@@ -1201,8 +1210,10 @@ static BOOL SRImplicitParametersMatch(Method method) {
                  ownerToken:source.ownerToken messageIdentity:source.messageIdentity
                     session:source.session messageType:source.messageType
                   createdAt:source.createdAt epoch:source.epoch operationKey:source.operationKey];
+        frozen.imageData = source.imageData;
         [self.contexts setObject:frozen forKey:item];
         [self.menus setObject:menu forKey:item];
+        [self.publishedByOwner setObject:@{@"item": item, @"generation": [generation copy]} forKey:source.ownerToken];
         self.activeGeneration = [generation copy];
         self.activeMenu = menu;
         self.activeItem = item;
@@ -1365,10 +1376,9 @@ static BOOL SRImplicitParametersMatch(Method method) {
             item = sender;
         }
         if (foreign) return;
-        if (!item) item = self.activeItem;
         if (!item || ![self ownsItem:item]) return;
         id menu = nil;
-        @synchronized(self.lock) { menu = [self.menus objectForKey:item] ?: self.activeMenu; }
+        @synchronized(self.lock) { menu = [self.menus objectForKey:item]; }
         SRMenuCurrentIdentity *current = [self currentIdentityForMenu:menu];
         if (!current) current = [self frozenIdentityForItem:item menu:menu];
         SRMenuIntentResult result = [self handleSelection:item current:current];
