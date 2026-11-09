@@ -1329,6 +1329,10 @@ static BOOL SRImplicitParametersMatch(Method method) {
     if (![epoch isEqual:context.epoch]) return nil;
     NSString *generation = nil;
     @synchronized(self.lock) { generation = [self.menuGenerations objectForKey:menu]; }
+    // The menu is usually gone by the time the item is tapped; the frozen context
+    // already carries the generation it was built under, so a missing menu must
+    // not turn a valid item into a stale one.
+    if (!generation.length) generation = context.generation;
     if (![generation isEqual:context.generation]) return nil;
     return [[SRMenuCurrentIdentity alloc] initWithAccount:account ownerToken:context.ownerToken
         generation:context.generation messageIdentity:context.messageIdentity
