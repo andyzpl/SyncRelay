@@ -161,8 +161,8 @@ class IntakeContracts(unittest.TestCase):
         # Ownership is decided per menu generation, not by a single global
         # active item: a menu that is already gone must not invalidate a freeze.
         self.assertIn("menuGenerations", source)
-        self.assertIn("publishedByOwner", source)
-        self.assertIn("published[@\"item\"] != item", source)
+        self.assertIn("publishedItems", source)
+        self.assertIn("publishedItem != item", source)
         self.assertIn("if (![self.contexts objectForKey:item])", source)
         self.assertIn("hasOtherOwn", source)
         self.assertIn("if (!self.enabled || !self.enabled()) return original;", source)
