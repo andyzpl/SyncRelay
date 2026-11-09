@@ -361,6 +361,27 @@ static SEL SRMenuHookReadAction(id item) {
     return ((SEL (*)(id, SEL))method_getImplementation(method))(item, getter);
 }
 
+/* Image cells keep their wrap only in an ivar and declare no getter. The scan
+ * accepts an object ivar whose value is a *MessageWrap* instance; nothing is
+ * assumed about offsets, and no KVC is used. */
+static id SRMenuHookWrapInObject(id object) {
+    if (!object) return nil;
+    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList(cls, &count);
+        for (unsigned int index = 0; index < count; index++) {
+            const char *type = ivar_getTypeEncoding(ivars[index]);
+            if (!type || type[0] != '@') continue;
+            id value = object_getIvar(object, ivars[index]);
+            if (!value) continue;
+            NSString *name = NSStringFromClass(object_getClass(value));
+            if ([name containsString:@"MessageWrap"]) { free(ivars); return value; }
+        }
+        free(ivars);
+    }
+    return nil;
+}
+
 static BOOL SRMenuHookValidLookupService(id service) {
     if (!service || object_isClass(service)) return NO;
     SEL selector = NSSelectorFromString(@"GetMsg:LocalID:");
@@ -492,6 +513,7 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
             if (chain.count < 8) [chain addObject:NSStringFromClass(object_getClass(candidate))];
             SEL getter = NSSelectorFromString(@"getCurrentMessageWrap");
             if (SRMenuHookMethod(object_getClass(candidate), getter)) { delegate = candidate; break; }
+            if (SRMenuHookWrapInObject(candidate)) { delegate = candidate; break; }
             candidate = SRMenuHookReadObject(candidate, NSSelectorFromString(@"superview"));
         }
         SRMenuLastResponderChain = [chain copy];
@@ -512,6 +534,7 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
         if (!delegate) { SRMenuStage(5); return nil; }
     }
     id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
+    if (!wrap) wrap = SRMenuHookWrapInObject(delegate);
     if (!wrap) { SRMenuStage(6); return nil; }
     unsigned long long localID = 0;
     if (!SRMenuHookReadUnsigned(wrap, NSSelectorFromString(@"m_uiMesLocalID"), &localID) || !localID) { SRMenuStage(7); return nil; }
