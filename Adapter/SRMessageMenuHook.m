@@ -2595,6 +2595,14 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     if (responder) [self.hook rememberResponder:responder forMenu:menu];
     id items = SRMenuHookReadObject(menu, NSSelectorFromString(@"currentMenuItems"));
     if (![items isKindOfClass:NSArray.class]) return;
+    // If the menu already carries our item, reuse it: publishing another one
+    // would move activeItem away from the item the user can actually tap.
+    for (id existing in (NSArray *)items) {
+        if (SRMenuHookReadObject(existing, NSSelectorFromString(@"target")) == self.hook) {
+            [self.recentItems setObject:existing forKey:menu];
+            return;
+        }
+    }
     id remembered = [self.recentItems objectForKey:menu];
     BOOL alreadyOurs = NO;
     for (id existing in (NSArray *)items) {
