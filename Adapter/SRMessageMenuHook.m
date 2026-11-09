@@ -446,6 +446,7 @@ static NSString *SRMenuLastResponderClass;
 static NSArray<NSString *> *SRMenuLastResponderChain;
 static NSDictionary<NSString *, NSArray<NSString *> *> *SRMenuLastChainGetters;
 static NSDictionary<NSString *, NSArray<NSString *> *> *SRMenuLastChainIvars;
+static NSDictionary<NSString *, NSArray<NSString *> *> *SRMenuLastObjectIvars;
 static Class SRMenuStatusMenuClass;
 static void SRMenuStage(NSInteger stage) { SRMenuLastSourceStage = stage; }
 
@@ -569,6 +570,27 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
             ivarNode = SRMenuHookReadObject(ivarNode, NSSelectorFromString(@"superview"));
         }
         SRMenuLastChainIvars = [ivarNames copy];
+        NSMutableDictionary *objects = [NSMutableDictionary dictionary];
+        id objectNode = responder;
+        for (NSUInteger depth = 0; objectNode && depth < 3; depth++) {
+            Class cls = object_getClass(objectNode);
+            unsigned int count = 0;
+            Ivar *ivars = class_copyIvarList(cls, &count);
+            NSMutableArray *pairs = [NSMutableArray array];
+            for (unsigned int index = 0; index < count && pairs.count < 20; index++) {
+                const char *type = ivar_getTypeEncoding(ivars[index]);
+                if (!type || type[0] != '@') continue;
+                const char *rawName = ivar_getName(ivars[index]);
+                if (!rawName) continue;
+                id value = object_getIvar(objectNode, ivars[index]);
+                NSString *valueClass = value ? NSStringFromClass(object_getClass(value)) : @"<nil>";
+                [pairs addObject:[NSString stringWithFormat:@"%s -> %@", rawName, valueClass]];
+            }
+            free(ivars);
+            objects[NSStringFromClass(cls)] = [pairs copy];
+            objectNode = SRMenuHookReadObject(objectNode, NSSelectorFromString(@"superview"));
+        }
+        SRMenuLastObjectIvars = [objects copy];
         if (!delegate) { SRMenuStage(5); return nil; }
     }
     id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
@@ -919,7 +941,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
                                           @"responderClass": SRMenuLastResponderClass ?: @"<none>",
                                           @"responderChain": SRMenuLastResponderChain ?: @[],
                                           @"chainGetters": SRMenuLastChainGetters ?: @{},
-                                          @"chainIvars": SRMenuLastChainIvars ?: @{} } mutableCopy];
+                                          @"chainIvars": SRMenuLastChainIvars ?: @{},
+                                          @"objectIvars": SRMenuLastObjectIvars ?: @{} } mutableCopy];
         Class menuClass = SRMenuStatusMenuClass;
         if (menuClass) {
             unsigned int count = 0;
