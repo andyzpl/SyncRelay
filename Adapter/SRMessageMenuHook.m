@@ -381,6 +381,32 @@ static id SRMenuHookWrapInObjectValue(id object, NSString *ivarName) {
     return nil;
 }
 
+static id SRMenuHookMessageWrapAt(id object) {
+    if (!object) return nil;
+    id wrap = SRMenuHookWrapInObjectValue(object, @"m_messageWrap");
+    if (wrap) {
+        NSString *name = NSStringFromClass(object_getClass(wrap));
+        if ([name containsString:@"MessageWrap"]) return wrap;
+    }
+    return nil;
+}
+
+/* Known path for image cells: cell -> m_cellView -> m_viewModel -> m_messageWrap. */
+static id SRMenuHookWrapByKnownPath(id object) {
+    if (!object) return nil;
+    id wrap = SRMenuHookMessageWrapAt(object);
+    if (wrap) return wrap;
+    id cellView = nil;
+    NSString *name = NSStringFromClass(object_getClass(object));
+    if ([name containsString:@"ChatTableViewCell"]) cellView = SRMenuHookWrapInObjectValue(object, @"m_cellView");
+    else if ([name containsString:@"CellView"]) cellView = object;
+    if (!cellView) return nil;
+    wrap = SRMenuHookMessageWrapAt(cellView);
+    if (wrap) return wrap;
+    id viewModel = SRMenuHookWrapInObjectValue(cellView, @"m_viewModel");
+    return SRMenuHookMessageWrapAt(viewModel);
+}
+
 static id SRMenuHookWrapInObjectDepth(id object, NSUInteger depth) {
     if (!object || depth > 3) return nil;
     // A declared wrap getter always wins.
@@ -551,7 +577,9 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
             if (chain.count < 8) [chain addObject:NSStringFromClass(object_getClass(candidate))];
             SEL getter = NSSelectorFromString(@"getCurrentMessageWrap");
             if (SRMenuHookMethod(object_getClass(candidate), getter)) { delegate = candidate; break; }
-            if (SRMenuHookWrapInObject(candidate)) { delegate = candidate; break; }
+            if (SRMenuHookWrapByKnownPath(candidate) || SRMenuHookWrapInObject(candidate)) {
+                delegate = candidate; break;
+            }
             candidate = SRMenuHookReadObject(candidate, NSSelectorFromString(@"superview"));
         }
         SRMenuLastResponderChain = [chain copy];
@@ -684,6 +712,7 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
         if (!delegate) { SRMenuStage(5); return nil; }
     }
     id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
+    if (!wrap) wrap = SRMenuHookWrapByKnownPath(delegate);
     if (!wrap) wrap = SRMenuHookWrapInObject(delegate);
     if (!wrap) { SRMenuStage(6); return nil; }
     unsigned long long localID = 0;
