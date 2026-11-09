@@ -960,14 +960,14 @@ static BOOL SRImplicitParametersMatch(Method method) {
 
 - (SRMenuIntentResult)handleSelection:(id)item current:(SRMenuCurrentIdentity *)current {
     SRMenuMessageContext *context = [self contextForOwnItem:item];
-    if (!context) return SRMenuIntentNotOurs;
-    if (!self.enabled || !self.enabled()) return SRMenuIntentDisabled;
+    if (!context) { SRMenuStage(60); return SRMenuIntentNotOurs; }
+    if (!self.enabled || !self.enabled()) { SRMenuStage(61); return SRMenuIntentDisabled; }
     // Identity is re-checked at click time: the independently observed menu,
     // account and selected message must still be the ones this item was built
     // for. Missing identity is stale, never a wildcard.
     if (!current.account.length || !current.ownerToken.length || !current.generation.length ||
         !current.messageIdentity.length || !current.session.length || !current.messageType.length ||
-        !current.createdAt.length || !current.epoch.length || !current.body.length) return SRMenuIntentContextStale;
+        !current.createdAt.length || !current.epoch.length || !current.body.length) { SRMenuStage(62); return SRMenuIntentContextStale; }
     if (![context.account isEqual:current.account] ||
         ![context.ownerToken isEqual:current.ownerToken] ||
         ![context.generation isEqual:current.generation] ||
@@ -977,30 +977,34 @@ static BOOL SRImplicitParametersMatch(Method method) {
         ![context.createdAt isEqual:current.createdAt] ||
         ![context.epoch isEqual:current.epoch] ||
         ![context.body isEqual:current.body]) {
+        SRMenuStage(63);
         return SRMenuIntentContextStale;
     }
     @synchronized(self.lock) {
         if (self.activeItem != item || ![context.generation isEqual:self.activeGeneration]) {
+            SRMenuStage(64);
             return SRMenuIntentContextStale;
         }
     }
     // Both callbacks are independent runtime checks. Missing verification is
     // treated as stale rather than as an implicit allow.
-    if (!self.currentAccount || !self.accountActive) return SRMenuIntentContextStale;
+    if (!self.currentAccount || !self.accountActive) { SRMenuStage(65); return SRMenuIntentContextStale; }
     NSString * _Nullable liveAccount = self.currentAccount();
-    if (!liveAccount.length || ![liveAccount isEqual:current.account]) return SRMenuIntentContextStale;
-    if (!self.accountActive(current.account)) return SRMenuIntentContextStale;
+    if (!liveAccount.length || ![liveAccount isEqual:current.account]) { SRMenuStage(66); return SRMenuIntentContextStale; }
+    if (!self.accountActive(current.account)) { SRMenuStage(67); return SRMenuIntentContextStale; }
     // Last external callbacks (account/liveness) may have changed the receiver:
     // re-read the authoritative token right before writing.
-    if (!self.epochProvider) return SRMenuIntentContextStale;
+    if (!self.epochProvider) { SRMenuStage(68); return SRMenuIntentContextStale; }
     unsigned long long liveEpoch = self.epochProvider();
     if (liveEpoch == ULLONG_MAX || ![[NSString stringWithFormat:@"%llu", liveEpoch] isEqual:current.epoch]) {
+        SRMenuStage(69);
         return SRMenuIntentContextStale;
     }
     // The callbacks above may have rebuilt the menu or flipped the switch.
-    if (!self.enabled || !self.enabled()) return SRMenuIntentDisabled;
+    if (!self.enabled || !self.enabled()) { SRMenuStage(70); return SRMenuIntentDisabled; }
     @synchronized(self.lock) {
         if (self.activeItem != item || ![context.generation isEqual:self.activeGeneration]) {
+            SRMenuStage(71);
             return SRMenuIntentContextStale;
         }
     }
