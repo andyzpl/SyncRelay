@@ -364,8 +364,9 @@ static SEL SRMenuHookReadAction(id item) {
 /* Image cells keep their wrap only in an ivar and declare no getter. The scan
  * accepts an object ivar whose value is a *MessageWrap* instance; nothing is
  * assumed about offsets, and no KVC is used. */
-static id SRMenuHookWrapInObject(id object) {
-    if (!object) return nil;
+static id SRMenuHookWrapInObjectDepth(id object, NSUInteger depth) {
+    if (!object || depth > 2) return nil;
+    id viewModel = nil;
     for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
         unsigned int count = 0;
         Ivar *ivars = class_copyIvarList(cls, &count);
@@ -376,10 +377,18 @@ static id SRMenuHookWrapInObject(id object) {
             if (!value) continue;
             NSString *name = NSStringFromClass(object_getClass(value));
             if ([name containsString:@"MessageWrap"]) { free(ivars); return value; }
+            // A cell keeps a view model which in turn owns the wrap.
+            if (!viewModel && ([name containsString:@"ViewModel"] || [name containsString:@"CellView"])) {
+                viewModel = value;
+            }
         }
         free(ivars);
     }
-    return nil;
+    return viewModel ? SRMenuHookWrapInObjectDepth(viewModel, depth + 1) : nil;
+}
+
+static id SRMenuHookWrapInObject(id object) {
+    return SRMenuHookWrapInObjectDepth(object, 0);
 }
 
 static BOOL SRMenuHookValidLookupService(id service) {
