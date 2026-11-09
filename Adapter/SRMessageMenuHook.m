@@ -435,6 +435,7 @@ static NSInteger SRMenuResponderState;
 static NSString *SRMenuLastResponderClass;
 static NSArray<NSString *> *SRMenuLastResponderChain;
 static NSDictionary<NSString *, NSArray<NSString *> *> *SRMenuLastChainGetters;
+static NSDictionary<NSString *, NSArray<NSString *> *> *SRMenuLastChainIvars;
 static Class SRMenuStatusMenuClass;
 static void SRMenuStage(NSInteger stage) { SRMenuLastSourceStage = stage; }
 
@@ -540,6 +541,24 @@ static BOOL SRMenuHookClassIsKindOf(Class candidate, Class base) {
             node = SRMenuHookReadObject(node, NSSelectorFromString(@"superview"));
         }
         SRMenuLastChainGetters = [getters copy];
+        NSMutableDictionary *ivarNames = [NSMutableDictionary dictionary];
+        id ivarNode = responder;
+        for (NSUInteger depth = 0; ivarNode && depth < 4; depth++) {
+            Class cls = object_getClass(ivarNode);
+            unsigned int count = 0;
+            Ivar *ivars = class_copyIvarList(cls, &count);
+            NSMutableArray *names = [NSMutableArray array];
+            for (unsigned int index = 0; index < count && names.count < 40; index++) {
+                const char *name = ivar_getName(ivars[index]);
+                const char *type = ivar_getTypeEncoding(ivars[index]);
+                if (!name) continue;
+                [names addObject:[NSString stringWithFormat:@"%s %s", name, type ?: "?"]];
+            }
+            free(ivars);
+            ivarNames[NSStringFromClass(cls)] = [names copy];
+            ivarNode = SRMenuHookReadObject(ivarNode, NSSelectorFromString(@"superview"));
+        }
+        SRMenuLastChainIvars = [ivarNames copy];
         if (!delegate) { SRMenuStage(5); return nil; }
     }
     id wrap = SRMenuHookReadObject(delegate, NSSelectorFromString(@"getCurrentMessageWrap"));
@@ -889,7 +908,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
                                           @"responderState": @(SRMenuResponderState),
                                           @"responderClass": SRMenuLastResponderClass ?: @"<none>",
                                           @"responderChain": SRMenuLastResponderChain ?: @[],
-                                          @"chainGetters": SRMenuLastChainGetters ?: @{} } mutableCopy];
+                                          @"chainGetters": SRMenuLastChainGetters ?: @{},
+                                          @"chainIvars": SRMenuLastChainIvars ?: @{} } mutableCopy];
         Class menuClass = SRMenuStatusMenuClass;
         if (menuClass) {
             unsigned int count = 0;
