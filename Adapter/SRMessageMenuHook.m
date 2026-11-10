@@ -924,7 +924,9 @@ static BOOL SRImplicitParametersMatch(Method method) {
     @synchronized(self.lock) {
         id publishedItem = [self.publishedItems objectForKey:source.ownerToken];
         SRMenuMessageContext *publishedContext = publishedItem ? [self.contexts objectForKey:publishedItem] : nil;
-        if (publishedItem && SRMenuSamePublishedSelection(publishedContext, source)) {
+        BOOL containsPublished = NO;
+        for (id item in original) if (item == publishedItem) { containsPublished = YES; break; }
+        if (containsPublished && SRMenuSamePublishedSelection(publishedContext, source)) {
             NSMutableArray *normalized = [NSMutableArray arrayWithCapacity:original.count];
             BOOL addedPublished = NO;
             BOOL hasOtherOwn = NO;
@@ -940,8 +942,7 @@ static BOOL SRImplicitParametersMatch(Method method) {
                     [normalized addObject:item];
                 }
             }
-            if (!addedPublished) [normalized addObject:publishedItem];
-            return (hasOtherOwn || normalized.count != original.count || !addedPublished) ? [normalized copy] : original;
+            return (hasOtherOwn || normalized.count != original.count) ? [normalized copy] : original;
         }
         SRMenuOwnItem *own = [SRMenuOwnItem new];
         /* Freeze by value through the designated initializer. The caller's object
