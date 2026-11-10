@@ -17,7 +17,7 @@ class UIRedesignSpecContracts(unittest.TestCase):
     def test_home_has_exactly_the_four_approved_destinations(self):
         self.assertIn('@[@"群同步", @"消息库转发", @"群分组", @"设置"][path.row]', HOME)
         self.assertIn('section == 0 ? 1 : 4', HOME)
-        self.assertIn('constraintGreaterThanOrEqualToConstant:68', HOME)
+        self.assertIn('constraintGreaterThanOrEqualToConstant:74', SCREENS)
         for forbidden in ('runSummary:', 'confirmForCurrentAccount:', 'armForAccount:', 'startRule:', 'UISwitch'):
             self.assertNotIn(forbidden, HOME)
 
@@ -69,9 +69,10 @@ class UIRedesignSpecContracts(unittest.TestCase):
     def test_docking_is_explicit_and_preserved_through_phase_changes(self):
         self.assertIn('SRCapsuleDockSide(desiredX', CAPSULE)
         self.assertIn('self.unitX < 0.5 ? @"›" : @"‹"', CAPSULE)
-        self.assertIn('self.docked ? 128', CAPSULE)
+        self.assertIn('self.docked ? 90', CAPSULE)
         show = CAPSULE.split('- (void)showModel:', 1)[1].split('- (void)updatePreviewControls', 1)[0]
-        self.assertNotIn('self.docked =', show)
+        self.assertIn('if (idle || accountChanged || newRun)', show)
+        self.assertNotIn('self.docked = YES', show)
         self.assertIn('self.previewCollapsed = self.docked', show)
         restore = CAPSULE.split('- (void)restoreFromDock', 1)[1].split('- (void)openPressed', 1)[0]
         for forbidden in ('self.action()', 'self.openAction()', 'self.menuAction()', 'resume', 'pause'):
@@ -93,6 +94,55 @@ class UIRedesignSpecContracts(unittest.TestCase):
         self.assertIn('currentRunID isEqual:boundRun', action)
         self.assertIn('![live[@"action"] isEqual:boundAction]', action)
         self.assertIn('resumeRun:boundRun account:account', action)
+
+    def test_home_reference_columns_and_typography_are_explicit(self):
+        cell = SCREENS.split('@implementation SRHomeNavigationCell', 1)[1].split('@end', 1)[0]
+        for expected in ('constant:14', 'constant:-14', 'constraintEqualToConstant:30', 'constant:18',
+                         'systemFontOfSize:18', 'SRSettingsFont(14,', 'layer.cornerRadius = 12',
+                         'self.minimumHeight.constant = hint ? 44 : 74', 'self.divider.hidden = last',
+                         'self.summary.hidden = !summary.length'):
+            self.assertIn(expected, cell)
+        self.assertIn('UITableViewCellSeparatorStyleNone', HOME)
+        self.assertIn('adjustsFontForContentSizeCategory = YES', cell)
+
+    def test_settings_keeps_three_inset_groups_and_existing_actions(self):
+        sections = PANEL.split('if (self.page == SRPanelPageSettings) return @[', 1)[1].split('];', 1)[0]
+        self.assertEqual(sections.count('@"title"'), 3)
+        for title in ('转发设置', '显示', '维护与关于'):
+            self.assertIn(f'@"{title}"', sections)
+        self.assertIn('page == SRPanelPageSettings ? UITableViewStyleInsetGrouped', PANEL)
+        for removed in ('@[@0,@1]', '@[@0,@5]'):
+            self.assertNotIn(removed, sections)
+
+    def test_result_close_is_bound_to_one_durable_terminal_run(self):
+        close = PANEL.split('self.floatingProgress.closeResultAction =', 1)[1].split('self.floatingProgress.action =', 1)[0]
+        for expected in ('verifyAccount:account', 'entry.smallGroupSession.busy',
+                         'entry.displayedProgressRun isEqual:resultRun',
+                         'summaryForRun:resultRun', 'live[@"account"] isEqual:account',
+                         'entry.dismissedResultRun = resultRun'):
+            self.assertIn(expected, close)
+        for forbidden in ('cancelRun:', 'endRun:', 'finishContent:', 'resumeRun:', 'saveConfiguration:', 'startRule:'):
+            self.assertNotIn(forbidden, close)
+        self.assertIn('@"completed": @"本次执行结束"', CAPSULE)
+        self.assertNotIn('@"本组完成"', CAPSULE)
+
+    def test_result_record_reads_the_bound_run_and_reuses_core_counts(self):
+        record = SCREENS.split('UIViewController *SRCreateRunResultRecord(', 1)[1].split('@interface', 1)[0]
+        for expected in ('verifyAccount && verifyAccount()', 'summaryForRun:run',
+                         'row[@"account"] isEqual:account', 'SRRunDescription(card)',
+                         'SRCreateReadOnlyText(@"本次转发记录", body, verifyAccount)'):
+            self.assertIn(expected, record)
+        for forbidden in ('startRule:', 'resumeRun:', 'cancelRun:', 'finishContent:', 'saveConfiguration:'):
+            self.assertNotIn(forbidden, record)
+
+    def test_native_uikit_harness_is_separate_from_macos_evidence(self):
+        harness = (ROOT / 'tests/ios/SRFloatingProgressTests.m').read_text(encoding='utf-8')
+        for expected in ('UIApplicationMain', 'UIGestureRecognizerStateCancelled',
+                         'SRVisualModel(@"idle")', 'SRVisualModel(@"running")',
+                         'CGRectEqualToRect(dock, view.frame)', 'commands == 1',
+                         'next[@"uiRunID"] = @"next-run"'):
+            self.assertIn(expected, harness)
+        self.assertNotIn('SRFloatingProgressTests.m', (ROOT / '.github/workflows/build.yml').read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__':

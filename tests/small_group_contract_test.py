@@ -82,8 +82,13 @@ class SmallGroupContracts(unittest.TestCase):
 
     def test_foreground_progress_does_not_own_a_window_or_intercept_chat(self):
         text = self.text('UI/SRFloatingProgress.m')
-        for forbidden in ('UIWindow alloc', 'makeKeyAndVisible', 'hitTest:', 'pointInside:', 'sendEvent:', 'swizzle'):
+        for forbidden in ('UIWindow alloc', 'makeKeyAndVisible', 'hitTest:', 'sendEvent:', 'swizzle'):
             self.assertNotIn(forbidden, text)
+        # Hit testing only subtracts the host's outer left-edge strip. It cannot
+        # enlarge our control into the surrounding chat.
+        hit = text.split('- (BOOL)pointInside:', 1)[1].split('- (void)drag:', 1)[0]
+        self.assertIn('self.docked && self.unitX < 0.5 && point.x < 20', hit)
+        self.assertIn('return [super pointInside:point withEvent:event]', hit)
         self.assertIn('UIKeyboardWillChangeFrameNotification', text)
         self.assertIn('window.safeAreaInsets', text)
         self.assertIn('UIAccessibilityIsReduceMotionEnabled()', text)

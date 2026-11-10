@@ -39,6 +39,9 @@ FOUNDATION_EXPORT UIViewController *SRCreateRunDetail(SRStore *store, SRSmallGro
 /* Reuses the existing paged exception/unsent screen for one exact run. */
 FOUNDATION_EXPORT UIViewController *SRCreateRunExceptions(SRStore *store, NSString *account,
                                                           BOOL (^verifyAccount)(void), NSString *run);
+/* A read-only receipt for one exact terminal run, with no continuation action. */
+FOUNDATION_EXPORT UIViewController *SRCreateRunResultRecord(SRStore *store, NSString *account,
+                                                           BOOL (^verifyAccount)(void), NSString *run);
 /* One read-only text page for stored text. It re-verifies the account before
  * showing its body and hides it again when the app leaves the foreground, so a
  * page that only displays stored text never needs a second implementation. */

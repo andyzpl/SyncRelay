@@ -6,6 +6,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, nullable) void (^action)(void);
 @property(nonatomic, copy, nullable) void (^openAction)(void);
 @property(nonatomic, copy, nullable) void (^menuAction)(void);
+/* Dismisses only the exact displayed result; never finishes a Core task. */
+@property(nonatomic, copy, nullable) void (^closeResultAction)(void);
 @property(nonatomic, copy, nullable) void (^positionChanged)(CGFloat unitX, CGFloat unitY);
 - (void)setInitialPositionUnitX:(CGFloat)unitX unitY:(CGFloat)unitY;
 - (void)showModel:(NSDictionary *)model inWindow:(UIWindow *)window;

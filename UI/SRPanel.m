@@ -372,6 +372,12 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     [super viewDidLoad];
     self.title = @[@"SyncRelay 转发", @"群同步", @"群分组", @"设置"][self.page];
     SRStyleSettingsTable(self);
+    if (self.page == SRPanelPageSettings) {
+        self.tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
+        self.tableView.estimatedRowHeight = 52;
+        self.tableView.sectionHeaderHeight = 44;
+        self.tableView.sectionFooterHeight = 18;
+    }
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:self.returnsToOperationsHome ? @"返回" : @"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:self.page == SRPanelPageGroups ? @"保存分组" : @"保存" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
     self.navigationController.interactivePopGestureRecognizer.enabled = NO;
@@ -463,10 +469,9 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
         return @[@{@"title": @"目标分组", @"rows": rows}];
     }
     if (self.page == SRPanelPageSettings) return @[
-        @{@"title": @"转发节奏", @"rows": @[@[@2,@0]]},
-        @{@"title": @"显示与入口", @"rows": @[@[@0,@4], @[@0,@12]]},
-        @{@"title": @"高级设置", @"rows": @[@[@0,@13]]},
-        @{@"title": @"维护与关于", @"rows": @[@[@4,@7], @[@0,@2], @[@0,@1], @[@0,@5], @[@5,@0]]}];
+        @{@"title": @"转发设置", @"rows": @[@[@2,@0]]},
+        @{@"title": @"显示", @"rows": @[@[@0,@4], @[@0,@12]]},
+        @{@"title": @"维护与关于", @"rows": @[@[@4,@7], @[@0,@2], @[@0,@13], @[@5,@0]]}];
     return nil;
 }
 - (NSIndexPath *)modelPathForDisplayPath:(NSIndexPath *)path {
@@ -595,11 +600,15 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     path = [self modelPathForDisplayPath:path];
     NSInteger section = path.section;
     BOOL accessible = UIContentSizeCategoryIsAccessibilityCategory(tableView.traitCollection.preferredContentSizeCategory);
-    BOOL subtitle = accessible || (section == 0 && path.row == 13) || (section == 5 && path.row == 1);
+    BOOL subtitle = accessible || (section == 0 && path.row == 13 && self.page != SRPanelPageSettings) || (section == 5 && path.row == 1);
     NSString *reuse = subtitle ? @"setting-accessible" : @"setting-value";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuse] ?: [[UITableViewCell alloc]
         initWithStyle:subtitle ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1 reuseIdentifier:reuse];
     SRStyleSettingsCell(cell);
+    if (self.page == SRPanelPageSettings) {
+        cell.layoutMargins = UIEdgeInsetsMake(14, 16, 14, 16);
+        cell.detailTextLabel.font = SRSettingsFont(17, UIFontTextStyleBody);
+    }
     cell.accessoryView = nil; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
     cell.detailTextLabel.text = nil; cell.selectionStyle = UITableViewCellSelectionStyleDefault;
@@ -626,7 +635,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
             cell.detailTextLabel.text = armed ? @"观察中" : @"不代发";
         }
         if (path.row == 4) {
-            cell.textLabel.text = @"悬浮入口";
+            cell.textLabel.text = @"悬浮快捷入口";
             UISwitch *toggle = [[UISwitch alloc] init]; toggle.on = self.entryPreferences.floatingEntryEnabled;
             toggle.onTintColor = SRSettingsAccent();
             [toggle addTarget:self action:@selector(floatingEntryChanged:) forControlEvents:UIControlEventValueChanged];
@@ -673,6 +682,10 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
             cell.textLabel.text = @"单次转发目标上限";
             cell.detailTextLabel.text = [NSString stringWithFormat:@"当前 %ld 个群\n默认密码：%@（输入表示已知晓）",
                 (long)self.entryPreferences.maxTargetsPerTask, SRTargetLimitAcknowledgment];
+            if (self.page == SRPanelPageSettings) {
+                cell.textLabel.text = @"高级设置";
+                cell.detailTextLabel.text = @"单次转发目标上限";
+            }
         }
         /* Independent opt-in for the library menu entry. */
         if (path.row == 12) {
@@ -697,8 +710,8 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
             cell.accessoryType = UITableViewCellAccessoryNone; cell.accessoryView = toggle; cell.selectionStyle = UITableViewCellSelectionStyleNone;
         }
     } else if (section == 2) {
-        cell.textLabel.text = @"随机间隔";
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@–%@ 秒 / 次", self.draft[@"minimum"], self.draft[@"maximum"]];
+        cell.textLabel.text = @"转发间隔";
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@–%@ 秒", self.draft[@"minimum"], self.draft[@"maximum"]];
     } else if (section == 3) {
         NSArray *rules = self.draft[@"rules"];
         if (path.row == 0) { cell.textLabel.text = @"排除群聊"; cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个", (unsigned long)[self.draft[@"excludedGroups"] count]]; }
@@ -1708,6 +1721,9 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
 @property(nonatomic) BOOL smallGroupOwnsIdleTimer;
 @property(nonatomic) BOOL smallGroupPreviousIdleTimer;
 @property(nonatomic, strong) SRFloatingProgress *floatingProgress;
+/* UI identity bindings only. Business state is always read back from Core. */
+@property(nonatomic, copy) NSString *displayedProgressRun;
+@property(nonatomic, copy) NSString *dismissedResultRun;
 @property(nonatomic, strong) SRWeChatReader *identityReader;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
 @property(nonatomic, strong) SRWeChatSettingsEntry *settingsEntry;
@@ -2048,10 +2064,15 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     NSDictionary *captureStatus = self.capture.status;
     NSString *account = [self.identityReader connect:NULL] ? self.identityReader.accountID : nil;
     if (!account.length) { [self.floatingProgress hide]; return; }
+    if (model && self.smallGroupSession.currentRunID.length)
+        self.displayedProgressRun = [self.smallGroupSession.currentRunID copy];
+    NSDictionary *result = self.displayedProgressRun.length ?
+        [self.store summaryForRun:self.displayedProgressRun error:NULL] : nil;
+    BOOL hasResult = [result[@"account"] isEqual:account] &&
+        [@[@"completed", @"ended"] containsObject:result[@"state"]] && !self.smallGroupSession.busy;
     BOOL captureBelongs = account.length && [captureStatus[@"account"] isEqual:account];
     NSDictionary *operations = account.length ? [self.store operationsContentForAccount:account error:NULL] : nil;
     NSDictionary *currentContent = [operations[@"current"] isKindOfClass:NSDictionary.class] ? operations[@"current"] : nil;
-    NSDictionary *recentContent = [operations[@"recent"] isKindOfClass:NSDictionary.class] ? operations[@"recent"] : nil;
     NSNumber *previewGeneration = nil;
     if (!model && captureBelongs && [captureStatus[@"state"] isEqual:@"preview"]) {
         previewGeneration = captureStatus[@"generation"];
@@ -2060,14 +2081,11 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     } else if (!model && captureBelongs && [captureStatus[@"state"] isEqual:@"waiting"]) {
         model = @{ @"visible": @YES, @"countText": @"等待中", @"phase": @"waiting", @"action": @"open",
             @"actionEnabled": @YES, @"menuEnabled": @YES };
-    } else if (!model && captureBelongs && [self.smallGroupSession.status[@"state"] isEqual:@"completed"]) {
-        model = @{ @"visible": @YES, @"countText": @"完成", @"phase": @"completed", @"action": @"open",
+    } else if (!model && hasResult && ![self.dismissedResultRun isEqual:result[@"id"]]) {
+        model = @{ @"visible": @YES, @"countText": @"查看转发记录", @"phase": @"completed", @"action": @"open",
             @"actionEnabled": @YES, @"menuEnabled": @YES };
-    } else if (!model && currentContent) {
+    } else if (!model && currentContent && !(hasResult && [self.dismissedResultRun isEqual:result[@"id"]])) {
         model = @{ @"visible": @YES, @"countText": @"待转发", @"phase": @"ready", @"action": @"open",
-            @"actionEnabled": @YES, @"menuEnabled": @YES };
-    } else if (!model && recentContent) {
-        model = @{ @"visible": @YES, @"countText": @"完成", @"phase": @"completed", @"action": @"open",
             @"actionEnabled": @YES, @"menuEnabled": @YES };
     }
     if (!model && account.length && self.entryPreferences.floatingEntryEnabled)
@@ -2093,6 +2111,17 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     }
     NSString *boundRun = [self.smallGroupSession.currentRunID copy];
     NSString *boundAction = [model[@"action"] copy];
+    NSString *resultRun = [model[@"phase"] isEqual:@"completed"] ? result[@"id"] : nil;
+    self.floatingProgress.closeResultAction = resultRun.length ? ^{
+        SREntry *entry = weakSelf;
+        if (!entry || UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
+            ![entry.identityReader verifyAccount:account error:NULL] || entry.smallGroupSession.busy ||
+            ![entry.displayedProgressRun isEqual:resultRun]) return;
+        NSDictionary *live = [entry.store summaryForRun:resultRun error:NULL];
+        if (![live[@"account"] isEqual:account] || ![@[@"completed", @"ended"] containsObject:live[@"state"]]) return;
+        entry.dismissedResultRun = resultRun;
+        [entry refreshFloatingProgress];
+    } : nil;
     self.floatingProgress.action = ^{
         SREntry *entry = weakSelf;
         if (!entry || !account.length || !boundRun.length || ![entry.identityReader verifyAccount:account error:NULL] ||
@@ -2109,10 +2138,26 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
         };
         self.floatingProgress.menuAction = ^{ [weakSelf ignorePreviewForAccount:account generation:previewGeneration]; };
     } else {
-        self.floatingProgress.openAction = ^{ [weakSelf openOperationsFromController:nil]; };
-        self.floatingProgress.menuAction = ^{ [weakSelf showOperationsMenu]; };
+        self.floatingProgress.openAction = ^{
+            SREntry *entry = weakSelf;
+            if (![entry.identityReader verifyAccount:account error:NULL]) return;
+            if (resultRun.length) {
+                if (![entry.displayedProgressRun isEqual:resultRun] || entry.smallGroupSession.busy || entry.presented.presentingViewController) return;
+                [entry openOperationsFromController:nil previewAccount:nil generation:nil showProgress:NO];
+                UINavigationController *navigation = entry.presented;
+                if (navigation.viewControllers.count == 1 && navigation.topViewController == entry.operationsHome)
+                    [navigation pushViewController:SRCreateRunResultRecord(entry.store, account, ^BOOL {
+                        return [weakSelf.identityReader verifyAccount:account error:NULL];
+                    }, resultRun) animated:NO];
+            } else [entry openOperationsFromController:nil];
+        };
+        self.floatingProgress.menuAction = ^{
+            if ([weakSelf.identityReader verifyAccount:account error:NULL]) [weakSelf showOperationsMenu];
+        };
     }
-    [self.floatingProgress showModel:model inWindow:host]; self.button.hidden = YES;
+    NSMutableDictionary *display = [model mutableCopy]; display[@"uiAccount"] = account;
+    if (boundRun.length || resultRun.length) display[@"uiRunID"] = boundRun ?: resultRun;
+    [self.floatingProgress showModel:display inWindow:host]; self.button.hidden = YES;
 }
 - (void)ignorePreviewForAccount:(NSString *)account generation:(NSNumber *)generation {
     if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
@@ -2321,7 +2366,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     /* No re-entry while the stack is presenting or dismissing. */
     if (navigation.isBeingPresented || navigation.isBeingDismissed ||
         navigation.transitionCoordinator || navigation.presentedViewController) return;
-    SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleGrouped]; panel.store = self.store;
+    SRPanel *panel = [[SRPanel alloc] initWithStyle:page == SRPanelPageSettings ? UITableViewStyleInsetGrouped : UITableViewStyleGrouped]; panel.store = self.store;
     panel.page = page; panel.expectedAccount = account;
     panel.capture = self.capture; panel.receiver = self.receiver; panel.sourceTimeProbe = self.sourceTimeProbe;
     panel.imageSource = self.imageSource;

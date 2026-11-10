@@ -118,7 +118,7 @@ class PhaseBUIContracts(unittest.TestCase):
         panel = self.text("UI/SRPanel.m")
         self.assertNotIn('BOOL dockedWaiting', source)
         self.assertIn('SRCapsuleDockSide(', source)
-        self.assertIn('self.docked ? 44', source)
+        self.assertIn('self.docked || idle ? 44', source)
         self.assertIn('if (self.docked) {', source)
         self.assertIn('self.menuButton.hidden = YES;', source)
         self.assertIn('@"countText": @"等待中"', panel)
@@ -158,7 +158,7 @@ class PhaseBUIContracts(unittest.TestCase):
         for guard in ('captureBelongs && [captureStatus[@"state"] isEqual:@"preview"]',
                       'captureStatus[@"state"] isEqual:@"waiting"]',
                       "progressBelongsToCurrentAccount",
-                      "currentContent", "recentContent"):
+                      "currentContent", "hasResult", 'result[@"account"] isEqual:account'):
             self.assertIn(guard, refresh)
 
     def test_home_settings_row_is_wired_to_a_real_settings_route(self):
@@ -386,7 +386,10 @@ class PhaseBUIContracts(unittest.TestCase):
         body = source.split("- (void)openPressed {", 1)[1].split("\n}", 1)[0]
         self.assertIn("[self restoreFromDock]", body)
         self.assertIn("self.progressExpanded = !self.progressExpanded", body)
-        self.assertNotIn("self.openAction()", body)
+        self.assertIn('isEqual:@"idle"]', body)
+        idle = body.split('isEqual:@"idle"]', 1)[1].split('return;', 1)[0]
+        self.assertIn('self.openAction()', idle)
+        self.assertNotIn('self.action()', body)
         self.assertNotIn('isEqual:@"open"', body)
         # A drag must not be reported as a body tap.
         self.assertIn("requireGestureRecognizerToFail:pan", source)

@@ -53,6 +53,104 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     SRScreenPresent(controller, alert);
 }
 
+UIViewController *SRCreateRunResultRecord(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), NSString *run) {
+    BOOL verified = NO;
+    @try { verified = verifyAccount && verifyAccount(); } @catch (__unused id exception) { }
+    NSDictionary *row = verified && run.length ? [store summaryForRun:run error:NULL] : nil;
+    NSString *body = @"本次记录暂不可读取，请返回后重试。";
+    if ([row[@"account"] isEqual:account] && [@[@"completed", @"ended"] containsObject:row[@"state"]]) {
+        NSMutableDictionary *card = [row mutableCopy], *counts = [NSMutableDictionary dictionary];
+        for (NSDictionary *count in row[@"counts"]) counts[count[@"state"]] = count[@"count"];
+        card[@"counts"] = counts;
+        body = [NSString stringWithFormat:@"本次执行结束\n%@\n\n执行结束不代表全部送达。", SRRunDescription(card)];
+    }
+    return SRCreateReadOnlyText(@"本次转发记录", body, verifyAccount);
+}
+
+/* The reference has one continuous four-row surface. Keep icon and text
+ * columns explicit: UITableViewCell's built-in image sizing varies by symbol. */
+@interface SRHomeNavigationCell : UITableViewCell
+@property(nonatomic, strong) UIView *surface;
+@property(nonatomic, strong) UIImageView *symbol;
+@property(nonatomic, strong) UILabel *heading;
+@property(nonatomic, strong) UILabel *summary;
+@property(nonatomic, strong) UIView *divider;
+@property(nonatomic, strong) NSLayoutConstraint *minimumHeight;
+@property(nonatomic, strong) NSLayoutConstraint *textTop;
+@property(nonatomic, strong) NSLayoutConstraint *textBottom;
+- (void)configureTitle:(NSString *)title summary:(NSString * _Nullable)summary
+                symbol:(NSString *)symbol first:(BOOL)first last:(BOOL)last hint:(BOOL)hint;
+@end
+@implementation SRHomeNavigationCell
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)identifier {
+    self = [super initWithStyle:style reuseIdentifier:identifier];
+    if (!self) return nil;
+    self.backgroundColor = UIColor.clearColor; self.selectionStyle = UITableViewCellSelectionStyleNone;
+    self.backgroundView = [[UIView alloc] init]; self.backgroundView.backgroundColor = UIColor.clearColor;
+    _surface = [[UIView alloc] init]; _surface.layer.cornerRadius = 12; _surface.clipsToBounds = YES;
+    _symbol = [[UIImageView alloc] init]; _symbol.contentMode = UIViewContentModeScaleAspectFit;
+    _heading = [[UILabel alloc] init]; _summary = [[UILabel alloc] init];
+    _heading.numberOfLines = 0; _summary.numberOfLines = 0;
+    _heading.adjustsFontForContentSizeCategory = YES; _summary.adjustsFontForContentSizeCategory = YES;
+    _heading.textColor = UIColor.labelColor; _summary.textColor = UIColor.secondaryLabelColor;
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[_heading, _summary]];
+    text.axis = UILayoutConstraintAxisVertical; text.spacing = 4;
+    UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+    chevron.contentMode = UIViewContentModeScaleAspectFit; chevron.tintColor = UIColor.tertiaryLabelColor;
+    chevron.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightRegular];
+    _divider = [[UIView alloc] init]; _divider.backgroundColor = UIColor.separatorColor;
+    [self.contentView addSubview:_surface];
+    for (UIView *view in @[_symbol, text, chevron, _divider]) [_surface addSubview:view];
+    for (UIView *view in @[_surface, _symbol, text, chevron, _divider]) view.translatesAutoresizingMaskIntoConstraints = NO;
+    _minimumHeight = [self.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:74];
+    _textTop = [text.topAnchor constraintEqualToAnchor:_surface.topAnchor constant:14];
+    _textBottom = [text.bottomAnchor constraintEqualToAnchor:_surface.bottomAnchor constant:-14];
+    [NSLayoutConstraint activateConstraints:@[
+        [_surface.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
+        [_surface.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+        [_surface.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+        [_surface.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+        _minimumHeight,
+        [_symbol.leadingAnchor constraintEqualToAnchor:_surface.leadingAnchor constant:18],
+        [_symbol.widthAnchor constraintEqualToConstant:30], [_symbol.heightAnchor constraintEqualToConstant:30],
+        [_symbol.centerYAnchor constraintEqualToAnchor:_surface.centerYAnchor],
+        [text.leadingAnchor constraintEqualToAnchor:_symbol.trailingAnchor constant:18],
+        [text.trailingAnchor constraintEqualToAnchor:chevron.leadingAnchor constant:-12],
+        _textTop, _textBottom,
+        [chevron.trailingAnchor constraintEqualToAnchor:_surface.trailingAnchor constant:-16],
+        [chevron.widthAnchor constraintEqualToConstant:9], [chevron.heightAnchor constraintEqualToConstant:16],
+        [chevron.centerYAnchor constraintEqualToAnchor:_surface.centerYAnchor],
+        [_divider.leadingAnchor constraintEqualToAnchor:_surface.leadingAnchor],
+        [_divider.trailingAnchor constraintEqualToAnchor:_surface.trailingAnchor],
+        [_divider.bottomAnchor constraintEqualToAnchor:_surface.bottomAnchor],
+        [_divider.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale]]];
+    self.isAccessibilityElement = YES;
+    return self;
+}
+- (void)configureTitle:(NSString *)title summary:(NSString *)summary symbol:(NSString *)symbol
+                 first:(BOOL)first last:(BOOL)last hint:(BOOL)hint {
+    self.heading.text = title; self.summary.text = summary; self.summary.hidden = !summary.length;
+    self.minimumHeight.constant = hint ? 44 : 74;
+    self.textTop.constant = hint ? 10 : 14; self.textBottom.constant = hint ? -10 : -14;
+    self.heading.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleHeadline]
+        scaledFontForFont:[UIFont systemFontOfSize:18 weight:hint ? UIFontWeightRegular : UIFontWeightSemibold]];
+    self.summary.font = SRSettingsFont(14, UIFontTextStyleSubheadline);
+    self.symbol.image = [UIImage systemImageNamed:symbol];
+    self.symbol.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:27 weight:UIImageSymbolWeightRegular];
+    self.symbol.tintColor = first && !hint ? UIColor.systemBlueColor : UIColor.secondaryLabelColor;
+    self.surface.backgroundColor = SRSettingsCellBackground();
+    self.surface.layer.maskedCorners = (first ? kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner : 0) |
+        (last ? kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner : 0);
+    self.divider.hidden = last;
+    self.accessibilityLabel = summary.length ? [NSString stringWithFormat:@"%@，%@", title, summary] : title;
+    self.accessibilityTraits = UIAccessibilityTraitButton;
+}
+- (void)setHighlighted:(BOOL)highlighted animated:(BOOL)animated {
+    [super setHighlighted:highlighted animated:animated];
+    self.surface.backgroundColor = highlighted ? UIColor.tertiarySystemFillColor : SRSettingsCellBackground();
+}
+@end
+
 @interface SRNavigationHomeScreen : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
@@ -67,6 +165,9 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 - (void)viewDidLoad {
     [super viewDidLoad]; SRStyleSettingsTable(self);
     self.title = @"SyncRelay";
+    self.tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+    self.tableView.estimatedRowHeight = 74;
     self.view.accessibilityIdentifier = @"SyncRelay.NavigationHome";
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
         style:UIBarButtonItemStylePlain target:self action:@selector(close)];
@@ -106,29 +207,24 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     return self.hintDestination >= 0 && section == 0 ? 1 : 4;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"navigation-home"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"navigation-home"];
-        [cell.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:68].active = YES;
-    }
-    SRStyleSettingsCell(cell); cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    cell.imageView.tintColor = SRSettingsAccent();
-    cell.imageView.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:23 weight:UIImageSymbolWeightRegular];
+    SRHomeNavigationCell *cell = [tableView dequeueReusableCellWithIdentifier:@"navigation-home"] ?:
+        [[SRHomeNavigationCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"navigation-home"];
     if (self.hintDestination >= 0 && path.section == 0) {
-        cell.textLabel.text = self.hintDestination == 0 ? @"先设置母群" : @"去群分组";
-        cell.detailTextLabel.text = nil; cell.imageView.image = [UIImage systemImageNamed:@"info.circle"];
+        [cell configureTitle:self.hintDestination == 0 ? @"先设置母群" : @"去群分组" summary:nil
+            symbol:@"info.circle" first:YES last:YES hint:YES];
         cell.accessibilityIdentifier = @"SyncRelay.HomeHint"; return cell;
     }
-    cell.textLabel.text = @[@"群同步", @"消息库转发", @"群分组", @"设置"][path.row];
-    cell.imageView.image = [UIImage systemImageNamed:@[@"arrow.triangle.2.circlepath", @"tray.full", @"person.3", @"gearshape"][path.row]];
+    NSString *title = @[@"群同步", @"消息库转发", @"群分组", @"设置"][path.row];
     NSArray *summaries = @[@"母群与消息来源 · 未设置", @"选择消息并转发", @"目标分组与排除群 · 未配置", @"节奏、显示与诊断"];
-    cell.detailTextLabel.text = summaries[path.row];
-    if (self.problem && (path.row == 0 || path.row == 2)) cell.detailTextLabel.text = self.problem;
+    NSString *summary = summaries[path.row];
+    if (self.problem && (path.row == 0 || path.row == 2)) summary = self.problem;
     else if (path.row == 0 && [self.configuration[@"sourceGroup"][@"name"] length])
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"母群与消息来源 · %@", self.configuration[@"sourceGroup"][@"name"]];
+        summary = [NSString stringWithFormat:@"母群与消息来源 · %@", self.configuration[@"sourceGroup"][@"name"]];
     else if (path.row == 2 && [self.configuration[@"rules"] count])
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"目标分组与排除群 · %lu 个分组", (unsigned long)[self.configuration[@"rules"] count]];
+        summary = [NSString stringWithFormat:@"目标分组与排除群 · %lu 个分组", (unsigned long)[self.configuration[@"rules"] count]];
+    [cell configureTitle:title summary:summary
+        symbol:@[@"arrow.triangle.2.circlepath", @"paperplane", @"person.2", @"gearshape"][path.row]
+        first:path.row == 0 last:path.row == 3 hint:NO];
     cell.accessibilityIdentifier = @[@"SyncRelay.HomeSource", @"SyncRelay.HomeLibrary", @"SyncRelay.HomeGroups", @"SyncRelay.HomeSettings"][path.row];
     return cell;
 }
