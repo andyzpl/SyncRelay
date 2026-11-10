@@ -450,10 +450,20 @@ static void checkImageCapture(void) {
     CHECK(reads == 3 && received.count == 2); [receiver stop];
     // Exercise the terminal bounded-wait branch without sleeping 30 seconds per suite.
     mode = 1; CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    NSNumber *waitingRound = @(receiver.generationToken);
+    __block NSUInteger stops = 0;
+    receiver.didStop = ^(NSString *stoppedAccount, NSNumber *generation, NSString *imageState) {
+        CHECK([stoppedAccount isEqual:@"wxid_account"]);
+        CHECK([generation isEqual:waitingRound]);
+        CHECK([imageState isEqual:@"timed_out"]);
+        stops++;
+    };
     [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:image]; pump();
     [receiver pollImage:[receiver valueForKey:@"pendingImage"] generation:[[receiver valueForKey:@"generation"] unsignedIntegerValue] remaining:0];
     CHECK([receiver.diagnostics[@"imageState"] isEqual:@"timed_out"] && ![receiver.diagnostics[@"armed"] boolValue]);
-    CHECK(received.count == 2);
+    CHECK(received.count == 2 && stops == 1 && ![@(receiver.generationToken) isEqual:waitingRound]);
+    [receiver stop]; CHECK(stops == 1);
+    receiver.didStop = nil;
     for (mode = 2; mode <= 5; mode++) {
         account = @"wxid_account"; image.m_n64MesSvrID = 11;
         CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
@@ -742,6 +752,39 @@ static void checkImageCapabilityGate(void) {
     puts("PASS: image configuration without capability blocks is rejected before arming, and a text-only round still arms, delivers and releases the entry");
 }
 
+static void checkAccountLookupCannotStopReplacement(void) {
+    NSString *account = @"wxid_account";
+    NSDictionary *configuration = draft();
+    __block __weak SRWeChatReceiver *weakReceiver = nil;
+    __block BOOL replaceDuringLookup = NO, accountMissing = NO;
+    __block NSUInteger delivered = 0, stops = 0;
+    SRWeChatReceiver *receiver = [[SRWeChatReceiver alloc] initWithVersion:@"8.0.79" classResolver:^Class(NSString *name) {
+        return [name isEqual:@"CMessageMgr"] ? ReceiveManager.class : ([name isEqual:@"CMessageWrap"] ? ReceiveWrap.class : Nil);
+    } currentAccount:^NSString * {
+        if (replaceDuringLookup) {
+            replaceDuringLookup = NO;
+            SRWeChatReceiver *live = weakReceiver;
+            [live stop];
+            CHECK([live armForAccount:account configuration:configuration error:NULL]);
+            return nil;
+        }
+        return accountMissing ? nil : account;
+    } received:^(__unused NSDictionary *message) { delivered++; }];
+    weakReceiver = receiver;
+    receiver.didStop = ^(__unused NSString *stoppedAccount, __unused NSNumber *generation, __unused NSString *imageState) { stops++; };
+    CHECK([receiver armForAccount:account configuration:configuration error:NULL]);
+    ReceiveManager *manager = [ReceiveManager new];
+    replaceDuringLookup = YES;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
+    CHECK([receiver.diagnostics[@"armed"] boolValue] && stops == 1 && delivered == 0);
+    CHECK(!receiver.diagnostics[@"counters"][@"account_changed"]);
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump(); CHECK(delivered == 1);
+    accountMissing = YES;
+    [manager AsyncOnAddMsg:@"mother@chatroom" MsgWrap:wrap()]; pump();
+    CHECK(![receiver.diagnostics[@"armed"] boolValue] && stops == 2 && delivered == 1);
+    CHECK([receiver.diagnostics[@"counters"][@"account_changed"] isEqual:@1]);
+}
+
 int main(void) {
     @autoreleasepool {
         ScalarTraps *traps = [[ScalarTraps alloc] init];
@@ -941,6 +984,7 @@ int main(void) {
         checkAppMessageProbe();
         checkOutgoingTypeCensus();
         checkImageCapabilityGate();
+        checkAccountLookupCannotStopReplacement();
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: guarded receive, original hook chain, exact IDs, wxid filters, frozen preview, bounded redacted pre/post directions and cancellation");
     }

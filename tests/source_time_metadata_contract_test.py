@@ -125,10 +125,29 @@ class ProbeForwardingContracts(unittest.TestCase):
 
     def test_panel_binds_receiver_round_after_a_successful_arm(self):
         begin = PANEL.split('- (void)beginCapture {', 1)[1].split('- (void)toggleSourceTimeProbe', 1)[0]
-        self.assertIn('[self.capture bindReceiverGeneration:self.receiver.diagnostics[@"receiverGeneration"]];', begin)
+        self.assertIn('if (![receiverState[@"armed"] boolValue])', begin)
+        self.assertIn('[self.capture bindReceiverGeneration:receiverState[@"receiverGeneration"]];', begin)
         self.assertLess(begin.index('[self.receiver armForAccount:account configuration:snapshot error:&error]'),
                         begin.index('bindReceiverGeneration:'))
         self.assertIn('acceptCapturedMessage:message evidence:evidence', PANEL)
+
+    def test_receiver_stop_updates_capture_without_a_settings_panel(self):
+        prepare = method_body(PANEL, '- (void)prepareCapture {')
+        bridge = prepare.split('self.receiver.didStop =', 1)[1].split('self.receiver.trace =', 1)[0]
+        self.assertIn('dispatch_async(dispatch_get_main_queue()', bridge)
+        self.assertIn('if ([weakSelf.capture endWaitingForAccount:account receiverGeneration:generation reason:reason])', bridge)
+        self.assertIn('postNotificationName:SRRelayStateChangedNotification object:nil', bridge)
+        for forbidden in ('presentedSettingsPanel', 'SRRuntimeLog', 'armForAccount:', 'confirmForCurrentAccount:'):
+            self.assertNotIn(forbidden, bridge)
+        refresh = method_body(PANEL, '- (void)refresh {')
+        self.assertNotIn('[self.capture cancel]', refresh)
+
+    def test_host_account_lookup_cannot_cancel_the_current_capture(self):
+        prepare = method_body(PANEL, '- (void)prepareCapture {')
+        lookup = prepare.split('currentAccount:^NSString * {', 1)[1].split('} received:received]', 1)[0]
+        self.assertIn('[entry.identityReader connect:NULL]', lookup)
+        for forbidden in ('[entry.capture cancel]', '[entry.receiver stop]', 'postNotificationName:'):
+            self.assertNotIn(forbidden, lookup)
 
 
 class PlanScreenRowContracts(unittest.TestCase):
@@ -144,7 +163,7 @@ class PlanScreenRowContracts(unittest.TestCase):
         self.assertIn('else if (path.row == 4) {', cell)
         self.assertIn('else cell.detailTextLabel.text = SRSourceTimeText(source, path.row);', cell)
         select = method_body(SCREENS, '- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {')
-        self.assertIn('if (path.row == 4) {', select)
+        self.assertIn('if (path.row == (self.opensForwardingGroups ? 0 : 4)) {', select)
 
     def test_host_created_at_is_never_rendered_as_a_date(self):
         # B-2 moved the formatting into Core/SRRunProjection so the operations

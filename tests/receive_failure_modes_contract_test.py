@@ -116,8 +116,16 @@ class P2ProbeTimingTests(unittest.TestCase):
         # would stay armed and keep answering with a stale identity.
         body = method_body(RECEIVER,
                            "- (void)observeSession:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence {")
-        account = body.index('[self note:@"account_changed"]; [self stop]; return;')
+        account = body.index('[self stopForGeneration:@(generation) accountChanged:YES]; return;')
         self.assertLess(account, body.index("[self allowsSender:sender type:type]"))
+
+    def test_stop_checks_the_original_round_inside_the_receiver_lock(self):
+        body = method_body(RECEIVER, '- (void)stopForGeneration:(NSNumber *)expectedGeneration accountChanged:(BOOL)accountChanged {')
+        lock = body.index('@synchronized(self)')
+        guard = body.index('![expectedGeneration isEqualToNumber:@(self.generation)]')
+        self.assertLess(lock, guard)
+        self.assertLess(guard, body.index('self.armed = NO;'))
+        self.assertLess(guard, body.index('self.problem ='))
 
     def test_type_49_probe_is_not_blocked_by_the_relay_type_filter(self):
         # The read-only type-49 XML probe is a diagnostic capability that is

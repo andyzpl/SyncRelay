@@ -1,6 +1,12 @@
 #import <Foundation/Foundation.h>
 @class SRStore;
 NS_ASSUME_NONNULL_BEGIN
+typedef NS_ENUM(NSInteger, SRSourceCaptureStopReason) {
+    SRSourceCaptureStopNone,
+    SRSourceCaptureStopReceiver,
+    SRSourceCaptureStopImageTimeout,
+    SRSourceCaptureStopImageRejected,
+};
 @interface SRSourceCapture : NSObject
 @property(nonatomic, readonly, copy, nullable) NSDictionary *preview;
 - (instancetype)initWithStore:(SRStore *)store;
@@ -12,11 +18,17 @@ NS_ASSUME_NONNULL_BEGIN
  * receiver and capture counters are independent and are never compared to each
  * other; an evidence generation is only ever checked against this binding. */
 - (void)bindReceiverGeneration:(nullable NSNumber *)generation;
+/* A receiver stop can only end its bound wait; it cannot remove a preview. */
+- (BOOL)endWaitingForAccount:(NSString *)account receiverGeneration:(NSNumber *)generation reason:(SRSourceCaptureStopReason)reason;
 /* A match stops listening and waits for explicit confirmation. Never creates a run. */
 - (BOOL)offerEnvelope:(NSDictionary *)envelope;
 /* Same gate, plus the allowlisted time evidence produced by the receive hook. */
 - (BOOL)offerEnvelope:(NSDictionary *)envelope evidence:(nullable NSDictionary *)evidence;
 - (nullable NSString *)confirmForCurrentAccount:(NSString *)account error:(NSError **)error;
+/* UI actions use the generation that was shown, not the latest preview. */
+- (nullable NSDictionary *)previewSnapshotForAccount:(NSString *)account generation:(nullable NSNumber *)generation;
+- (nullable NSString *)confirmForCurrentAccount:(NSString *)account generation:(nullable NSNumber *)generation error:(NSError **)error;
+- (BOOL)discardPreviewForAccount:(NSString *)account generation:(nullable NSNumber *)generation;
 /* Includes the frozen configuration so preview never describes a newer edited draft. */
 - (NSDictionary *)status;
 /* Redacted state and numeric rejection codes; no source/account/body data. */

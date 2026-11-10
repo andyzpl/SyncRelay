@@ -33,6 +33,7 @@ static NSDictionary *SRSourceTimeMetadata(NSDictionary *evidence, NSTimeInterval
 @property(nonatomic, copy) NSDictionary *configuration;
 @property(nonatomic, copy, nullable) NSDictionary *captured;
 @property(nonatomic) BOOL waiting;
+@property(nonatomic) SRSourceCaptureStopReason stopReason;
 /* Monotonic round token. It is bumped on every successful arm so that
  * diagnostics and any in-flight offer belong to exactly one capture round and a
  * re-arm cannot be confused with the previous round. */
@@ -82,6 +83,7 @@ static NSDictionary *SRSourceTimeMetadata(NSDictionary *evidence, NSTimeInterval
         }
         self.account = account; self.configuration = frozen; self.waiting = YES;
         self.offered = 0; self.rejected = 0; self.lastReason = 0; self.generation++;
+        self.stopReason = SRSourceCaptureStopNone;
         // A new round starts unbound: the host arm that follows decides which
         // receiver round may deliver into it.
         self.receiverRound = nil;
@@ -92,6 +94,19 @@ static NSDictionary *SRSourceTimeMetadata(NSDictionary *evidence, NSTimeInterval
     @synchronized(self) {
         NSNumber *value = [generation isKindOfClass:NSNumber.class] ? generation : nil;
         self.receiverRound = (value && isfinite(value.doubleValue) && value.doubleValue > 0) ? value : nil;
+    }
+}
+- (BOOL)endWaitingForAccount:(NSString *)account receiverGeneration:(NSNumber *)generation reason:(SRSourceCaptureStopReason)reason {
+    @synchronized(self) {
+        if (!self.waiting || ![account isEqual:self.account] || ![generation isKindOfClass:NSNumber.class] ||
+            ![self.receiverRound isEqualToNumber:generation] || reason < SRSourceCaptureStopReceiver ||
+            reason > SRSourceCaptureStopImageRejected) return NO;
+        self.waiting = NO;
+        self.configuration = nil;
+        self.receiverRound = nil;
+        // Keep the stopped round's account so only that account sees the reason.
+        self.stopReason = reason;
+        return YES;
     }
 }
 - (BOOL)offerEnvelope:(NSDictionary *)envelope { return [self offerEnvelope:envelope evidence:nil]; }
@@ -135,7 +150,29 @@ static NSDictionary *SRSourceTimeMetadata(NSDictionary *evidence, NSTimeInterval
 }
 - (NSString *)confirmForCurrentAccount:(NSString *)account error:(NSError **)error {
     @synchronized(self) {
-        if (!self.captured || ![account isEqual:self.account]) {
+        return [self confirmForCurrentAccount:account generation:@(self.generation) error:error];
+    }
+}
+- (BOOL)matchesPreviewForAccount:(NSString *)account generation:(NSNumber *)generation {
+    return self.captured && [account isEqual:self.account] && [generation isKindOfClass:NSNumber.class] &&
+        [generation isEqualToNumber:@(self.generation)];
+}
+- (NSDictionary *)previewSnapshotForAccount:(NSString *)account generation:(NSNumber *)generation {
+    @synchronized(self) {
+        if (![self matchesPreviewForAccount:account generation:generation]) return nil;
+        return @{ @"source": self.captured, @"configuration": self.configuration };
+    }
+}
+- (BOOL)discardPreviewForAccount:(NSString *)account generation:(NSNumber *)generation {
+    @synchronized(self) {
+        if (![self matchesPreviewForAccount:account generation:generation]) return NO;
+        [self cancel];
+        return YES;
+    }
+}
+- (NSString *)confirmForCurrentAccount:(NSString *)account generation:(NSNumber *)generation error:(NSError **)error {
+    @synchronized(self) {
+        if (![self matchesPreviewForAccount:account generation:generation]) {
             if (error) *error = [NSError errorWithDomain:@"SyncRelay.Capture" code:3 userInfo:@{NSLocalizedDescriptionKey: @"No captured message or account changed"}];
             return nil;
         }
@@ -148,13 +185,14 @@ static NSDictionary *SRSourceTimeMetadata(NSDictionary *evidence, NSTimeInterval
     @synchronized(self) {
         if ([self.captured[@"type"] isEqual:@"image"]) [self.store.imageAssets discardPayload:self.captured[@"payload"]];
         self.waiting = NO; self.captured = nil; self.configuration = nil; self.account = nil;
-        self.receiverRound = nil;
+        self.receiverRound = nil; self.stopReason = SRSourceCaptureStopNone;
     }
 }
 - (NSDictionary *)status {
     @synchronized(self) {
         return @{@"state": self.captured ? @"preview" : (self.waiting ? @"waiting" : @"idle"),
-            @"account": self.account ?: (id)NSNull.null, @"configuration": self.configuration ?: @{}};
+            @"generation": @(self.generation), @"account": self.account ?: (id)NSNull.null, @"configuration": self.configuration ?: @{},
+            @"stopReason": @(self.stopReason)};
     }
 }
 - (NSDictionary *)diagnostics {

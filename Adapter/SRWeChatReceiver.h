@@ -7,6 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
  * bounded, redacted appmsg structural summary; never an XML/media payload. */
 @interface SRWeChatReceiver : NSObject
 @property(nonatomic, copy, nullable) void (^trace)(NSString *event, NSDictionary *facts);
+/* Lifecycle event, not diagnostic data. Carries the stopped round's identity,
+ * not the post-stop generation. May run off main; observers must not re-arm. */
+@property(nonatomic, copy, nullable) void (^didStop)(NSString *account, NSNumber *generation, NSString *imageState);
 /* Main-thread preparation: nil/no error means not ready; error stops this candidate.
  * Payload must be an owned, validated snapshot. Never return host paths or XML. */
 @property(nonatomic, copy, nullable) NSDictionary * _Nullable (^prepareImage)(id wrap, NSDictionary *source, NSError **error);

@@ -79,6 +79,45 @@ int main(void) {
         NSArray *rules = [store rulesForPlan:plan error:NULL]; CHECK(rules.count == 2);
         CHECK([store allocatedTargetsForPlan:plan error:NULL].count == 2001);
 
+        // A delayed capsule tap cannot act on a replacement preview.
+        CHECK([capture armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        CHECK([capture offerEnvelope:message(@"discarded-preview")]);
+        NSNumber *ignoredGeneration = capture.status[@"generation"];
+        CHECK(![capture discardPreviewForAccount:@"other-account" generation:ignoredGeneration]);
+        CHECK(![capture discardPreviewForAccount:@"account" generation:nil]);
+        CHECK([capture discardPreviewForAccount:@"account" generation:ignoredGeneration]);
+        CHECK(!capture.preview);
+        CHECK([store plansForAccount:@"account" limit:10 offset:0 error:NULL].count == 1);
+        CHECK([capture armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        CHECK([capture offerEnvelope:message(@"replacement-preview")]);
+        NSNumber *replacementGeneration = capture.status[@"generation"];
+        CHECK(![capture previewSnapshotForAccount:@"account" generation:ignoredGeneration]);
+        CHECK(![capture discardPreviewForAccount:@"account" generation:ignoredGeneration]);
+        CHECK(![capture confirmForCurrentAccount:@"account" generation:ignoredGeneration error:NULL]);
+        NSDictionary *boundPreview = [capture previewSnapshotForAccount:@"account" generation:replacementGeneration];
+        CHECK([boundPreview[@"source"][@"messageID"] isEqual:@"replacement-preview"]);
+        CHECK([capture confirmForCurrentAccount:@"account" generation:replacementGeneration error:NULL]);
+        CHECK(![capture discardPreviewForAccount:@"account" generation:replacementGeneration]);
+
+        // Receiver stops only settle the bound wait, even if dispatched late.
+        SRSourceCapture *stopped = [[SRSourceCapture alloc] initWithStore:store];
+        CHECK([stopped armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        CHECK(![stopped endWaitingForAccount:@"account" receiverGeneration:@10 reason:SRSourceCaptureStopReceiver]);
+        [stopped bindReceiverGeneration:@10];
+        CHECK(![stopped endWaitingForAccount:@"wrong" receiverGeneration:@10 reason:SRSourceCaptureStopReceiver]);
+        CHECK([stopped endWaitingForAccount:@"account" receiverGeneration:@10 reason:SRSourceCaptureStopImageTimeout]);
+        CHECK([stopped.status[@"state"] isEqual:@"idle"]);
+        CHECK([stopped.status[@"stopReason"] integerValue] == SRSourceCaptureStopImageTimeout);
+        CHECK([stopped armForAccount:@"account" configuration:configuration(1) error:NULL]);
+        [stopped bindReceiverGeneration:@12];
+        CHECK(![stopped endWaitingForAccount:@"account" receiverGeneration:@10 reason:SRSourceCaptureStopImageTimeout]);
+        CHECK([stopped.status[@"state"] isEqual:@"waiting"]);
+        CHECK([stopped.status[@"stopReason"] integerValue] == SRSourceCaptureStopNone);
+        CHECK([stopped offerEnvelope:message(@"preserved-preview")]);
+        CHECK(![stopped endWaitingForAccount:@"account" receiverGeneration:@12 reason:SRSourceCaptureStopReceiver]);
+        CHECK([stopped.preview[@"messageID"] isEqual:@"preserved-preview"]);
+        [stopped cancel];
+
         // Source-time metadata: two independent stages, frozen once with the
         // snapshot, and never restamped by later offers or later reads.
         __block double frozenClock = 9000.25;

@@ -459,12 +459,6 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     return YES;
 }
 - (void)refresh {
-    if ([self.capture.status[@"state"] isEqual:@"waiting"] && ![self.receiver.diagnostics[@"armed"] boolValue]) {
-        NSString *imageState = self.receiver.diagnostics[@"imageState"];
-        if ([@[@"timed_out", @"preparation_failed", @"identity_conflict"] containsObject:imageState ?: @""])
-            self.status = [imageState isEqual:@"timed_out"] ? @"图片资源等待超时；请在母群点开加载后重新等待新图。可导出运行诊断。" : @"图片捕获已停止，资源或来源校验未通过；请导出运行诊断。";
-        [self.capture cancel];
-    }
     self.navigationItem.rightBarButtonItem.enabled = self.ready;
     self.navigationItem.prompt = nil;
     [self.tableView reloadData];
@@ -647,8 +641,19 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
                     (unsigned long)[SRGroupPlanner capacityForRule:rule]];
         }
     } else {
-        NSString *state = self.capture.status[@"state"];
-        if (path.row == 0) { cell.textLabel.text = [state isEqual:@"waiting"] ? @"取消等待" : @"等待源消息"; cell.detailTextLabel.text = [state isEqual:@"waiting"] ? @"等待中" : @"手动开始"; }
+        NSDictionary *captureStatus = self.capture.status;
+        NSString *state = captureStatus[@"state"];
+        if (path.row == 0) {
+            BOOL waiting = [state isEqual:@"waiting"];
+            cell.textLabel.text = waiting ? @"取消等待" : @"等待源消息";
+            cell.detailTextLabel.text = waiting ? @"等待中" : @"手动开始";
+            if ([captureStatus[@"account"] isEqual:self.account]) {
+                SRSourceCaptureStopReason reason = [captureStatus[@"stopReason"] integerValue];
+                if (reason == SRSourceCaptureStopImageTimeout) cell.detailTextLabel.text = @"图片资源等待超时，请点开加载后重新等待新图";
+                else if (reason == SRSourceCaptureStopImageRejected) cell.detailTextLabel.text = @"图片资源或来源校验未通过，请查看运行诊断";
+                else if (reason == SRSourceCaptureStopReceiver) cell.detailTextLabel.text = @"已停止，需手动重新等待";
+            }
+        }
         if (path.row == 1) { cell.textLabel.text = @"源消息预览"; cell.detailTextLabel.text = [state isEqual:@"preview"] ? @"已锁定 1 条" : ([state isEqual:@"waiting"] ? @"等待中" : @"暂无内容"); }
         if (path.row == 1 && [state isEqual:@"waiting"] && [self.receiver.diagnostics[@"imagePending"] boolValue]) cell.detailTextLabel.text = @"图片加载中，最多 30 秒";
         if (path.row == 2) { cell.textLabel.text = @"内容计划与历史"; cell.detailTextLabel.text = @"只读"; }
@@ -1445,7 +1450,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     if ([state isEqual:@"preview"]) { [self showCapture]; return; }
     if (self.dirty) { [SRRuntimeLog.shared record:@"capture_blocked" facts:@{@"reasonCode": @1}]; SRAlert(self, @"请先保存", @"捕获使用一份冻结配置；先保存统一条件和规则，再等待源消息，避免使用未确认的设置。"); return; }
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群消息？" message:@"仅捕获所选 wxid 和类型，支持本人。图片需有服务器消息 ID 和可用图片资源，最多等待 30 秒。可能包含补同步，请核对实际预览；切后台取消等待。预览和确认都不会发送；确认后需到内容计划手动开始小群测试。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"手动等待一条母群消息？" message:@"仅捕获所选成员和类型。图片需有服务器消息 ID，最多等资源就绪 30 秒。可能包含补同步，请核对实际预览；切后台取消等待。预览和确认都不发送，选定分组后才可手动开始转发。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"开始等待（不发送）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         if (![self checkDraft:snapshot account:account] || self.sourceTimeProbe.active) return;
@@ -1460,7 +1465,13 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
         }
         // Bind the receiver round that may deliver into this capture round. The
         // two counters are independent and are never compared with each other.
-        [self.capture bindReceiverGeneration:self.receiver.diagnostics[@"receiverGeneration"]];
+        NSDictionary *receiverState = self.receiver.diagnostics;
+        if (![receiverState[@"armed"] boolValue]) {
+            [self.capture cancel];
+            [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+            SRAlert(self, @"接收已停止", @"未开始等待，请重新核对当前账号和设置。"); return;
+        }
+        [self.capture bindReceiverGeneration:receiverState[@"receiverGeneration"]];
         [SRRuntimeLog.shared record:@"capture_started" facts:[self diagnosticDraft]];
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
     }]];
@@ -1620,6 +1631,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
 @property(nonatomic, strong) SRMenuBuildHook *libraryMenuBuildHook;
 @property(nonatomic) BOOL settingsFooterActive;
 @property(nonatomic, weak) UINavigationController *presented;
+@property(nonatomic, weak) UIViewController *operationsHome;
 @property(nonatomic) CGFloat floatingEntryUnitX;
 @property(nonatomic) CGFloat floatingEntryUnitY;
 @property(nonatomic) BOOL floatingEntryPlacementSet;
@@ -1775,13 +1787,9 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     self.receiver = [[SRWeChatReceiver alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }
         currentAccount:^NSString * {
             SREntry *entry = weakSelf; if (!entry) return nil;
-            NSString *current = [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
-            id expected = entry.capture.status[@"account"];
-            if (expected != NSNull.null && ![expected isEqual:current]) {
-                [entry.capture cancel]; [entry.receiver stop];
-                [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
-            }
-            return current;
+            // Receiver owns the round that requested this check; only its
+            // generation-bound stop event can end the corresponding wait.
+            return [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
         } received:received];
     self.sourceTimeProbe = [[SRSourceTimeProbe alloc] initWithReceiver:self.receiver
         classResolver:^Class(NSString *name) { return NSClassFromString(name); }
@@ -1822,6 +1830,18 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
         return [entry.store.imageAssets saveData:data source:source error:error];
     };
     self.receiver.discardImage = ^(NSDictionary *payload) { [weakSelf.store.imageAssets discardPayload:payload]; };
+    self.receiver.didStop = ^(NSString *account, NSNumber *generation, NSString *imageState) {
+        SRSourceCaptureStopReason reason = SRSourceCaptureStopReceiver;
+        if ([imageState isEqual:@"timed_out"]) reason = SRSourceCaptureStopImageTimeout;
+        else if ([@[@"preparation_failed", @"identity_conflict", @"time_unverified"] containsObject:imageState])
+            reason = SRSourceCaptureStopImageRejected;
+        // Main-thread UI projection is independent of whether settings is open.
+        // Core refuses late stops for another round and never discards a preview.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ([weakSelf.capture endWaitingForAccount:account receiverGeneration:generation reason:reason])
+                [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+        });
+    };
     self.receiver.trace = ^(NSString *event, NSDictionary *facts) {
         [SRRuntimeLog.shared record:event facts:facts];
         if ([event hasPrefix:@"image_"]) dispatch_async(dispatch_get_main_queue(), ^{
@@ -1943,11 +1963,13 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     NSDictionary *operations = account.length ? [self.store operationsContentForAccount:account error:NULL] : nil;
     NSDictionary *currentContent = [operations[@"current"] isKindOfClass:NSDictionary.class] ? operations[@"current"] : nil;
     NSDictionary *recentContent = [operations[@"recent"] isKindOfClass:NSDictionary.class] ? operations[@"recent"] : nil;
-    if (!model && captureBelongs && self.capture.preview) {
-        model = @{ @"visible": @YES, @"countText": @"新消息", @"phase": @"ready", @"action": @"open",
-            @"actionEnabled": @YES, @"menuEnabled": @YES };
+    NSNumber *previewGeneration = nil;
+    if (!model && captureBelongs && [captureStatus[@"state"] isEqual:@"preview"]) {
+        previewGeneration = captureStatus[@"generation"];
+        model = @{ @"visible": @YES, @"countText": @"抓到 1 条待同步消息", @"phase": @"preview", @"action": @"open",
+            @"actionEnabled": @YES, @"menuEnabled": @YES, @"previewGeneration": previewGeneration };
     } else if (!model && captureBelongs && [captureStatus[@"state"] isEqual:@"waiting"]) {
-        model = @{ @"visible": @YES, @"countText": @"...", @"phase": @"waiting", @"action": @"open",
+        model = @{ @"visible": @YES, @"countText": @"手动", @"phase": @"waiting", @"action": @"open",
             @"actionEnabled": @YES, @"menuEnabled": @YES };
     } else if (!model && captureBelongs && [self.smallGroupSession.status[@"state"] isEqual:@"completed"]) {
         model = @{ @"visible": @YES, @"countText": @"完成", @"phase": @"completed", @"action": @"open",
@@ -1969,18 +1991,32 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
         if (host) break;
     }
     if (!host) { [self.floatingProgress hide]; return; }
+    __weak typeof(self) weakSelf = self;
     if (!self.floatingProgress) {
         self.floatingProgress = [[SRFloatingProgress alloc] initWithFrame:CGRectZero];
-        __weak typeof(self) weakSelf = self;
         self.floatingProgress.action = ^{
             SREntry *entry = weakSelf;
             [entry.smallGroupSession togglePauseForCurrentAccount:NULL];
             [entry updateSmallGroupState];
         };
+    }
+    if (previewGeneration) {
+        self.floatingProgress.openAction = ^{
+            [weakSelf openOperationsFromController:nil previewAccount:account generation:previewGeneration];
+        };
+        self.floatingProgress.menuAction = ^{ [weakSelf ignorePreviewForAccount:account generation:previewGeneration]; };
+    } else {
         self.floatingProgress.openAction = ^{ [weakSelf openOperationsFromController:nil]; };
         self.floatingProgress.menuAction = ^{ [weakSelf showOperationsMenu]; };
     }
     [self.floatingProgress showModel:model inWindow:host]; self.button.hidden = YES;
+}
+- (void)ignorePreviewForAccount:(NSString *)account generation:(NSNumber *)generation {
+    if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    if (![self.identityReader verifyAccount:account error:NULL]) return;
+    if (![self.capture discardPreviewForAccount:account generation:generation]) return;
+    [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+    [self refreshFloatingProgress];
 }
 - (void)showOperationsMenu {
     if (self.presented.presentingViewController) return;
@@ -1994,8 +2030,8 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     }
     while (presenter.presentedViewController) presenter = presenter.presentedViewController;
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"SyncRelay 运营" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [menu addAction:[UIAlertAction actionWithTitle:@"打开运营首页" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"群同步" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:[UIAlertAction actionWithTitle:@"打开群同步" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
         [self openOperationsFromController:presenter];
     }]];
     NSString *account = [self.identityReader connect:NULL] ? self.identityReader.accountID : nil;
@@ -2010,10 +2046,6 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
                 [self updateSmallGroupState];
             }]];
             [presenter presentViewController:confirm animated:YES completion:nil];
-        }]];
-    } else if (self.capture.preview) {
-        [menu addAction:[UIAlertAction actionWithTitle:@"放弃当前预览" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
-            [self.capture cancel]; [self updateSmallGroupState];
         }]];
     }
     [menu addAction:[UIAlertAction actionWithTitle:@"进入设置" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
@@ -2102,8 +2134,8 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
             button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
             button.titleLabel.adjustsFontForContentSizeCategory = YES;
             button.backgroundColor = UIColor.secondarySystemBackgroundColor; button.layer.cornerRadius = 22;
-            button.accessibilityLabel = @"打开 SyncRelay 运营";
-            button.accessibilityHint = @"可自由拖动位置；轻触打开运营首页";
+            button.accessibilityLabel = @"打开群同步";
+            button.accessibilityHint = @"可自由拖动位置；轻触打开群同步";
             [button addTarget:self action:@selector(openOperations) forControlEvents:UIControlEventTouchUpInside];
             UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(floatingEntryDragged:)];
             pan.cancelsTouchesInView = YES;
@@ -2127,10 +2159,12 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
 - (void)openOperations {
     [self openOperationsFromController:nil];
 }
-- (void)openOperationsFromController:(UIViewController *)controller {
-    if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive || self.presented.presentingViewController) return;
+- (void)openOperationsFromController:(UIViewController *)controller previewAccount:(NSString *)previewAccount generation:(NSNumber *)generation {
+    if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
+        self.presented.presentingViewController || self.presented.isBeingPresented) return;
     NSString *account = [self.identityReader connect:NULL] ? self.identityReader.accountID : nil;
     if (!account.length) return;
+    if (generation && (![previewAccount isEqual:account] || ![self.capture previewSnapshotForAccount:account generation:generation])) return;
     UIViewController *presenter = controller;
     if (!presenter) for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
@@ -2167,12 +2201,16 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
         [entry openSettingsFromNavigation:current account:currentAccount verify:verify];
     };
     UIViewController *home = SRCreateOperationsHome(self.store, self.capture, self.smallGroupSession, account, verify, openSettings);
-    navigation.viewControllers = @[home];
+    navigation.viewControllers = generation ? @[home, SRCreateCapturedForwarding(self.store, self.capture, account, generation, verify, self.smallGroupSession)] : @[home];
     UINavigationController *hostNavigation = [presenter isKindOfClass:UINavigationController.class] ? (UINavigationController *)presenter : presenter.navigationController;
     SRStyleSettingsNavigation(navigation, hostNavigation);
     navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    self.operationsHome = home;
     self.presented = navigation; self.button.hidden = YES; [self.floatingProgress hide];
     [presenter presentViewController:navigation animated:YES completion:nil];
+}
+- (void)openOperationsFromController:(UIViewController *)controller {
+    [self openOperationsFromController:controller previewAccount:nil generation:nil];
 }
 /* Presents the existing settings panel on top of the operations home. The panel
  * is built from the same shared objects the entry already uses, so there is no
@@ -2187,7 +2225,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     if (navigation != self.presented) return;
     UIViewController *home = navigation.viewControllers.firstObject;
     if (!home || home != navigation.topViewController) return;
-    if (![home.title isEqualToString:@"SyncRelay 运营"]) return;
+    if (home != self.operationsHome) return;
     /* No second settings page: the panel is located anywhere in the stack, so
      * a settings panel that is already there is recognized. */
     if ([self presentedSettingsPanel]) return;

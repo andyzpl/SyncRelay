@@ -8,7 +8,9 @@
 
 新增 20 拒绝 28、调到 28 允许创建或启动完整批次的 Objective-C 回归用例。Windows 本地 400 项 Python 契约、3 个 C 测试程序和 arm64/arm64e 各 65 个 Objective-C 语法单元通过。[GitHub Actions 42761719032](https://github.com/andyzpl/SyncRelay/actions/runs/42761719032) 的 macOS 原生回归、普通 DEB 构建和双架构核验通过。
 
-0.2.24 测试包对应源码 `21dab16d3ee965748cc6e44617e06bd89abcd84a`，[产物下载](https://github.com/andyzpl/SyncRelay/actions/runs/42761719032/artifacts/13738795223)。下载后已核对 ZIP 和 DEB 的 SHA-256；DEB 哈希为 `3c807d265535c202ad05ea206144201d376618930130bd9b0e71d48548eae212`。本包待真机验证；不能把构建通过或微信已提交当成 28 群或 100/200 群已送达。
+0.2.24 测试包对应源码 `21dab16d3ee965748cc6e44617e06bd89abcd84a`，[产物下载](https://github.com/andyzpl/SyncRelay/actions/runs/42761719032/artifacts/13738795223)。下载后已核对 ZIP 和 DEB 的 SHA-256；DEB 哈希为 `3c807d265535c202ad05ea206144201d376618930130bd9b0e71d48548eae212`。
+
+2026-11-10 真机反馈：iOS 16.0.3 / 微信 8.0.79，从消息库转发静态图片，用户确认 28 个测试群全部收到、没有失败。诊断显示批次已完成、`submitted=28`、执行上限 200，未判定送达；实际收件来自用户反馈。该报告未记录母群捕获，也未验证 100/200 群或自动转发。
 
 ## 0.2.20 单条最多 20 群（本轮真机反馈通过）
 

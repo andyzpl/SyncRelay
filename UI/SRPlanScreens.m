@@ -131,6 +131,8 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 @interface SRRecordScreen : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRSourceCapture *capture;
+@property(nonatomic, copy) NSNumber *previewGeneration;
+@property(nonatomic) BOOL opensForwardingGroups;
 @property(nonatomic, strong) SRSmallGroupSession *execution;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSString *identifier;
@@ -168,9 +170,11 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     if (![self verified]) { [self.refreshControl endRefreshing]; return; }
     NSError *error = nil;
     if (self.kind == SRRecordPreview) {
-        NSDictionary *status = self.capture.status;
-        if ([status[@"account"] isEqual:self.account] && self.capture.preview) {
-            self.content = self.capture.preview; self.configuration = status[@"configuration"];
+        NSDictionary *snapshot = [self.capture previewSnapshotForAccount:self.account generation:self.previewGeneration];
+        if (snapshot) {
+            self.content = snapshot[@"source"]; self.configuration = snapshot[@"configuration"];
+            if (self.opensForwardingGroups)
+                [self.rows addObjectsFromArray:[SRRunProjection groupRowsForConfiguration:self.configuration targetLimit:self.store.forwardingTargetLimit]];
         } else self.problem = @"没有该账号待确认的源消息。预览在退出进程前仅保存在内存中，请返回手动重新等待。";
     } else if (self.kind == SRRecordPlan) {
         self.content = [self.store plan:self.identifier account:self.account error:&error];
@@ -209,18 +213,22 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.problem) return 1;
-    if (self.kind == SRRecordPreview) return section == 0 ? 8 : (section == 1 ? 1 : 2);
+    if (self.kind == SRRecordPreview) return section == 0 ? (self.opensForwardingGroups ? 1 : 8) : (section == 1 ? MAX((NSUInteger)1, self.rows.count) : 2);
     if (self.kind == SRRecordPlan) return section == 0 ? 8 : MAX((NSUInteger)1, self.rows.count);
     return MAX((NSUInteger)1, self.rows.count + (self.more ? 1 : 0));
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (self.problem) return @"读取已停止";
-    if (self.kind == SRRecordPreview) return @[@"锁定的一条源消息", @"捕获时冻结的配置", @"确认操作"][section];
+    if (self.kind == SRRecordPreview) return self.opensForwardingGroups ?
+        @[@"锁定的一条源消息", @"转发分组", @"确认前核对"][section] :
+        @[@"锁定的一条源消息", @"捕获时冻结的配置", @"确认操作"][section];
     if (self.kind == SRRecordPlan) return section == 0 ? @"已确认源消息" : @"规则与最近状态";
     return nil;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
+    if (self.kind == SRRecordPreview && section == 1 && self.opensForwardingGroups)
+        return @"确认内容后可选择分组并核对群名单。超限分组不能开始；不会截断目标。";
     if (self.kind == SRRecordPreview && section == 2) return @"确认只建立内容计划和目标分组，不发送。所有规则使用同一条已确认内容；之后修改设置不会改变此计划。";
     if (self.kind == SRRecordPlan && section == 1) return @"点击规则进入执行详情。新批次的目标上限由高级设置控制。开始后串行转发；切后台或锁屏会暂停，不自动接下一条。";
     if (self.kind == SRRecordHistory) return @"执行完成表示本条队列处理结束，不代表全部送达。已提交与确认送达分开统计；点击批次只查看失败、结果未知和未发项。";
@@ -234,6 +242,12 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil; cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     if (self.problem) { cell.textLabel.text = self.problem; return cell; }
+    if (self.opensForwardingGroups && path.section == 0) {
+        cell.textLabel.text = [[self source][@"type"] isEqual:@"image"] ? @"查看图片" : @"查看文字";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
     if ((self.kind == SRRecordPreview || self.kind == SRRecordPlan) && path.section == 0) {
         NSDictionary *source = [self source];
         // Row 4 stays the content entry point that opens the text/image viewer.
@@ -252,6 +266,12 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     }
     if (self.kind == SRRecordPreview) {
         if (path.section == 1) {
+            if (self.opensForwardingGroups && self.rows.count) {
+                NSDictionary *row = self.rows[path.row];
+                cell.textLabel.text = [NSString stringWithFormat:@"%@ · %@ 个群", row[@"name"], row[@"targetCount"]];
+                if ([row[@"overTargetLimit"] boolValue]) cell.detailTextLabel.text = row[@"blockedText"];
+                return cell;
+            }
             NSUInteger targets = 0; for (NSDictionary *rule in self.configuration[@"rules"]) targets += [rule[@"targets"] count];
             cell.textLabel.text = [NSString stringWithFormat:@"%lu 条规则 · %lu 个目标群", (unsigned long)[self.configuration[@"rules"] count], (unsigned long)targets];
             cell.detailTextLabel.text = [NSString stringWithFormat:@"间隔 %@–%@ 秒；来源 wxid 和类型均按捕获时配置筛选。", self.configuration[@"minimum"], self.configuration[@"maximum"]];
@@ -312,25 +332,44 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     [tableView deselectRowAtIndexPath:path animated:YES];
     if (![self verified] || self.problem) return;
     if ((self.kind == SRRecordPreview || self.kind == SRRecordPlan) && path.section == 0) {
-        if (path.row == 4) {
+        if (path.row == (self.opensForwardingGroups ? 0 : 4)) {
+            BOOL (^verifyContent)(void) = self.verifyAccount;
+            if (self.kind == SRRecordPreview) {
+                SRSourceCapture *capture = self.capture;
+                NSString *account = self.account;
+                NSNumber *generation = self.previewGeneration;
+                BOOL (^verifyAccount)(void) = self.verifyAccount;
+                verifyContent = ^BOOL {
+                    return verifyAccount && verifyAccount() && [capture previewSnapshotForAccount:account generation:generation] != nil;
+                };
+                if (![capture previewSnapshotForAccount:account generation:generation]) { [self reload]; return; }
+            }
             if ([[self source][@"type"] isEqual:@"image"]) {
                 SRSourceImageScreen *viewer = [[SRSourceImageScreen alloc] init]; viewer.title = @"源图片预览（不发送）";
-                viewer.source = [self source]; viewer.assets = self.store.imageAssets; viewer.verifyAccount = self.verifyAccount;
+                viewer.source = [self source]; viewer.assets = self.store.imageAssets; viewer.verifyAccount = verifyContent;
                 [self.navigationController pushViewController:viewer animated:YES]; return;
             }
             SRSourceTextScreen *viewer = [[SRSourceTextScreen alloc] init]; viewer.title = @"源消息内容";
-            viewer.body = [self sourceText]; viewer.verifyAccount = self.verifyAccount;
+            viewer.body = [self sourceText]; viewer.verifyAccount = verifyContent;
             [self.navigationController pushViewController:viewer animated:YES];
         }
         return;
     }
     if (self.kind == SRRecordPreview) {
         if (path.section != 2) return;
-        if (path.row == 1) { [self.capture cancel]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; [self.navigationController popViewControllerAnimated:YES]; return; }
-        NSError *error = nil; NSString *plan = [self.capture confirmForCurrentAccount:self.account error:&error];
+        if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+        if (path.row == 1) {
+            if (![self.capture discardPreviewForAccount:self.account generation:self.previewGeneration]) { [self reload]; return; }
+            [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+            [self.navigationController popViewControllerAnimated:YES]; return;
+        }
+        NSError *error = nil;
+        NSString *plan = [self.capture confirmForCurrentAccount:self.account generation:self.previewGeneration error:&error];
         if (!plan) { SRScreenAlert(self, @"确认失败，未发送", error.localizedDescription); return; }
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
-        SRRecordScreen *next = [self screen:SRRecordPlan identifier:plan title:@"内容计划与规则"];
+        UIViewController *next = self.opensForwardingGroups ?
+            SRCreateGroupList(self.store, self.execution, self.account, self.verifyAccount, plan, nil) :
+            [self screen:SRRecordPlan identifier:plan title:@"内容计划与规则"];
         NSMutableArray *stack = [self.navigationController.viewControllers mutableCopy]; stack[stack.count - 1] = next;
         [self.navigationController setViewControllers:stack animated:YES]; return;
     }
@@ -347,7 +386,15 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 UIViewController *SRCreateCapturePreview(SRStore *store, SRSourceCapture *capture, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *execution) {
     SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.kind = SRRecordPreview; screen.store = store; screen.capture = capture; screen.account = account;
+    screen.previewGeneration = capture.status[@"generation"];
     screen.verifyAccount = verifyAccount; screen.execution = execution; screen.title = @"单条源消息预览"; return screen;
+}
+UIViewController *SRCreateCapturedForwarding(SRStore *store, SRSourceCapture *capture, NSString *account, NSNumber *generation,
+                                             BOOL (^verifyAccount)(void), SRSmallGroupSession *execution) {
+    SRRecordScreen *screen = (SRRecordScreen *)SRCreateCapturePreview(store, capture, account, verifyAccount, execution);
+    screen.previewGeneration = generation;
+    screen.opensForwardingGroups = YES; screen.title = @"转发分组";
+    return screen;
 }
 UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *execution) {
     SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
@@ -438,6 +485,8 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
 @property(nonatomic, copy, nullable) NSDictionary *envelope;
 @property(nonatomic, copy, nullable) NSString *planID;
 @property(nonatomic, copy) NSString *mode;
+@property(nonatomic, copy, nullable) NSNumber *previewGeneration;
+@property(nonatomic, copy, nullable) NSDictionary *sourceCaptureStatus;
 @property(nonatomic, copy, nullable) id capturedAt;
 /* The configuration frozen with the content this page shows: the one the
  * preview was captured with, or the one persisted with the prepared content.
@@ -457,12 +506,11 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
 @implementation SROperationsHomeScreen
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"SyncRelay 运营";
+    self.title = @"群同步";
+    self.view.accessibilityIdentifier = @"SyncRelay.GroupSyncHome";
     SRStyleSettingsTable(self);
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
         style:UIBarButtonItemStylePlain target:self action:@selector(close)];
-    /* 顶部"关闭 / SyncRelay 运营 / 设置"：设置仍是同一个显式回调，携带打开本页
-     * 时捕获的账号，由调用方重新核对后再路由。 */
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"设置"
         style:UIBarButtonItemStylePlain target:self action:@selector(settingsPressed)];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:)
@@ -480,6 +528,8 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
 - (void)reload {
     self.operations = nil; self.envelope = nil; self.planID = nil;
     self.mode = SRHomeModeNone; self.capturedAt = nil; self.frozenConfiguration = nil;
+    self.previewGeneration = nil;
+    self.sourceCaptureStatus = nil;
     self.cards = @[]; self.groupRows = @[];
     self.overview = nil; self.recentRun = nil; self.recentRunPlanID = nil;
     self.runActions = @[]; self.problem = nil;
@@ -487,6 +537,8 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
      * "暂无内容", and the old page is refused instead of switched. */
     self.accountInvalid = ![self verified];
     if (self.accountInvalid) { [self.tableView reloadData]; return; }
+    NSDictionary *captureStatus = self.capture.status;
+    if ([captureStatus[@"account"] isEqual:self.account]) self.sourceCaptureStatus = captureStatus;
     NSError *error = nil;
     NSDictionary *operations = [self.store operationsContentForAccount:self.account error:&error];
     if (!operations) {
@@ -509,12 +561,16 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
  * groups below come from the same capture that produced the content. */
 - (BOOL)resolveContent:(NSError **)error {
     self.frozenConfiguration = nil;
-    NSDictionary *preview = self.capture.preview;
-    if (preview && [self.capture.status[@"account"] isEqual:self.account]) {
+    NSDictionary *captureStatus = self.capture.status;
+    BOOL captureBelongs = [captureStatus[@"account"] isEqual:self.account];
+    NSNumber *generation = captureStatus[@"generation"];
+    NSDictionary *preview = captureBelongs ? [self.capture previewSnapshotForAccount:self.account generation:generation] : nil;
+    if (preview) {
         /* The preview's configuration is the one saved when it was captured;
          * settings edited afterwards belong to later captures only. */
-        self.frozenConfiguration = SRDictionary(self.capture.status[@"configuration"]);
-        self.mode = SRHomeModePreview; self.envelope = preview; return YES;
+        self.frozenConfiguration = SRDictionary(preview[@"configuration"]);
+        self.previewGeneration = generation;
+        self.mode = SRHomeModePreview; self.envelope = SRDictionary(preview[@"source"]); return YES;
     }
     NSDictionary *current = SRDictionary(self.operations[@"current"]);
     if (current) {
@@ -621,7 +677,7 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     if (self.problem) return @"读取已停止";
     NSDictionary *summary = [self liveSummary];
     if (summary) return summary[@"phaseText"];
-    if ([self.mode isEqual:SRHomeModePreview]) return @"有一条待确认预览（未确认）";
+    if ([self.mode isEqual:SRHomeModePreview]) return @"有 1 条消息待处理";
     if ([self.mode isEqual:SRHomeModeConfirmed]) return @"内容已确认，可选择分组";
     if ([self.mode isEqual:SRHomeModePrepared]) return @"内容已捕获，尚未确认";
     if (self.recentRun) return @"最近内容已归档";
@@ -632,12 +688,22 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     if (!summary) return @"没有活动运行";
     return [NSString stringWithFormat:@"已处理 %@/%@ · 在途 %@", summary[@"processed"], summary[@"total"], summary[@"inflight"]];
 }
+- (NSString *)sourceCaptureText {
+    if ([self.sourceCaptureStatus[@"state"] isEqual:@"preview"]) return @"已抓到 1 条，请先处理当前内容";
+    if ([self.sourceCaptureStatus[@"state"] isEqual:@"waiting"]) return @"正在手动等待一条母群消息 · 到设置取消";
+    switch ([self.sourceCaptureStatus[@"stopReason"] integerValue]) {
+        case SRSourceCaptureStopImageTimeout: return @"图片资源等待超时 · 到设置重新等待";
+        case SRSourceCaptureStopImageRejected: return @"图片捕获已停止 · 到设置查看诊断";
+        case SRSourceCaptureStopReceiver: return @"等待已停止 · 到设置重新等待";
+        default: return @"当前不监听 · 到设置手动等待一条";
+    }
+}
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView {
     return (self.accountInvalid || self.problem) ? 1 : 4;
 }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.accountInvalid || self.problem) return 1;
-    if (section == 0) return 2 + (NSInteger)self.runActions.count;
+    if (section == 0) return 3 + (NSInteger)self.runActions.count;
     if (section == 1) return 4;
     return (section == 2) ? 2 : 1;
 }
@@ -647,7 +713,7 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     return @[@"运行状态", @"当前内容", @"分组概览", @"最近一次结果"][section];
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (self.accountInvalid) return @"当前账号无法核对或已经改变，旧内容已隐藏。请关闭后重新打开运营首页。";
+    if (self.accountInvalid) return @"当前账号无法核对或已经改变，旧内容已隐藏。请关闭后重新打开群同步。";
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
     if (section == 0) return @"打开本页不会开始捕获、创建计划或发送；所有操作都需要明确点击。";
     if (section == 1) return [self.mode isEqual:SRHomeModePreview] ?
@@ -673,6 +739,14 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     if (path.section == 0) {
         if (path.row == 0) { cell.textLabel.text = @"当前状态"; cell.detailTextLabel.text = [self phaseText]; return cell; }
         if (path.row == 1) { cell.textLabel.text = @"执行进度"; cell.detailTextLabel.text = [self progressText]; return cell; }
+        if (path.row == 2 + (NSInteger)self.runActions.count) {
+            cell.textLabel.text = @"源消息"; cell.detailTextLabel.text = [self sourceCaptureText];
+            if (self.openSettings && !self.previewGeneration) {
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            }
+            return cell;
+        }
         NSDictionary *action = self.runActions[(NSUInteger)(path.row - 2)] ?: @{};
         cell.textLabel.text = action[@"title"];
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
@@ -682,6 +756,13 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     }
     if (path.section == 1) {
         if (path.row == 0) {
+            if (self.previewGeneration) {
+                cell.textLabel.text = @"转发分组";
+                cell.detailTextLabel.text = @"有 1 条待同步消息 · 查看内容和目标分组，不会立即发送";
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                return cell;
+            }
             cell.textLabel.text = self.envelope ? @"当前内容摘要" : @"当前内容";
             cell.detailTextLabel.text = self.envelope ? [SRRunProjection excerptForEnvelope:self.envelope limit:140] : @"暂无内容";
             if (self.envelope) { cell.selectionStyle = UITableViewCellSelectionStyleDefault; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; }
@@ -737,6 +818,10 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     if (![self verified]) return;
     if (self.problem) { [self reload]; return; }
     if (path.section == 0 && path.row >= 2) {
+        if (path.row == 2 + (NSInteger)self.runActions.count) {
+            if (!self.previewGeneration) [self settingsPressed];
+            return;
+        }
         NSDictionary *action = self.runActions[(NSUInteger)(path.row - 2)] ?: @{};
         if ([action[@"enabled"] isEqual:@NO]) return;
         if ([action[@"kind"] isEqual:@"detail"]) {
@@ -750,12 +835,11 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         return;
     }
     if (path.section == 1 && path.row == 0) {
-        /* A preview still goes through the existing preview screen, which owns
-         * the explicit confirm action and the full-content viewer. A confirmed
-         * content opens the read-only viewer directly. */
-        if ([self.mode isEqual:SRHomeModePreview] || (self.capture.preview && !self.planID.length)) {
-            [self.navigationController pushViewController:SRCreateCapturePreview(self.store, self.capture, self.account,
-                self.verifyAccount, self.execution) animated:YES];
+        if (self.previewGeneration) {
+            NSNumber *generation = self.previewGeneration;
+            if (![self.capture previewSnapshotForAccount:self.account generation:generation]) { [self reload]; return; }
+            [self.navigationController pushViewController:SRCreateCapturedForwarding(self.store, self.capture, self.account,
+                generation, self.verifyAccount, self.execution) animated:YES];
             return;
         }
         if (self.envelope) SRPushContentViewer(self, self.store, self.envelope, self.verifyAccount);
@@ -812,7 +896,7 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
 }
 - (void)settingsPressed {
-    if (![self verified]) { SRScreenAlert(self, @"账号无法核对", @"当前账号无法核对或已经改变，请关闭后重新打开运营首页。"); return; }
+    if (![self verified]) { SRScreenAlert(self, @"账号无法核对", @"当前账号无法核对或已经改变，请关闭后重新打开群同步。"); return; }
     if (self.openSettings) self.openSettings();
 }
 - (void)close {

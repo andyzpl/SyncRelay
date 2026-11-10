@@ -7,6 +7,8 @@
 @property(nonatomic, strong) UIButton *actionButton;
 @property(nonatomic, strong) UIButton *menuButton;
 @property(nonatomic, copy) NSDictionary *model;
+@property(nonatomic, copy) NSNumber *previewGeneration;
+@property(nonatomic) BOOL previewCollapsed;
 @property(nonatomic) CGFloat unitX;
 @property(nonatomic) CGFloat unitY;
 @property(nonatomic) BOOL dragging;
@@ -61,12 +63,15 @@
     if (!self.window || self.dragging) return;
     CGRect available = [self availableBounds];
     CGFloat scale = MIN(1.45, MAX(1, [UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize / 17));
-    CGFloat width = MIN(CGRectGetWidth(available), 176 * scale), height = MIN(CGRectGetHeight(available), 56 * scale);
-    if (width < 132 || height < 44) { self.hidden = YES; return; }
+    BOOL preview = [self.model[@"phase"] isEqual:@"preview"];
+    BOOL expanded = preview && !self.previewCollapsed;
+    CGFloat width = MIN(CGRectGetWidth(available), (expanded ? 248 : 176) * scale);
+    CGFloat height = MIN(CGRectGetHeight(available), (expanded ? 90 : 56) * scale);
+    if (width < (expanded ? 196 : 132) || height < (expanded ? 84 : 44)) { self.hidden = YES; return; }
     self.hidden = NO;
     CGFloat x = CGRectGetMinX(available) + (CGRectGetWidth(available) - width) * MAX(0, MIN(1, self.unitX));
     CGFloat y = CGRectGetMinY(available) + (CGRectGetHeight(available) - height) * self.unitY;
-    self.frame = CGRectMake(x, y, width, height); self.layer.cornerRadius = height / 2;
+    self.frame = CGRectMake(x, y, width, height); self.layer.cornerRadius = expanded ? 20 : height / 2;
     [self setNeedsLayout];
 }
 - (void)layoutSubviews {
@@ -76,6 +81,21 @@
     self.countLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleHeadline] scaledFontForFont:[UIFont monospacedDigitSystemFontOfSize:17 weight:UIFontWeightSemibold] maximumPointSize:25];
     self.phaseLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleFootnote] scaledFontForFont:[UIFont systemFontOfSize:13] maximumPointSize:18];
     self.actionButton.titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody] scaledFontForFont:[UIFont systemFontOfSize:15] maximumPointSize:22];
+    if ([self.model[@"phase"] isEqual:@"preview"]) {
+        if (self.previewCollapsed) {
+            self.actionButton.frame = CGRectInset(self.bounds, 4, 4);
+            self.actionButton.layer.cornerRadius = (height - 8) / 2;
+        } else {
+            CGFloat half = (width - 28) / 2;
+            self.countLabel.frame = CGRectMake(14, 8, width - 28, height - 60);
+            self.actionButton.frame = CGRectMake(14, height - 52, half, 44);
+            self.actionButton.layer.cornerRadius = 12;
+            self.menuButton.frame = CGRectMake(14 + half, height - 52, half, 44);
+            self.menuButton.titleLabel.font = self.actionButton.titleLabel.font;
+        }
+        self.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:self.layer.cornerRadius].CGPath;
+        return;
+    }
     CGFloat textWidth = width - buttonWidth - menuWidth - 32;
     self.countLabel.frame = CGRectMake(16, 7 * scale, textWidth, 23 * scale);
     self.phaseLabel.frame = CGRectMake(16, 30 * scale, textWidth, 18 * scale);
@@ -87,32 +107,58 @@
 - (void)showModel:(NSDictionary *)model inWindow:(UIWindow *)window {
     BOOL entering = self.superview != window;
     BOOL changed = ![self.model isEqual:model]; self.model = model;
+    NSNumber *generation = model[@"previewGeneration"];
+    if (generation && ![generation isEqual:self.previewGeneration]) {
+        self.previewGeneration = generation;
+        self.previewCollapsed = NO;
+    }
     if (entering) { [self removeFromSuperview]; [window addSubview:self]; }
     [window bringSubviewToFront:self];
     if (changed) {
         self.countLabel.text = model[@"countText"] ?: [NSString stringWithFormat:@"%@ / %@", model[@"processed"] ?: @0, model[@"total"] ?: @0];
         NSString *phase = model[@"phase"];
+        BOOL preview = [phase isEqual:@"preview"];
+        self.countLabel.hidden = NO;
+        self.phaseLabel.hidden = preview;
+        self.countLabel.accessibilityLabel = model[@"countText"] ? self.countLabel.text : @"已处理群数，不代表已送达";
+        self.countLabel.adjustsFontSizeToFitWidth = preview;
+        self.countLabel.minimumScaleFactor = 0.75;
         self.phaseLabel.text = [@{@"running": @"转发中", @"paused": @"已暂停", @"settling": @"在途处理中",
             @"ready": @"待转发", @"waiting": @"等待消息", @"completed": @"本组完成"} objectForKey:phase] ?: @"状态待核对";
         self.phaseLabel.textColor = [phase isEqual:@"running"] ? SRSettingsAccent() : UIColor.secondaryLabelColor;
-        NSString *title = [phase isEqual:@"settling"] ? @"等待" :
-            ([model[@"action"] isEqual:@"pause"] ? @"暂停" : ([model[@"action"] isEqual:@"open"] ? @"查看" : @"继续"));
+        NSString *title = preview ? @"转发分组" : ([phase isEqual:@"settling"] ? @"等待" :
+            ([model[@"action"] isEqual:@"pause"] ? @"暂停" : ([model[@"action"] isEqual:@"open"] ? @"查看" : @"继续")));
         [self.actionButton setTitle:title forState:UIControlStateNormal];
+        [self.menuButton setTitle:preview ? @"忽略这条" : @"..." forState:UIControlStateNormal];
         self.actionButton.enabled = [model[@"actionEnabled"] boolValue];
         self.menuButton.hidden = ![model[@"menuEnabled"] boolValue];
-        self.actionButton.accessibilityLabel = [model[@"action"] isEqual:@"pause"] ? @"暂停转发，不撤回在途消息" :
-            ([model[@"action"] isEqual:@"open"] ? @"打开运营首页" : @"继续未尝试的群，不重发未知结果");
+        self.actionButton.accessibilityLabel = preview ? @"转发分组，打开分组列表，不会发送" :
+            ([model[@"action"] isEqual:@"pause"] ? @"暂停转发，不撤回在途消息" :
+            ([model[@"action"] isEqual:@"open"] ? @"打开群同步" : @"继续未尝试的群，不重发未知结果"));
     }
     [self place];
     self.actionButton.enabled = [model[@"actionEnabled"] boolValue];
     self.menuButton.hidden = ![model[@"menuEnabled"] boolValue];
+    if ([model[@"phase"] isEqual:@"preview"]) [self updatePreviewControls];
     if (entering && !UIAccessibilityIsReduceMotionEnabled()) {
         self.alpha = 0;
         [UIView animateWithDuration:0.18 animations:^{ self.alpha = 1; }];
     }
 }
+- (void)updatePreviewControls {
+    self.countLabel.hidden = self.previewCollapsed;
+    self.menuButton.hidden = self.previewCollapsed;
+    [self.actionButton setTitle:self.previewCollapsed ? @"1 条待同步 · 展开" : @"转发分组" forState:UIControlStateNormal];
+    self.actionButton.accessibilityLabel = self.previewCollapsed ? @"展开待同步消息" : @"转发分组，打开分组列表，不会发送";
+}
+- (void)togglePreview {
+    self.previewCollapsed = !self.previewCollapsed;
+    [self updatePreviewControls];
+    [self place];
+}
 - (void)hide { [self removeFromSuperview]; self.model = nil; }
 - (void)pressed {
+    if ([self.model[@"phase"] isEqual:@"preview"] && self.previewCollapsed) { [self togglePreview]; return; }
     self.actionButton.enabled = NO;
     if ([self.model[@"action"] isEqual:@"open"]) { if (self.openAction) self.openAction(); }
     else if (self.action) self.action();
@@ -121,7 +167,7 @@
  * refuse the tap whenever action was "open", which left the waiting, ready and
  * completed states with a dead body; the side "查看" button is a separate
  * path and stays available. */
-- (void)openPressed { if (self.openAction) self.openAction(); }
+- (void)openPressed { if ([self.model[@"phase"] isEqual:@"preview"]) [self togglePreview]; else if (self.openAction) self.openAction(); }
 - (void)menuPressed { if (self.menuAction) self.menuAction(); }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     if (![gestureRecognizer isKindOfClass:UITapGestureRecognizer.class]) return YES;

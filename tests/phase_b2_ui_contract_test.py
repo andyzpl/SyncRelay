@@ -185,8 +185,8 @@ class PhaseB2UI(unittest.TestCase):
     def test_home_resolves_the_current_content_from_frozen_sources(self):
         resolve = home_block().split("- (BOOL)resolveContent:", 1)[1].split("\n}", 1)[0]
         # In-memory preview first, but only for this account.
-        self.assertIn("self.capture.preview", resolve)
-        self.assertIn('self.capture.status[@"account"]', resolve)
+        self.assertIn('BOOL captureBelongs = [captureStatus[@"account"] isEqual:self.account]', resolve)
+        self.assertIn("captureBelongs ? [self.capture previewSnapshotForAccount:self.account generation:generation]", resolve)
         # Then prepared operations content, then the newest confirmed plan.
         self.assertIn("operationsContentForAccount", home_block())
         self.assertIn("self.operations[@\"current\"]", resolve)
@@ -240,7 +240,7 @@ class PhaseB2UI(unittest.TestCase):
 
     def test_home_settings_round_trip_is_preserved_as_a_top_bar_route(self):
         home = home_block()
-        # 12.2 fixes the top bar as 关闭 / SyncRelay 运营 / 设置.
+        # The settings route stays in the top bar when the home is renamed.
         self.assertIn('initWithTitle:@"关闭"', home)
         self.assertIn('initWithTitle:@"设置"', home)
         self.assertIn("action:@selector(settingsPressed)", home)
@@ -737,8 +737,9 @@ class PhaseB2UI(unittest.TestCase):
         home = home_block()
         resolve = home.split("- (BOOL)resolveContent:(NSError **)error {", 1)[1].split("\n}", 1)[0]
         # The in-memory preview: the configuration saved with the capture.
-        preview = resolve.split("if (preview &&", 1)[1].split("return YES;", 1)[0]
-        self.assertIn('self.frozenConfiguration = SRDictionary(self.capture.status[@"configuration"]);', preview)
+        preview = resolve.split("if (preview) {", 1)[1].split("return YES;", 1)[0]
+        self.assertIn('self.frozenConfiguration = SRDictionary(preview[@"configuration"]);', preview)
+        self.assertIn('self.envelope = SRDictionary(preview[@"source"]);', preview)
         # The prepared content: the persisted frozen configuration row.
         current = resolve.split("if (current) {", 1)[1].split("return YES;", 1)[0]
         self.assertIn('self.frozenConfiguration = SRDictionary(current[@"configuration"]);', current)

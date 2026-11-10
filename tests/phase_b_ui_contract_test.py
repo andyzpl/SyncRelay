@@ -66,7 +66,7 @@ class PhaseBUIContracts(unittest.TestCase):
         header = self.text("UI/SRPlanScreens.h")
         source = self.text("UI/SRPlanScreens.m")
         self.assertIn("SRCreateOperationsHome", header)
-        self.assertIn('self.title = @"SyncRelay 运营"', source)
+        self.assertIn('self.title = @"群同步"', source)
         self.assertIn('打开本页不会开始捕获、创建计划或发送', source)
         home = self.home_only()
         self.assertNotIn("armForAccount:", home)
@@ -76,7 +76,7 @@ class PhaseBUIContracts(unittest.TestCase):
     def test_home_routes_to_existing_preview_and_plan_pages(self):
         source = self.text("UI/SRPlanScreens.m")
         home = source.split("@interface SROperationsHomeScreen", 1)[1]
-        self.assertIn("SRCreateCapturePreview", home)
+        self.assertIn("SRCreateCapturedForwarding", home)
         self.assertIn("SRCreatePlanList", home)
         # B-2 keeps the preview route on the content row and moves the full plan
         # history to its own explicitly labelled row; the group entry above is
@@ -144,7 +144,7 @@ class PhaseBUIContracts(unittest.TestCase):
         self.assertNotIn("ready", idle)
         self.assertNotIn("completed", idle)
         # The capsule model is still only produced by real content states.
-        for guard in ("captureBelongs && self.capture.preview",
+        for guard in ('captureBelongs && [captureStatus[@"state"] isEqual:@"preview"]',
                       'captureStatus[@"state"] isEqual:@"waiting"]',
                       "progressBelongsToCurrentAccount",
                       "currentContent", "recentContent"):
@@ -154,7 +154,7 @@ class PhaseBUIContracts(unittest.TestCase):
         """The settings entry must reach a real settings controller, not only be
         drawn. The route is an explicit callback, not a guessed selector.
 
-        B-2 follows 12.2 and puts it in the top bar (关闭 / SyncRelay 运营 / 设置)
+        The settings route remains in the top bar (关闭 / 群同步 / 设置)
         instead of a body row; the callback contract is unchanged."""
         source = self.text("UI/SRPlanScreens.m")
         header = self.text("UI/SRPlanScreens.h")
@@ -253,7 +253,7 @@ class PhaseBUIContracts(unittest.TestCase):
         self.assertIn("if (navigation != self.presented) return;", route)
         # The originating home must still be the root of that stack.
         self.assertIn("navigation.viewControllers.firstObject", route)
-        self.assertIn('isEqualToString:@"SyncRelay 运营"', route)
+        self.assertIn("home != self.operationsHome", route)
         # No second settings page on the same stack.
         self.assertIn("if ([self presentedSettingsPanel]) return;", route)
         # No re-entry while presenting or dismissing.
@@ -263,6 +263,7 @@ class PhaseBUIContracts(unittest.TestCase):
         # The caller also re-checks the ownership before it routes.
         caller = entry.split("- (void)openOperationsFromController:", 1)[1].split("\n}", 1)[0]
         self.assertIn("current != entry.presented", caller)
+        self.assertIn("self.operationsHome = home;", caller)
 
     def test_the_settings_route_keeps_the_original_guard_conditions(self):
         """The route guards must stay strict: no default-yes, no removed
@@ -388,6 +389,45 @@ class PhaseBUIContracts(unittest.TestCase):
         self.assertIn('isEqual:@"pause"', source)
         self.assertIn("self.action()", source)
 
+    def test_pending_preview_capsule_routes_the_shown_generation_without_sending(self):
+        panel = self.text("UI/SRPanel.m").split("@implementation SREntry", 1)[1]
+        capsule = self.text("UI/SRFloatingProgress.m")
+        self.assertIn('@"转发分组"', capsule)
+        self.assertIn('@"忽略这条"', capsule)
+        refresh = panel.split("- (void)refreshFloatingProgress {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('previewGeneration = captureStatus[@"generation"]', refresh)
+        self.assertIn("previewAccount:account generation:previewGeneration", refresh)
+        self.assertIn("ignorePreviewForAccount:account generation:previewGeneration", refresh)
+        route = panel.split("- (void)openOperationsFromController:", 1)[1].split("\n}", 1)[0]
+        self.assertLess(route.index("previewSnapshotForAccount:account generation:generation"),
+                        route.index("SRCreateCapturedForwarding"))
+        ignore = panel.split("- (void)ignorePreviewForAccount:", 1)[1].split("\n}", 1)[0]
+        self.assertLess(ignore.index("verifyAccount:account"), ignore.index("discardPreviewForAccount:account generation:generation"))
+        for forbidden in ("armForAccount:", "confirmForCurrentAccount:", "startRule:", "submitDelivery"):
+            self.assertNotIn(forbidden, route + ignore)
+
+    def test_forwarding_preview_uses_frozen_groups_and_explicit_confirmation(self):
+        record = self.text("UI/SRPlanScreens.m").split("@implementation SRRecordScreen", 1)[1].split("@end", 1)[0]
+        self.assertIn("previewSnapshotForAccount:self.account generation:self.previewGeneration", record)
+        self.assertIn("groupRowsForConfiguration:self.configuration targetLimit:self.store.forwardingTargetLimit", record)
+        self.assertIn('@[@"锁定的一条源消息", @"转发分组", @"确认前核对"]', record)
+        self.assertIn('row[@"blockedText"]', record)
+        select = record.split("didSelectRowAtIndexPath:", 1)[1]
+        self.assertLess(select.index("confirmForCurrentAccount:self.account generation:self.previewGeneration"),
+                        select.index("SRCreateGroupList"))
+        self.assertNotIn("startRule:", record)
+
+    def test_home_pending_action_never_substitutes_a_new_capture(self):
+        home = self.home_only()
+        self.assertIn('self.previewGeneration = generation', home)
+        self.assertIn('@"有 1 条待同步消息 · 查看内容和目标分组，不会立即发送"', home)
+        tap = home.split('if (path.section == 1 && path.row == 0) {', 1)[1].split('if (path.section == 2)', 1)[0]
+        self.assertIn('NSNumber *generation = self.previewGeneration;', tap)
+        self.assertLess(tap.index('previewSnapshotForAccount:self.account generation:generation'),
+                        tap.index('SRCreateCapturedForwarding'))
+        self.assertNotIn('self.capture.status', tap)
+        self.assertNotIn('self.capture.preview', tap)
+
     def test_home_open_never_arms_capture_or_sends(self):
         """Opening the home must not arm capture, sample, confirm or send."""
         home = self.home_only()
@@ -400,6 +440,16 @@ class PhaseBUIContracts(unittest.TestCase):
         for forbidden in ("armForAccount:", "confirmForCurrentAccount:", "submitDelivery",
                           "resumeRun", "togglePauseForCurrentAccount"):
             self.assertNotIn(forbidden, route)
+
+    def test_home_source_row_projects_owned_capture_status_and_routes_to_settings(self):
+        home = self.home_only()
+        self.assertIn('if ([captureStatus[@"account"] isEqual:self.account]) self.sourceCaptureStatus = captureStatus;', home)
+        source = home.split('- (NSString *)sourceCaptureText {', 1)[1].split('\n}', 1)[0]
+        for marker in ('@"preview"', '@"waiting"', 'SRSourceCaptureStopImageTimeout', 'SRSourceCaptureStopImageRejected', '@"当前不监听'):
+            self.assertIn(marker, source)
+        route = home.split('didSelectRowAtIndexPath:', 1)[1]
+        self.assertIn('if (!self.previewGeneration) [self settingsPressed];', route)
+        self.assertNotIn('UISwitch', home)
 
 
 if __name__ == "__main__":

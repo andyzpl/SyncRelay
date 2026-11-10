@@ -225,6 +225,7 @@ static const NSUInteger SRAppMessageSampleLimit = 16;
 - (void)observeOutgoingManager:(id)manager session:(id)session wrap:(id)wrap timeEvidence:(NSDictionary *)evidence;
 - (void)observeMessageType:(NSNumber *)type generation:(NSUInteger)generation;
 - (BOOL)currentAccountMatches:(NSString *)account;
+- (void)stopForGeneration:(nullable NSNumber *)expectedGeneration accountChanged:(BOOL)accountChanged;
 - (void)noteSessionRejection:(id)session group:(NSString *)group path:(NSString *)path;
 - (void)observeAppMessageWrap:(id)wrap sender:(NSString *)sender from:(NSString *)from to:(NSString *)to
     timeEvidence:(NSDictionary *)evidence generation:(NSUInteger)generation;
@@ -694,7 +695,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
     // The queued delivery path rechecks the account too, but the diagnostic
     // probe must not record a callback that has already crossed an account
     // boundary before that final hand-off.
-    if (![self currentAccountMatches:account]) { [self note:@"account_changed"]; [self stop]; return; }
+    if (![self currentAccountMatches:account]) { [self stopForGeneration:@(generation) accountChanged:YES]; return; }
     // The type-49 probe is read-only diagnostics: type 49 never becomes a source
     // message, so it fails the relay type filter below, but observing it is
     // exactly what this probe exists for.
@@ -739,8 +740,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
         @synchronized(receiver) { if (!receiver.armed || receiver.generation != generation) return; }
         @try {
             if (![receiver.currentAccount() isEqual:account]) {
-                [receiver note:@"account_changed"];
-                [receiver stop]; [receiver fail:@"Account changed; receive capture stopped" error:NULL]; return;
+                [receiver stopForGeneration:@(generation) accountChanged:YES]; return;
             }
             @synchronized(receiver) { if (!receiver.armed || receiver.generation != generation) return; }
             if (![receiver acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
@@ -841,7 +841,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
     // when it carries a server ID.
     if (![self allowsSenderIdentity:account]) return;
     if (![self acceptsTimeEvidence:evidence wrap:wrap generation:generation]) return;
-    if (![self currentAccountMatches:account]) { [self note:@"account_changed"]; [self stop]; return; }
+    if (![self currentAccountMatches:account]) { [self stopForGeneration:@(generation) accountChanged:YES]; return; }
     if (probeAllowed && [type isEqual:@49]) [self observeAppMessageWrap:wrap sender:account from:account to:group timeEvidence:evidence generation:generation];
     // The sender was already accepted above; only the relay type gate remains.
     if (![self allowsSender:account type:type]) return;
@@ -881,7 +881,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
 - (void)pollOutgoing:(SRPendingOwnText *)pending group:(NSString *)group account:(NSString *)account generation:(NSUInteger)generation remaining:(NSUInteger)remaining {
     @synchronized(self) { if (!self.armed || self.generation != generation || self.pendingOutgoing != pending) return; }
     @try {
-        if (![self.currentAccount() isEqual:account]) { [self note:@"account_changed"]; [self stop]; return; }
+        if (![self.currentAccount() isEqual:account]) { [self stopForGeneration:@(generation) accountChanged:YES]; return; }
         if (![self ownWrap:pending.wrap matchesPending:pending group:group account:account] ||
             ![self acceptsTimeEvidence:pending.timeEvidence wrap:pending.wrap generation:generation]) {
             self.pendingOutgoing = nil; self.ownTextState = @"conflict";
@@ -911,7 +911,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
             }
         }
         if (SRReadUnsignedInteger(wrap, @"m_n64MesSvrID", NULL).unsignedLongLongValue) {
-            if (![self.currentAccount() isEqual:account]) { [self stop]; return; }
+            if (![self.currentAccount() isEqual:account]) { [self stopForGeneration:@(generation) accountChanged:YES]; return; }
             [self observeSession:group wrap:wrap timeEvidence:pending.timeEvidence]; self.pendingOutgoing = nil; self.ownTextState = @"source_candidate"; return;
         }
         if (!remaining) {
@@ -942,7 +942,7 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
     NSDictionary *payload = nil;
     BOOL offered = NO;
     @try {
-        if (![self.currentAccount() isEqual:pending.source[@"account"]]) { [self note:@"account_changed"]; [self stop]; return; }
+        if (![self.currentAccount() isEqual:pending.source[@"account"]]) { [self stopForGeneration:@(generation) accountChanged:YES]; return; }
         if (![self imageWrap:pending.wrap matches:pending.source]) {
             self.imageState = @"identity_conflict"; [self note:@"image_conflict"]; [self stop]; return;
         }
@@ -1002,10 +1002,22 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
 }
 
 - (void)stop {
-    BOOL wasArmed;
+    [self stopForGeneration:nil accountChanged:NO];
+}
+
+- (void)stopForGeneration:(NSNumber *)expectedGeneration accountChanged:(BOOL)accountChanged {
+    NSString *account = nil, *imageState = nil;
+    NSNumber *generation = nil;
+    void (^didStop)(NSString *, NSNumber *, NSString *) = nil;
     @synchronized(SRTaps()) {
         @synchronized(self) {
-            wasArmed = self.armed;
+            // Host account lookup can reenter or finish after a new arm.
+            if (expectedGeneration && (!self.armed || ![expectedGeneration isEqualToNumber:@(self.generation)])) return;
+            if (self.armed) {
+                account = self.account; generation = @(self.generation);
+                imageState = self.imageState ?: @"idle"; didStop = self.didStop;
+            }
+            if (accountChanged) self.problem = @"Account changed; receive capture stopped";
             self.armed = NO; self.generation++;
             if (self.tap.listener == self) self.tap.listener = nil;
             if (self.outgoingTap.listener == self) self.outgoingTap.listener = nil;
@@ -1015,7 +1027,11 @@ static NSDictionary *SRMessageTypeProbeSnapshot(NSDictionary *counts, NSArray *s
             self.account = nil; self.group = nil;
         }
     }
-    if (wasArmed) [self note:@"receiver_stopped"];
+    if (generation) {
+        if (accountChanged) [self note:@"account_changed"];
+        [self note:@"receiver_stopped"];
+        @try { if (didStop) didStop(account, generation, imageState); } @catch (__unused id exception) { }
+    }
 }
 - (NSDictionary *)diagnostics {
     @synchronized(self) {
