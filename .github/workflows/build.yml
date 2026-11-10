@@ -33,6 +33,8 @@ jobs:
           "$RUNNER_TEMP/pacing-test"
           clang -std=c11 -Wall -Wextra -Werror -I. Core/SROperationsState.c tests/operations_state_test.c -o "$RUNNER_TEMP/operations-state-test"
           "$RUNNER_TEMP/operations-state-test"
+          clang -std=c11 -Wall -Wextra -Werror -I. tests/capsule_geometry_test.c -o "$RUNNER_TEMP/capsule-geometry-test"
+          "$RUNNER_TEMP/capsule-geometry-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRPacing.c tests/store_test.m Core/SREntryPreferences.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/store-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRSourceCapture.m Core/SRRunner.m Core/SRPacing.c tests/relay_pipeline_test.m Core/SREntryPreferences.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/pipeline-test"
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -I. Core/SRStore.m Core/SRMediaAlertState.m Core/SRConfiguration.m Core/SRSourceMessage.m Core/SRImageAssetStore.m Core/SRMediaQuota.c Core/SRRelayCoordinator.m Core/SRRuntimeLog.m Core/SROperationsState.c Core/SRPacing.c tests/relay_coordinator_test.m Core/SREntryPreferences.m -framework Foundation -framework ImageIO -framework CoreGraphics -lsqlite3 -o "$RUNNER_TEMP/relay-coordinator-test"

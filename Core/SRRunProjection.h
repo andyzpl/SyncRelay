@@ -87,6 +87,10 @@ FOUNDATION_EXPORT NSString *const SRGroupFilterAbnormal;
 /* Read-only rows from the saved configuration: the group and member list can
  * be inspected when no content is confirmed, but nothing is executable. */
 + (NSArray<NSDictionary *> *)groupRowsForConfiguration:(nullable NSDictionary *)configuration targetLimit:(NSUInteger)limit;
+/* Resolve a selected capture-time row after confirmation assigns durable IDs.
+ * Position, name and ordered targets must all agree; this grants no send right. */
++ (nullable NSDictionary *)confirmedCardForRow:(NSDictionary *)row atIndex:(NSUInteger)index
+                                       cards:(NSArray<NSDictionary *> *)cards;
 
 /* Row keys: identifier, name, targetCount, targets, targetNames, phase,
  * statusText, progressText, blockedText (NSNull when executable),

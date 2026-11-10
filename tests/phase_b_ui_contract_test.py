@@ -67,7 +67,7 @@ class PhaseBUIContracts(unittest.TestCase):
         source = self.text("UI/SRPlanScreens.m")
         self.assertIn("SRCreateOperationsHome", header)
         self.assertIn('self.title = @"群同步"', source)
-        self.assertIn('打开本页不会开始捕获、创建计划或发送', source)
+        self.assertIn('持续监听暂未开放', source)
         home = self.home_only()
         self.assertNotIn("armForAccount:", home)
         self.assertNotIn("startRule:", home)
@@ -82,7 +82,7 @@ class PhaseBUIContracts(unittest.TestCase):
         # history to its own explicitly labelled row; the group entry above is
         # bound to this content's plan instead.
         self.assertIn('if (path.section == 1 && path.row == 0) {', home)
-        self.assertIn('@"全部内容计划"', home)
+        self.assertIn('@"历史内容"', home)
         self.assertIn("SRCreateGroupList", home)
 
     def test_capsule_has_open_and_menu_actions_without_owning_a_window(self):
@@ -113,6 +113,16 @@ class PhaseBUIContracts(unittest.TestCase):
         self.assertIn('captureStatus[@"state"] isEqual:@"waiting"', panel)
         self.assertIn('self.capture.preview', panel)
 
+    def test_docked_waiting_capsule_stays_visible_as_a_compact_status_pill(self):
+        source = self.text("UI/SRFloatingProgress.m")
+        panel = self.text("UI/SRPanel.m")
+        self.assertNotIn('BOOL dockedWaiting', source)
+        self.assertIn('SRCapsuleDockSide(', source)
+        self.assertIn('self.docked ? 44', source)
+        self.assertIn('if (self.docked) {', source)
+        self.assertIn('self.menuButton.hidden = YES;', source)
+        self.assertIn('@"countText": @"等待中"', panel)
+
     # --- B-1 entry wiring round (2026-10-27) ---
 
     def test_idle_floating_entry_opens_the_operations_home(self):
@@ -121,11 +131,12 @@ class PhaseBUIContracts(unittest.TestCase):
         panel, so the home was unreachable while idle."""
         panel = self.text("UI/SRPanel.m")
         entry = panel.split("@implementation SREntry", 1)[1]
-        # The floating entry button routes to the operations home, not settings.
-        self.assertIn("action:@selector(openOperations)", panel)
+        # The idle state uses the same capsule and opens the four-entry home.
+        self.assertIn('@"phase": @"idle"', panel)
         self.assertIn("- (void)openOperations {", entry)
         # The idle route reuses the existing capsule route and its account gate.
-        self.assertIn("[self openOperationsFromController:nil]", entry)
+        self.assertIn("[self openHomeFromController:nil]", entry)
+        self.assertIn("SRCreateNavigationHome", entry)
         # The home itself can show the empty state without any content.
         screens = self.text("UI/SRPlanScreens.m")
         self.assertIn("尚未捕获内容", screens)
@@ -236,7 +247,7 @@ class PhaseBUIContracts(unittest.TestCase):
         # The block fetches the navigation back instead of capturing it strongly.
         self.assertIn("UINavigationController *current = weakNavigation;", route)
         # The block must not capture the navigation itself.
-        block = route.split("void (^openSettings)(void) = ^void {", 1)[1].split("\n    };", 1)[0]
+        block = route.split("void (^openDestination)(NSUInteger) = ^void(NSUInteger destination) {", 1)[1].split("\n    };", 1)[0]
         self.assertNotIn("= navigation;", block)
         self.assertNotIn(":navigation ", block)
         # The entry itself is captured weakly too.
@@ -368,13 +379,14 @@ class PhaseBUIContracts(unittest.TestCase):
         self.assertLess(route.index("SRPanel *panel = [[SRPanel alloc]"),
                         route.index("[navigation pushViewController:panel animated:YES]"))
 
-    def test_capsule_body_tap_opens_the_home_even_when_action_is_open(self):
-        """The capsule body must open the operations home for waiting, ready and
-        completed states. The old guard refused the body tap for action=open."""
+    def test_capsule_body_tap_restores_or_expands_without_operating_a_run(self):
+        """The approved redesign separates display expansion from commands."""
         source = self.text("UI/SRFloatingProgress.m")
         self.assertIn("- (void)openPressed", source)
-        body = source.split("- (void)openPressed {", 1)[1].split("\n", 1)[0]
-        self.assertIn("self.openAction()", body)
+        body = source.split("- (void)openPressed {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("[self restoreFromDock]", body)
+        self.assertIn("self.progressExpanded = !self.progressExpanded", body)
+        self.assertNotIn("self.openAction()", body)
         self.assertNotIn('isEqual:@"open"', body)
         # A drag must not be reported as a body tap.
         self.assertIn("requireGestureRecognizerToFail:pan", source)
@@ -407,20 +419,20 @@ class PhaseBUIContracts(unittest.TestCase):
             self.assertNotIn(forbidden, route + ignore)
 
     def test_forwarding_preview_uses_frozen_groups_and_explicit_confirmation(self):
-        record = self.text("UI/SRPlanScreens.m").split("@implementation SRRecordScreen", 1)[1].split("@end", 1)[0]
-        self.assertIn("previewSnapshotForAccount:self.account generation:self.previewGeneration", record)
-        self.assertIn("groupRowsForConfiguration:self.configuration targetLimit:self.store.forwardingTargetLimit", record)
-        self.assertIn('@[@"锁定的一条源消息", @"转发分组", @"确认前核对"]', record)
+        record = self.text("UI/SRPlanScreens.m").split("@implementation SRCapturedForwardingScreen", 1)[1].split("@end", 1)[0]
+        self.assertIn("previewSnapshotForAccount:self.account generation:self.generation", record)
+        self.assertIn('groupRowsForConfiguration:snapshot[@"configuration"] targetLimit:self.store.forwardingTargetLimit', record)
+        self.assertIn('@[@"1  核对内容", @"2  选择一个分组", @"3  核对后再转发"]', record)
         self.assertIn('row[@"blockedText"]', record)
-        select = record.split("didSelectRowAtIndexPath:", 1)[1]
-        self.assertLess(select.index("confirmForCurrentAccount:self.account generation:self.previewGeneration"),
+        select = record.split("- (void)continuePressed", 1)[1]
+        self.assertLess(select.index("confirmForCurrentAccount:self.account generation:self.generation"),
                         select.index("SRCreateGroupList"))
         self.assertNotIn("startRule:", record)
 
     def test_home_pending_action_never_substitutes_a_new_capture(self):
         home = self.home_only()
         self.assertIn('self.previewGeneration = generation', home)
-        self.assertIn('@"有 1 条待同步消息 · 查看内容和目标分组，不会立即发送"', home)
+        self.assertIn('[SRRunProjection excerptForEnvelope:self.envelope limit:180]', home)
         tap = home.split('if (path.section == 1 && path.row == 0) {', 1)[1].split('if (path.section == 2)', 1)[0]
         self.assertIn('NSNumber *generation = self.previewGeneration;', tap)
         self.assertLess(tap.index('previewSnapshotForAccount:self.account generation:generation'),

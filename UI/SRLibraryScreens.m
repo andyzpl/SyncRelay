@@ -143,7 +143,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (self.masked) return @"离开前台时已清除本页显示；回到前台会重新核对账号后再读取。";
     if (self.accountInvalid) return @"当前账号无法核对或已经改变，旧条目已隐藏。请返回重新读取账号。";
     if (self.problem) return @"读取失败时不提供任何操作。";
-    return @"条目来自本账号的消息库；左滑可删除条目，详情页可把普通文字转发到群。";
+    return @"查看本账号保存的文字和静态图片；进入详情后选择分组，明确确认才会开始转发。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"library"] ?:
@@ -169,8 +169,8 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         return cell;
     }
     if (!self.rows.count) {
-        cell.textLabel.text = @"消息库还没有条目";
-        cell.detailTextLabel.text = @"本版不提供导入；条目只由已确认的内容产生。";
+        cell.textLabel.text = @"消息库还没有消息";
+        cell.detailTextLabel.text = @"可在设置开启「长按消息存入库」，再长按文字或静态图片选择「存入同步库」。";
         return cell;
     }
     if (path.row == (NSInteger)self.rows.count) {

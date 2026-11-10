@@ -26,6 +26,20 @@ static void SRGroupingError(NSError **error, id reason) {
 }
 
 @implementation SRGroupPlanner
++ (NSDictionary *)poolSummaryForRows:(NSArray<NSDictionary *> *)rows draft:(NSDictionary *)draft {
+    if (![rows isKindOfClass:NSArray.class] || ![SRConfiguration validateDraft:draft error:NULL]) return nil;
+    NSMutableSet *pool = [NSMutableSet set], *assigned = [NSMutableSet set], *excluded = [NSMutableSet set];
+    for (id row in rows) {
+        if (!SRGroupRow(row)) return nil;
+        if (![row[@"id"] isEqual:draft[@"sourceGroup"][@"id"]]) [pool addObject:row[@"id"]];
+    }
+    for (NSDictionary *rule in draft[@"rules"]) for (NSDictionary *target in rule[@"targets"]) [assigned addObject:target[@"id"]];
+    for (NSDictionary *row in draft[@"excludedGroups"]) [excluded addObject:row[@"id"]];
+    [assigned intersectSet:pool]; [excluded intersectSet:pool];
+    NSMutableSet *unassigned = [pool mutableCopy]; [unassigned minusSet:assigned]; [unassigned minusSet:excluded];
+    return @{@"assigned": @(assigned.count), @"unassigned": @(unassigned.count), @"excluded": @(excluded.count), @"pool": @(pool.count)};
+}
+
 + (NSDictionary *)configurationBySettingSourceGroup:(NSDictionary *)group inDraft:(NSDictionary *)draft error:(NSError **)error {
     @try {
         NSDictionary *snapshot = [SRSourceMessage frozenJSON:draft];

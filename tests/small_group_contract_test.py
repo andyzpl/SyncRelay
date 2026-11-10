@@ -97,8 +97,12 @@ class SmallGroupContracts(unittest.TestCase):
         progress = text.split('- (void)refreshFloatingProgress {', 1)[1].split('- (void)install {', 1)[0]
         self.assertIn('progressBelongsToCurrentAccount', progress)
         self.assertIn('UIApplicationStateActive', progress)
-        self.assertNotIn('floatingEntryEnabled', progress)
-        self.assertIn('togglePauseForCurrentAccount:', progress)
+        # Only the idle fallback is optional; real activity is projected first.
+        self.assertLess(progress.index('progressBelongsToCurrentAccount'), progress.index('floatingEntryEnabled'))
+        self.assertIn('!model && account.length && self.entryPreferences.floatingEntryEnabled', progress)
+        self.assertIn('currentRunID isEqual:boundRun', progress)
+        self.assertIn('resumeRun:boundRun account:account', progress)
+        self.assertNotIn('togglePauseForCurrentAccount:', progress)
 
 
 if __name__ == '__main__':

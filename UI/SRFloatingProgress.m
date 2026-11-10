@@ -1,5 +1,6 @@
 #import "SRFloatingProgress.h"
 #import "SRNativeStyle.h"
+#import "SRCapsuleGeometry.h"
 
 @interface SRFloatingProgress () <UIGestureRecognizerDelegate>
 @property(nonatomic, strong) UILabel *countLabel;
@@ -9,6 +10,11 @@
 @property(nonatomic, copy) NSDictionary *model;
 @property(nonatomic, copy) NSNumber *previewGeneration;
 @property(nonatomic) BOOL previewCollapsed;
+@property(nonatomic) BOOL progressExpanded;
+@property(nonatomic) BOOL docked;
+@property(nonatomic) BOOL dragStartedDocked;
+@property(nonatomic) CGRect dragStartFrame;
+@property(nonatomic, strong) UILabel *dockLabel;
 @property(nonatomic) CGFloat unitX;
 @property(nonatomic) CGFloat unitY;
 @property(nonatomic) BOOL dragging;
@@ -20,7 +26,7 @@
     self = [super initWithFrame:frame];
     if (self) {
         _unitX = 1;
-        _unitY = 0.35;
+        _unitY = 0.82;
         self.backgroundColor = SRSettingsCellBackground(); self.layer.cornerRadius = 27;
         self.layer.shadowColor = UIColor.blackColor.CGColor; self.layer.shadowOpacity = 0.14;
         self.layer.shadowRadius = 10; self.layer.shadowOffset = CGSizeMake(0, 3);
@@ -33,12 +39,14 @@
         [_menuButton setTitle:@"..." forState:UIControlStateNormal];
         [_menuButton addTarget:self action:@selector(menuPressed) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:_countLabel]; [self addSubview:_phaseLabel]; [self addSubview:_actionButton]; [self addSubview:_menuButton];
+        _dockLabel = [[UILabel alloc] init]; _dockLabel.numberOfLines = 0; _dockLabel.textAlignment = NSTextAlignmentCenter;
+        _dockLabel.textColor = UIColor.labelColor; _dockLabel.hidden = YES;
+        [self addSubview:_dockLabel];
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openPressed)];
         tap.cancelsTouchesInView = NO; tap.delegate = self; [self addGestureRecognizer:tap];
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
         [self addGestureRecognizer:pan];
-        /* A drag must never be reported as a body tap: the tap waits until the
-         * pan recognizer has failed, so ending a drag cannot open the home. */
+        /* A drag must never also expand the capsule or invoke a body tap. */
         [tap requireGestureRecognizerToFail:pan];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(keyboardChanged:) name:UIKeyboardWillChangeFrameNotification object:nil];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(keyboardChanged:) name:UIKeyboardWillHideNotification object:nil];
@@ -48,6 +56,11 @@
     return self;
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)setInitialPositionUnitX:(CGFloat)unitX unitY:(CGFloat)unitY {
+    if (!isfinite(unitX) || !isfinite(unitY)) return;
+    self.unitX = MAX(0, MIN(1, unitX)); self.unitY = MAX(0, MIN(1, unitY));
+    [self place];
+}
 - (CGRect)availableBounds {
     UIWindow *window = self.window; if (!window) return CGRectZero;
     CGRect bounds = UIEdgeInsetsInsetRect(window.bounds, window.safeAreaInsets);
@@ -64,14 +77,16 @@
     CGRect available = [self availableBounds];
     CGFloat scale = MIN(1.45, MAX(1, [UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize / 17));
     BOOL preview = [self.model[@"phase"] isEqual:@"preview"];
-    BOOL expanded = preview && !self.previewCollapsed;
-    CGFloat width = MIN(CGRectGetWidth(available), (expanded ? 248 : 176) * scale);
-    CGFloat height = MIN(CGRectGetHeight(available), (expanded ? 90 : 56) * scale);
-    if (width < (expanded ? 196 : 132) || height < (expanded ? 84 : 44)) { self.hidden = YES; return; }
+    BOOL expanded = !self.docked && ((preview && !self.previewCollapsed) || (!preview && self.progressExpanded));
+    CGFloat width = MIN(CGRectGetWidth(available), (self.docked ? 44 : (expanded ? 248 : 208)) * scale);
+    CGFloat height = MIN(CGRectGetHeight(available), (self.docked ? 128 : (expanded ? (preview ? 90 : 116) : 56)) * scale);
+    CGFloat minimumWidth = (self.docked ? 44 : (expanded ? 196 : 176)) * scale;
+    CGFloat minimumHeight = (self.docked ? 128 : (expanded ? (preview ? 84 : 108) : 44)) * scale;
+    if (width < minimumWidth || height < minimumHeight) { self.hidden = YES; return; }
     self.hidden = NO;
     CGFloat x = CGRectGetMinX(available) + (CGRectGetWidth(available) - width) * MAX(0, MIN(1, self.unitX));
     CGFloat y = CGRectGetMinY(available) + (CGRectGetHeight(available) - height) * self.unitY;
-    self.frame = CGRectMake(x, y, width, height); self.layer.cornerRadius = expanded ? 20 : height / 2;
+    self.frame = CGRectMake(x, y, width, height); self.layer.cornerRadius = self.docked ? 12 : (expanded ? 20 : height / 2);
     [self setNeedsLayout];
 }
 - (void)layoutSubviews {
@@ -81,7 +96,30 @@
     self.countLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleHeadline] scaledFontForFont:[UIFont monospacedDigitSystemFontOfSize:17 weight:UIFontWeightSemibold] maximumPointSize:25];
     self.phaseLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleFootnote] scaledFontForFont:[UIFont systemFontOfSize:13] maximumPointSize:18];
     self.actionButton.titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody] scaledFontForFont:[UIFont systemFontOfSize:15] maximumPointSize:22];
+    self.countLabel.textAlignment = NSTextAlignmentLeft;
+    self.countLabel.hidden = NO;
+    self.phaseLabel.hidden = NO;
+    self.menuButton.hidden = ![self.model[@"menuEnabled"] boolValue];
+    self.actionButton.backgroundColor = SRSettingsBackground();
+    self.actionButton.hidden = NO; self.dockLabel.hidden = !self.docked;
+    if (self.docked) {
+        self.countLabel.hidden = YES; self.phaseLabel.hidden = YES;
+        self.actionButton.hidden = YES; self.menuButton.hidden = YES;
+        NSString *phase = self.model[@"phase"];
+        NSString *state = [@{@"running": @"转\n发\n中", @"paused": @"已\n暂\n停", @"settling": @"收\n尾\n中",
+            @"completed": @"已\n结\n束", @"waiting": @"等\n待\n中", @"preview": @"待\n同\n步", @"ready": @"待\n转\n发"} objectForKey:phase] ?: @"转\n发";
+        self.dockLabel.text = [NSString stringWithFormat:@"%@\n%@", self.unitX < 0.5 ? @"›" : @"‹", state];
+        self.dockLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+            scaledFontForFont:[UIFont systemFontOfSize:17 weight:UIFontWeightMedium] maximumPointSize:22];
+        self.dockLabel.frame = CGRectInset(self.bounds, 4, 8);
+        self.dockLabel.accessibilityLabel = [NSString stringWithFormat:@"%@，已收纳，轻触展开胶囊，不会改变转发状态",
+            [state stringByReplacingOccurrencesOfString:@"\n" withString:@""]];
+        self.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:12].CGPath;
+        return;
+    }
     if ([self.model[@"phase"] isEqual:@"preview"]) {
+        self.phaseLabel.hidden = YES;
+        [self updatePreviewControls];
         if (self.previewCollapsed) {
             self.actionButton.frame = CGRectInset(self.bounds, 4, 4);
             self.actionButton.layer.cornerRadius = (height - 8) / 2;
@@ -95,6 +133,25 @@
         }
         self.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:self.layer.cornerRadius].CGPath;
         return;
+    }
+    if (self.progressExpanded) {
+        CGFloat expandedScale = height / 116, inset = 14 * expandedScale;
+        self.countLabel.frame = CGRectMake(inset, 8 * expandedScale, width - inset * 2, 26 * expandedScale);
+        self.phaseLabel.frame = CGRectMake(inset, 36 * expandedScale, width - inset * 2, 20 * expandedScale);
+        CGFloat half = (width - inset * 2) / 2;
+        self.actionButton.frame = CGRectMake(inset, height - 52 * expandedScale, half, 44 * expandedScale);
+        self.actionButton.layer.cornerRadius = 12;
+        self.menuButton.frame = CGRectMake(inset + half, height - 52 * expandedScale, half, 44 * expandedScale);
+        self.menuButton.titleLabel.font = self.actionButton.titleLabel.font;
+        [self.menuButton setTitle:@"查看详情" forState:UIControlStateNormal];
+        self.menuButton.hidden = NO;
+        self.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:self.layer.cornerRadius].CGPath;
+        return;
+    }
+    [self.menuButton setTitle:@"..." forState:UIControlStateNormal];
+    if ([self.model[@"phase"] isEqual:@"waiting"]) {
+        [self.actionButton setTitle:@"查看" forState:UIControlStateNormal];
+        self.actionButton.accessibilityLabel = @"打开群同步";
     }
     CGFloat textWidth = width - buttonWidth - menuWidth - 32;
     self.countLabel.frame = CGRectMake(16, 7 * scale, textWidth, 23 * scale);
@@ -110,7 +167,7 @@
     NSNumber *generation = model[@"previewGeneration"];
     if (generation && ![generation isEqual:self.previewGeneration]) {
         self.previewGeneration = generation;
-        self.previewCollapsed = NO;
+        self.previewCollapsed = self.docked;
     }
     if (entering) { [self removeFromSuperview]; [window addSubview:self]; }
     [window bringSubviewToFront:self];
@@ -124,10 +181,13 @@
         self.countLabel.adjustsFontSizeToFitWidth = preview;
         self.countLabel.minimumScaleFactor = 0.75;
         self.phaseLabel.text = [@{@"running": @"转发中", @"paused": @"已暂停", @"settling": @"在途处理中",
-            @"ready": @"待转发", @"waiting": @"等待消息", @"completed": @"本组完成"} objectForKey:phase] ?: @"状态待核对";
+            @"ready": @"待转发", @"waiting": @"等待消息", @"completed": @"本组完成", @"idle": @"快捷入口"} objectForKey:phase] ?: @"状态待核对";
         self.phaseLabel.textColor = [phase isEqual:@"running"] ? SRSettingsAccent() : UIColor.secondaryLabelColor;
-        NSString *title = preview ? @"转发分组" : ([phase isEqual:@"settling"] ? @"等待" :
-            ([model[@"action"] isEqual:@"pause"] ? @"暂停" : ([model[@"action"] isEqual:@"open"] ? @"查看" : @"继续")));
+        NSString *title = @"继续";
+        if (preview) title = @"转发分组";
+        else if ([phase isEqual:@"settling"]) title = @"等待";
+        else if ([model[@"action"] isEqual:@"pause"]) title = @"暂停";
+        else if ([model[@"action"] isEqual:@"open"]) title = @"查看";
         [self.actionButton setTitle:title forState:UIControlStateNormal];
         [self.menuButton setTitle:preview ? @"忽略这条" : @"..." forState:UIControlStateNormal];
         self.actionButton.enabled = [model[@"actionEnabled"] boolValue];
@@ -138,8 +198,7 @@
     }
     [self place];
     self.actionButton.enabled = [model[@"actionEnabled"] boolValue];
-    self.menuButton.hidden = ![model[@"menuEnabled"] boolValue];
-    if ([model[@"phase"] isEqual:@"preview"]) [self updatePreviewControls];
+    [self layoutIfNeeded];
     if (entering && !UIAccessibilityIsReduceMotionEnabled()) {
         self.alpha = 0;
         [UIView animateWithDuration:0.18 animations:^{ self.alpha = 1; }];
@@ -163,12 +222,21 @@
     if ([self.model[@"action"] isEqual:@"open"]) { if (self.openAction) self.openAction(); }
     else if (self.action) self.action();
 }
-/* The capsule body is a stable entry point to the operations home. It used to
- * refuse the tap whenever action was "open", which left the waiting, ready and
- * completed states with a dead body; the side "查看" button is a separate
- * path and stays available. */
-- (void)openPressed { if ([self.model[@"phase"] isEqual:@"preview"]) [self togglePreview]; else if (self.openAction) self.openAction(); }
-- (void)menuPressed { if (self.menuAction) self.menuAction(); }
+/* Restoring from the edge changes only the display shape, never the run. */
+- (void)restoreFromDock {
+    self.docked = NO;
+    if (UIAccessibilityIsReduceMotionEnabled()) [self place];
+    else [UIView animateWithDuration:0.18 animations:^{ [self place]; }];
+}
+- (void)openPressed {
+    if (self.docked) { [self restoreFromDock]; return; }
+    if ([self.model[@"phase"] isEqual:@"preview"]) [self togglePreview];
+    else { self.progressExpanded = !self.progressExpanded; [self place]; }
+}
+- (void)menuPressed {
+    if (self.progressExpanded && ![self.model[@"phase"] isEqual:@"preview"]) { if (self.openAction) self.openAction(); }
+    else if (self.menuAction) self.menuAction();
+}
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     if (![gestureRecognizer isKindOfClass:UITapGestureRecognizer.class]) return YES;
     UIView *view = touch.view;
@@ -180,21 +248,34 @@
 }
 - (void)drag:(UIPanGestureRecognizer *)pan {
     if (!self.window) return;
-    if (pan.state == UIGestureRecognizerStateBegan) self.dragging = YES;
-    CGPoint translation = [pan translationInView:self.window]; [pan setTranslation:CGPointZero inView:self.window];
+    if (pan.state == UIGestureRecognizerStateBegan) {
+        self.dragging = YES; self.dragStartFrame = self.frame; self.dragStartedDocked = self.docked;
+    }
+    CGPoint translation = [pan translationInView:self.window];
     CGRect bounds = [self availableBounds];
-    CGRect frame = self.frame; frame.origin.x += translation.x; frame.origin.y += translation.y;
+    BOOL inward = self.unitX < 0.5 ? translation.x > 14 : translation.x < -14;
+    if (self.docked && inward) {
+        self.docked = NO; self.dragging = NO; [self place]; self.dragging = YES;
+        self.dragStartFrame = self.frame; [pan setTranslation:CGPointZero inView:self.window]; translation = CGPointZero;
+    }
+    CGRect frame = self.dragStartFrame; frame.origin.x += translation.x; frame.origin.y += translation.y;
+    CGFloat desiredX = frame.origin.x;
     frame.origin.x = MAX(CGRectGetMinX(bounds), MIN(frame.origin.x, CGRectGetMaxX(bounds) - frame.size.width));
     frame.origin.y = MAX(CGRectGetMinY(bounds), MIN(frame.origin.y, CGRectGetMaxY(bounds) - frame.size.height)); self.frame = frame;
     if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled || pan.state == UIGestureRecognizerStateFailed) {
         self.dragging = NO;
         CGFloat travelX = bounds.size.width - frame.size.width;
         CGFloat travelY = bounds.size.height - frame.size.height;
-        /* The operations capsule is a persistent entry point: release snaps it
-         * to the nearer safe edge instead of leaving a second floating button
-         * in the middle of a chat or video surface. */
-        self.unitX = travelX > 0 && (CGRectGetMidX(frame) - CGRectGetMinX(bounds)) >= bounds.size.width * 0.5 ? 1 : 0;
+        /* Merely touching an edge never docks. Only an intentional outward
+         * overshoot on a successfully ended drag changes the display shape. */
+        int side = SRCapsuleDockSide(desiredX, CGRectGetMinX(bounds), CGRectGetMaxX(bounds) - frame.size.width,
+            pan.state == UIGestureRecognizerStateEnded, self.dragStartedDocked);
+        if (side) {
+            self.docked = YES; self.unitX = side < 0 ? 0 : 1;
+            self.previewCollapsed = YES; self.progressExpanded = NO;
+        } else if (!self.docked) self.unitX = travelX > 0 ? MAX(0, MIN(1, (frame.origin.x - bounds.origin.x) / travelX)) : 1;
         self.unitY = travelY > 0 ? MAX(0, MIN(1, (frame.origin.y - bounds.origin.y) / travelY)) : 0;
+        if (self.positionChanged) self.positionChanged(self.unitX, self.unitY);
         if (UIAccessibilityIsReduceMotionEnabled()) [self place];
         else [UIView animateWithDuration:0.18 animations:^{ [self place]; }];
     }

@@ -167,7 +167,8 @@ class NativeBuildContracts(unittest.TestCase):
         targets, executions = native_execution_counts(workflow)
         sources = [f'tests/{path.name}' for path in (ROOT / 'tests').glob('*_test.[mc]')]
         self.assertCountEqual(sources, targets.values(), 'every native test must compile once')
-        single_pass = {'tests/pacing_test.c', 'tests/operations_state_test.c'}
+        single_pass = {'tests/pacing_test.c', 'tests/operations_state_test.c',
+                       'tests/capsule_geometry_test.c'}
         expected = {target: 1 if source in single_pass else 3
                     for target, source in targets.items()}
         self.assertEqual(expected, executions, 'every compiled target must execute its exact pass count')

@@ -64,7 +64,9 @@ class B3ReadOnlyPages(unittest.TestCase):
 
     def test_each_page_has_distinct_empty_failure_and_account_states(self):
         listing = block("SRLibraryListScreen")
-        self.assertIn('@"消息库还没有条目"', listing)
+        self.assertIn('@"消息库还没有消息"', listing)
+        self.assertIn('长按文字或静态图片选择「存入同步库」', listing)
+        self.assertNotIn('条目只由已确认的内容产生', listing)
         self.assertIn('@"读取失败"', listing)
         self.assertIn('@"账号无法核对或已经改变"', listing)
 

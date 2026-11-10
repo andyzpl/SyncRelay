@@ -164,7 +164,8 @@ class PhaseB2UI(unittest.TestCase):
 
     def test_home_keeps_the_four_fixed_sections_in_order(self):
         home = home_block()
-        self.assertIn('@[@"运行状态", @"当前内容", @"分组概览", @"最近一次结果"]', home)
+        self.assertIn('@[@"当前内容", @"监听与进度", @"转发分组", @"最近一次结果"]', home)
+        self.assertEqual(home.count('SRHomeModelSection('), 4)
         # Four sections plus the single-section error shapes.
         self.assertIn("(self.accountInvalid || self.problem) ? 1 : 4", home)
 
@@ -194,18 +195,17 @@ class PhaseB2UI(unittest.TestCase):
         self.assertIn("[self.store plan:newest account:self.account", resolve)
         # A preview is never promoted to confirmed content.
         self.assertIn("SRHomeModePreview", resolve)
-        # The only confirm route stays the existing explicit one in the preview
-        # screen, and none of the three new pages calls it on open.
-        self.assertEqual(screens_source().count("confirmForCurrentAccount"), 1)
+        # Manual diagnostic preview and the selected-group continue button are
+        # explicit confirmations. The home/list/detail never confirm on open.
+        self.assertEqual(screens_source().count("confirmForCurrentAccount"), 2)
         self.assertNotIn("confirmForCurrentAccount", new_pages())
 
-    def test_home_shows_the_existing_source_time_fields_without_converting_the_host_value(self):
+    def test_primary_home_hides_technical_times_but_records_keep_their_semantics(self):
         home = home_block()
-        for expression in ("localDateTimeText:", "observedTimeTextForEnvelope:",
-                           "frozenTimeTextForEnvelope:", "hostTimeTextForEnvelope:"):
-            self.assertIn(expression, home)
-        self.assertIn('@"宿主来源时间（未验证）"', home)
-        self.assertIn('@"插件来源时间"', home)
+        self.assertNotIn('@"宿主来源时间（未验证）"', home)
+        self.assertNotIn('@"插件来源时间"', home)
+        self.assertIn('else cell.detailTextLabel.text = SRSourceTimeText(source, path.row)', record_screen_block())
+        self.assertIn('if (row == 7) return [SRRunProjection hostTimeTextForEnvelope:envelope]', screens_source())
         # No page clock is used as a substitute for a missing time.
         self.assertNotIn("[NSDate date]", screens_source())
 
@@ -216,7 +216,7 @@ class PhaseB2UI(unittest.TestCase):
         self.assertIn("SRCreateGroupList(self.store, self.execution, self.account", entry)
         self.assertIn("self.verifyAccount, self.planID", entry)
         # The full plan list is a separate, explicitly labelled row.
-        self.assertIn('@"全部内容计划"', home)
+        self.assertIn('@"历史内容"', home)
         self.assertIn("SRCreatePlanList(self.store, self.account", entry)
         self.assertLess(entry.index("path.row == 1"), entry.index("SRCreateGroupList"))
 

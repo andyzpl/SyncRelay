@@ -17,6 +17,9 @@ typedef NS_ENUM(NSUInteger, SRGroupingIntent) {
 };
 
 @interface SRGroupPlanner : NSObject
+// All counts are intersections with one deduplicated, validated local pool.
+// The source group is excluded separately, not counted as manual exclusion.
++ (nullable NSDictionary *)poolSummaryForRows:(NSArray<NSDictionary *> *)rows draft:(NSDictionary *)draft;
 + (nullable NSDictionary *)configurationBySettingSourceGroup:(NSDictionary *)group
                                                     inDraft:(NSDictionary *)draft error:(NSError **)error;
 // Recipe entries are {size: 100|200, count: non-negative integer}, in allocation order.

@@ -24,7 +24,7 @@ class SettingsUIContractTests(unittest.TestCase):
 
     def test_save_uses_settings_language_without_renaming_internal_events(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
-        self.assertIn('initWithTitle:@"\u4fdd\u5b58" style:UIBarButtonItemStyleDone', panel)
+        self.assertIn('initWithTitle:self.page == SRPanelPageGroups ? @"保存分组" : @"保存"', panel)
         self.assertIn('record:@"draft_saved"', panel)
         self.assertIn('record:@"draft_save_failed"', panel)
         sources = [*sorted((ROOT / 'UI').glob('*.m')), ROOT / 'Core/SRSourceCapture.m']
@@ -100,21 +100,26 @@ class SettingsUIContractTests(unittest.TestCase):
     def test_floating_entry_is_draggable_and_persists_placement(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
         entry = panel.split('@implementation SREntry', 1)[1]
-        self.assertIn('UIPanGestureRecognizer', entry)
-        self.assertIn('@selector(floatingEntryDragged:)', entry)
-        self.assertIn('floatingEntryAvailableBoundsInWindow:', entry)
+        capsule = (ROOT / 'UI/SRFloatingProgress.m').read_text(encoding='utf-8')
+        self.assertIn('UIPanGestureRecognizer', capsule)
+        self.assertIn('@selector(drag:)', capsule)
+        self.assertIn('availableBounds', capsule)
         self.assertIn('setFloatingEntryPlacementUnitX:', entry)
-        self.assertIn('button.translatesAutoresizingMaskIntoConstraints = YES;', entry)
+        install = entry.split('- (void)install {', 1)[1].split('\n}', 1)[0]
+        self.assertNotIn('UIButton', install)
+        self.assertIn('[self refreshFloatingProgress]', install)
         self.assertNotIn('button.trailingAnchor', entry)
         self.assertNotIn('button.bottomAnchor', entry)
 
     def test_floating_entry_persists_free_two_axis_position(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
         entry = panel.split('@implementation SREntry', 1)[1]
+        capsule = (ROOT / 'UI/SRFloatingProgress.m').read_text(encoding='utf-8')
         self.assertIn('floatingEntryUnitX', entry)
-        self.assertIn('travelX', entry)
-        self.assertIn('setFloatingEntryPlacementUnitX:', entry)
-        self.assertNotIn('self.floatingEntryLeftEdge ?', entry)
+        self.assertIn('travelX', capsule)
+        self.assertIn('travelY', capsule)
+        self.assertIn('setFloatingEntryPlacementUnitX:unitX unitY:unitY', entry)
+        self.assertNotIn('self.floatingEntryLeftEdge ?', capsule)
         preferences = (ROOT / 'Core/SREntryPreferences.m').read_text(encoding='utf-8')
         self.assertIn('SRFloatingEntryUnitXKey', preferences)
         self.assertIn('setFloatingEntryPlacementUnitX:', preferences)
@@ -401,7 +406,7 @@ class SettingsUIContractTests(unittest.TestCase):
     def test_library_menu_entry_has_an_explicit_opt_in_switch(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
         self.assertIn('if (path.row == 12) {', panel)
-        self.assertIn(u'@"\u83dc\u5355\u5165\u5e93\uff08\u957f\u6309\u6587\u5b57\uff09"', panel)
+        self.assertIn('@"长按消息存入库"', panel)
         self.assertIn('UISwitch *toggle = [[UISwitch alloc] init];', panel)
         self.assertIn('[toggle addTarget:self action:@selector(libraryMenuEntryToggled:)', panel)
         self.assertIn('self.entryPreferences.libraryMenuEntryEnabled = toggle.isOn;', panel)

@@ -1,4 +1,5 @@
 #import "SRPlanScreens.h"
+#import "SRLibraryScreens.h"
 #import "SRNativeStyle.h"
 #import "Core/SRStore.h"
 #import "Core/SRSourceCapture.h"
@@ -50,6 +51,101 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
     SRScreenPresent(controller, alert);
+}
+
+@interface SRNavigationHomeScreen : UITableViewController
+@property(nonatomic, strong) SRStore *store;
+@property(nonatomic, copy) NSString *account;
+@property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, copy) void (^openDestination)(NSUInteger);
+@property(nonatomic, copy) NSDictionary *configuration;
+@property(nonatomic, copy) NSString *problem;
+@property(nonatomic) BOOL accountInvalid;
+@property(nonatomic) NSInteger hintDestination;
+@end
+@implementation SRNavigationHomeScreen
+- (void)viewDidLoad {
+    [super viewDidLoad]; SRStyleSettingsTable(self);
+    self.title = @"SyncRelay";
+    self.view.accessibilityIdentifier = @"SyncRelay.NavigationHome";
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+        style:UIBarButtonItemStylePlain target:self action:@selector(close)];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(hideContent)
+        name:UIApplicationWillResignActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload)
+        name:SRRelayStateChangedNotification object:nil];
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reload]; }
+- (BOOL)verified {
+    @try { return self.verifyAccount && self.verifyAccount(); }
+    @catch (__unused id exception) { return NO; }
+}
+- (void)hideContent {
+    self.configuration = nil; self.problem = @"返回前台后重新核对"; self.hintDestination = -1;
+    [self.tableView reloadData];
+}
+- (void)reload {
+    self.configuration = nil; self.problem = nil; self.hintDestination = -1;
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { [self hideContent]; return; }
+    self.accountInvalid = ![self verified];
+    if (self.accountInvalid) self.problem = @"账号无法核对，请关闭后重新打开";
+    else {
+        NSError *error = nil;
+        self.configuration = [self.store configurationForAccount:self.account error:&error];
+        if (!self.configuration) self.problem = @"设置暂时无法读取，可到设置查看诊断";
+        else if (![self.configuration[@"sourceGroup"][@"id"] length]) self.hintDestination = 0;
+        else if (![self.configuration[@"rules"] count]) self.hintDestination = 2;
+    }
+    [self.tableView reloadData];
+}
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return self.hintDestination >= 0 ? 2 : 1; }
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.hintDestination >= 0 && section == 0 ? 1 : 4;
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"navigation-home"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"navigation-home"];
+        [cell.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:68].active = YES;
+    }
+    SRStyleSettingsCell(cell); cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.imageView.tintColor = SRSettingsAccent();
+    cell.imageView.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:23 weight:UIImageSymbolWeightRegular];
+    if (self.hintDestination >= 0 && path.section == 0) {
+        cell.textLabel.text = self.hintDestination == 0 ? @"先设置母群" : @"去群分组";
+        cell.detailTextLabel.text = nil; cell.imageView.image = [UIImage systemImageNamed:@"info.circle"];
+        cell.accessibilityIdentifier = @"SyncRelay.HomeHint"; return cell;
+    }
+    cell.textLabel.text = @[@"群同步", @"消息库转发", @"群分组", @"设置"][path.row];
+    cell.imageView.image = [UIImage systemImageNamed:@[@"arrow.triangle.2.circlepath", @"tray.full", @"person.3", @"gearshape"][path.row]];
+    NSArray *summaries = @[@"母群与消息来源 · 未设置", @"选择消息并转发", @"目标分组与排除群 · 未配置", @"节奏、显示与诊断"];
+    cell.detailTextLabel.text = summaries[path.row];
+    if (self.problem && (path.row == 0 || path.row == 2)) cell.detailTextLabel.text = self.problem;
+    else if (path.row == 0 && [self.configuration[@"sourceGroup"][@"name"] length])
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"母群与消息来源 · %@", self.configuration[@"sourceGroup"][@"name"]];
+    else if (path.row == 2 && [self.configuration[@"rules"] count])
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"目标分组与排除群 · %lu 个分组", (unsigned long)[self.configuration[@"rules"] count]];
+    cell.accessibilityIdentifier = @[@"SyncRelay.HomeSource", @"SyncRelay.HomeLibrary", @"SyncRelay.HomeGroups", @"SyncRelay.HomeSettings"][path.row];
+    return cell;
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
+    [tableView deselectRowAtIndexPath:path animated:YES];
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive || ![self verified]) { [self reload]; return; }
+    if (self.navigationController.topViewController != self || self.navigationController.transitionCoordinator) return;
+    NSUInteger destination = self.hintDestination >= 0 && path.section == 0 ? (NSUInteger)self.hintDestination : (NSUInteger)path.row;
+    if (destination < 4 && self.openDestination) self.openDestination(destination);
+}
+- (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
+@end
+
+UIViewController *SRCreateNavigationHome(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), void (^openDestination)(NSUInteger)) {
+    SRNavigationHomeScreen *screen = [[SRNavigationHomeScreen alloc] initWithStyle:UITableViewStyleGrouped];
+    screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount; screen.openDestination = openDestination;
+    screen.hintDestination = -1; return screen;
 }
 
 @interface SRSourceTextScreen : UIViewController
@@ -132,7 +228,6 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRSourceCapture *capture;
 @property(nonatomic, copy) NSNumber *previewGeneration;
-@property(nonatomic) BOOL opensForwardingGroups;
 @property(nonatomic, strong) SRSmallGroupSession *execution;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) NSString *identifier;
@@ -173,8 +268,6 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
         NSDictionary *snapshot = [self.capture previewSnapshotForAccount:self.account generation:self.previewGeneration];
         if (snapshot) {
             self.content = snapshot[@"source"]; self.configuration = snapshot[@"configuration"];
-            if (self.opensForwardingGroups)
-                [self.rows addObjectsFromArray:[SRRunProjection groupRowsForConfiguration:self.configuration targetLimit:self.store.forwardingTargetLimit]];
         } else self.problem = @"没有该账号待确认的源消息。预览在退出进程前仅保存在内存中，请返回手动重新等待。";
     } else if (self.kind == SRRecordPlan) {
         self.content = [self.store plan:self.identifier account:self.account error:&error];
@@ -213,22 +306,18 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.problem) return 1;
-    if (self.kind == SRRecordPreview) return section == 0 ? (self.opensForwardingGroups ? 1 : 8) : (section == 1 ? MAX((NSUInteger)1, self.rows.count) : 2);
+    if (self.kind == SRRecordPreview) return section == 0 ? 8 : (section == 1 ? MAX((NSUInteger)1, self.rows.count) : 2);
     if (self.kind == SRRecordPlan) return section == 0 ? 8 : MAX((NSUInteger)1, self.rows.count);
     return MAX((NSUInteger)1, self.rows.count + (self.more ? 1 : 0));
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (self.problem) return @"读取已停止";
-    if (self.kind == SRRecordPreview) return self.opensForwardingGroups ?
-        @[@"锁定的一条源消息", @"转发分组", @"确认前核对"][section] :
-        @[@"锁定的一条源消息", @"捕获时冻结的配置", @"确认操作"][section];
-    if (self.kind == SRRecordPlan) return section == 0 ? @"已确认源消息" : @"规则与最近状态";
+    if (self.kind == SRRecordPreview) return @[@"锁定的一条源消息", @"捕获时冻结的配置", @"确认操作"][section];
+    if (self.kind == SRRecordPlan) return section == 0 ? @"已确认内容" : @"分组与最近状态";
     return nil;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
-    if (self.kind == SRRecordPreview && section == 1 && self.opensForwardingGroups)
-        return @"确认内容后可选择分组并核对群名单。超限分组不能开始；不会截断目标。";
     if (self.kind == SRRecordPreview && section == 2) return @"确认只建立内容计划和目标分组，不发送。所有规则使用同一条已确认内容；之后修改设置不会改变此计划。";
     if (self.kind == SRRecordPlan && section == 1) return @"点击规则进入执行详情。新批次的目标上限由高级设置控制。开始后串行转发；切后台或锁屏会暂停，不自动接下一条。";
     if (self.kind == SRRecordHistory) return @"执行完成表示本条队列处理结束，不代表全部送达。已提交与确认送达分开统计；点击批次只查看失败、结果未知和未发项。";
@@ -242,12 +331,6 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil; cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     if (self.problem) { cell.textLabel.text = self.problem; return cell; }
-    if (self.opensForwardingGroups && path.section == 0) {
-        cell.textLabel.text = [[self source][@"type"] isEqual:@"image"] ? @"查看图片" : @"查看文字";
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        return cell;
-    }
     if ((self.kind == SRRecordPreview || self.kind == SRRecordPlan) && path.section == 0) {
         NSDictionary *source = [self source];
         // Row 4 stays the content entry point that opens the text/image viewer.
@@ -266,12 +349,6 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     }
     if (self.kind == SRRecordPreview) {
         if (path.section == 1) {
-            if (self.opensForwardingGroups && self.rows.count) {
-                NSDictionary *row = self.rows[path.row];
-                cell.textLabel.text = [NSString stringWithFormat:@"%@ · %@ 个群", row[@"name"], row[@"targetCount"]];
-                if ([row[@"overTargetLimit"] boolValue]) cell.detailTextLabel.text = row[@"blockedText"];
-                return cell;
-            }
             NSUInteger targets = 0; for (NSDictionary *rule in self.configuration[@"rules"]) targets += [rule[@"targets"] count];
             cell.textLabel.text = [NSString stringWithFormat:@"%lu 条规则 · %lu 个目标群", (unsigned long)[self.configuration[@"rules"] count], (unsigned long)targets];
             cell.detailTextLabel.text = [NSString stringWithFormat:@"间隔 %@–%@ 秒；来源 wxid 和类型均按捕获时配置筛选。", self.configuration[@"minimum"], self.configuration[@"maximum"]];
@@ -291,7 +368,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     cell.selectionStyle = UITableViewCellSelectionStyleDefault; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     if (self.kind == SRRecordPlans) {
         cell.textLabel.text = row[@"source_group"];
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 条规则 · %@ 个群\n内容计划 %@", row[@"ruleCount"], row[@"targetCount"], row[@"id"]];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 个分组 · %@ 个群", row[@"ruleCount"], row[@"targetCount"]];
     } else if (self.kind == SRRecordPlan) {
         cell.textLabel.text = [NSString stringWithFormat:@"%@ · %@ 个群", row[@"name"], row[@"targetCount"]];
         NSDictionary *run = [row[@"latestRun"] isKindOfClass:NSDictionary.class] ? row[@"latestRun"] : nil;
@@ -332,7 +409,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     [tableView deselectRowAtIndexPath:path animated:YES];
     if (![self verified] || self.problem) return;
     if ((self.kind == SRRecordPreview || self.kind == SRRecordPlan) && path.section == 0) {
-        if (path.row == (self.opensForwardingGroups ? 0 : 4)) {
+        if (path.row == 4) {
             BOOL (^verifyContent)(void) = self.verifyAccount;
             if (self.kind == SRRecordPreview) {
                 SRSourceCapture *capture = self.capture;
@@ -367,16 +444,14 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
         NSString *plan = [self.capture confirmForCurrentAccount:self.account generation:self.previewGeneration error:&error];
         if (!plan) { SRScreenAlert(self, @"确认失败，未发送", error.localizedDescription); return; }
         [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
-        UIViewController *next = self.opensForwardingGroups ?
-            SRCreateGroupList(self.store, self.execution, self.account, self.verifyAccount, plan, nil) :
-            [self screen:SRRecordPlan identifier:plan title:@"内容计划与规则"];
+        UIViewController *next = [self screen:SRRecordPlan identifier:plan title:@"内容计划与规则"];
         NSMutableArray *stack = [self.navigationController.viewControllers mutableCopy]; stack[stack.count - 1] = next;
         [self.navigationController setViewControllers:stack animated:YES]; return;
     }
     if (path.row == (NSInteger)self.rows.count && self.more) { [self loadPage]; return; }
     if (path.row >= (NSInteger)self.rows.count) return;
     NSDictionary *row = self.rows[path.row]; SRRecordScreen *next = nil;
-    if (self.kind == SRRecordPlans) next = [self screen:SRRecordPlan identifier:row[@"id"] title:@"内容计划与规则"];
+    if (self.kind == SRRecordPlans) next = [self screen:SRRecordPlan identifier:row[@"id"] title:@"历史内容与分组"];
     if (self.kind == SRRecordPlan) { [self openRule:row]; return; }
     if (self.kind == SRRecordHistory) next = [self screen:SRRecordExceptions identifier:row[@"id"] title:@"异常群与未发项"];
     if (next) [self.navigationController pushViewController:next animated:YES];
@@ -389,17 +464,214 @@ UIViewController *SRCreateCapturePreview(SRStore *store, SRSourceCapture *captur
     screen.previewGeneration = capture.status[@"generation"];
     screen.verifyAccount = verifyAccount; screen.execution = execution; screen.title = @"单条源消息预览"; return screen;
 }
+
+/* The user-facing capture route is separate from the diagnostic record page.
+ * Only the final explicit continue tap confirms content; opening, selecting a
+ * group and inspecting targets are read-only. Run controls stay in run detail. */
+@interface SRCapturedForwardingScreen : UITableViewController
+@property(nonatomic, strong) SRStore *store;
+@property(nonatomic, strong) SRSourceCapture *capture;
+@property(nonatomic, strong) SRSmallGroupSession *execution;
+@property(nonatomic, copy) NSString *account;
+@property(nonatomic, copy) NSNumber *generation;
+@property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, copy) NSDictionary *source;
+@property(nonatomic, copy) NSArray *groups;
+@property(nonatomic) NSUInteger selectedIndex;
+@property(nonatomic, copy) NSString *confirmedPlan;
+@property(nonatomic, copy) NSString *problem;
+@end
+
+@implementation SRCapturedForwardingScreen
+- (void)viewDidLoad {
+    [super viewDidLoad]; SRStyleSettingsTable(self);
+    self.title = @"转发分组";
+    self.view.accessibilityIdentifier = @"SyncRelay.CapturedForwarding";
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(hideContent)
+        name:UIApplicationWillResignActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload)
+        name:SRRelayStateChangedNotification object:nil];
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reload]; }
+- (BOOL)verified {
+    @try { return self.verifyAccount && self.verifyAccount(); }
+    @catch (__unused id exception) { return NO; }
+}
+- (BOOL)contentIsCurrent {
+    return UIApplication.sharedApplication.applicationState == UIApplicationStateActive && [self verified] &&
+        (self.confirmedPlan.length || [self.capture previewSnapshotForAccount:self.account generation:self.generation] != nil);
+}
+- (void)hideContent {
+    self.source = nil; self.groups = @[];
+    self.problem = @"内容已隐藏，返回前台后重新核对。";
+    [self.tableView reloadData];
+}
+- (void)reload {
+    self.source = nil; self.groups = @[]; self.problem = nil;
+    if (![self verified]) self.problem = @"账号已改变或无法核对，请返回重新打开。";
+    else if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
+        [self hideContent]; return;
+    } else if (self.confirmedPlan.length) {
+        NSError *error = nil;
+        NSDictionary *plan = [self.store plan:self.confirmedPlan account:self.account error:&error];
+        NSArray *cards = plan ? [self.store ruleCardsForPlan:self.confirmedPlan account:self.account error:&error] : nil;
+        self.source = plan[@"snapshot"];
+        self.groups = [SRRunProjection groupRowsForCards:cards targetLimit:self.store.forwardingTargetLimit];
+        if (!plan || !cards) self.problem = error.localizedDescription ?: @"无法读取已确认内容，请返回重试。";
+    } else {
+        NSDictionary *snapshot = [self.capture previewSnapshotForAccount:self.account generation:self.generation];
+        self.source = snapshot[@"source"];
+        self.groups = [SRRunProjection groupRowsForConfiguration:snapshot[@"configuration"] targetLimit:self.store.forwardingTargetLimit];
+        if (!snapshot) self.problem = @"这条待处理消息已失效，请返回查看当前内容。";
+    }
+    if (self.source && ![self.source[@"type"] isEqual:@"text"] && ![self.source[@"type"] isEqual:@"image"])
+        self.problem = @"暂不支持转发这种消息类型。";
+    if (self.problem) { self.source = nil; self.groups = @[]; }
+    if (self.selectedIndex >= self.groups.count) self.selectedIndex = NSNotFound;
+    [self.tableView reloadData];
+}
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return self.problem ? 1 : 3; }
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (self.problem || section == 0) return 1;
+    if (section == 1) return MAX((NSUInteger)1, self.groups.count);
+    return self.confirmedPlan.length ? 1 : 2;
+}
+- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (self.problem) return @"暂不可用";
+    return @[@"1  核对内容", @"2  选择一个分组", @"3  核对后再转发"][section];
+}
+- (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (self.problem) return @"本页不会启动转发。";
+    if (section == 1) return @"点选分组，点右侧 ⓘ 查看群名单。分组按顺序执行，不会自动接下一组。";
+    if (section == 2) return @"下一步只确认内容并打开本组详情；仍需点击「开始转发本组」并确认才会发送。";
+    return nil;
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"capture-forward"] ?:
+        [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"capture-forward"];
+    SRStyleSettingsCell(cell); cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
+    cell.textLabel.text = nil; cell.detailTextLabel.text = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.accessibilityIdentifier = nil;
+    cell.accessibilityTraits = UIAccessibilityTraitButton;
+    if (self.problem) { cell.textLabel.text = self.problem; return cell; }
+    if (path.section == 0) {
+        cell.textLabel.text = [NSString stringWithFormat:@"%@ · %@", [SRRunProjection typeTextForEnvelope:self.source],
+            self.confirmedPlan.length ? @"已确认" : @"待转发"];
+        cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        cell.detailTextLabel.text = [SRRunProjection excerptForEnvelope:self.source limit:280];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.accessibilityIdentifier = @"SyncRelay.ForwardingContent";
+    } else if (path.section == 1) {
+        if (!self.groups.count) { cell.textLabel.text = @"还没有目标分组"; cell.detailTextLabel.text = @"到设置添加分组后，重新等待一条消息。"; return cell; }
+        NSDictionary *row = self.groups[(NSUInteger)path.row];
+        BOOL selected = self.selectedIndex == (NSUInteger)path.row;
+        if (selected) cell.accessibilityTraits |= UIAccessibilityTraitSelected;
+        cell.textLabel.text = [NSString stringWithFormat:@"%@%@", selected ? @"✓  " : @"", row[@"name"]];
+        cell.textLabel.textColor = selected ? SRSettingsAccent() : UIColor.labelColor;
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 个群%@", row[@"targetCount"],
+            [row[@"overTargetLimit"] boolValue] ? @" · 超过上限" : @""];
+        if ([row[@"overTargetLimit"] boolValue]) cell.detailTextLabel.text = row[@"blockedText"];
+        else if (!self.confirmedPlan.length && path.row > 0)
+            cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingString:@" · 前序分组结束后可开始"];
+        cell.accessoryType = UITableViewCellAccessoryDetailButton;
+        cell.accessibilityIdentifier = @"SyncRelay.ForwardingGroup";
+    } else if (path.row == 0) {
+        BOOL selected = self.selectedIndex < self.groups.count;
+        cell.textLabel.text = selected ? [NSString stringWithFormat:@"下一步 · 核对 %@", self.groups[self.selectedIndex][@"name"]] : @"请先选择一个分组";
+        cell.textLabel.textColor = selected ? SRSettingsAccent() : UIColor.secondaryLabelColor;
+        cell.selectionStyle = selected ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+        cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        cell.accessibilityIdentifier = @"SyncRelay.ForwardingContinue";
+    } else { cell.textLabel.text = @"忽略这条"; cell.textLabel.textColor = UIColor.systemRedColor; }
+    return cell;
+}
+- (void)tableView:(__unused UITableView *)tableView accessoryButtonTappedForRowWithIndexPath:(NSIndexPath *)path {
+    if (path.section != 1 || (NSUInteger)path.row >= self.groups.count || ![self contentIsCurrent]) return;
+    NSDictionary *row = self.groups[(NSUInteger)path.row];
+    NSMutableArray *lines = [NSMutableArray array];
+    NSArray *targets = row[@"targets"], *names = row[@"targetNames"];
+    for (NSUInteger i = 0; i < targets.count; i++) {
+        NSString *name = i < names.count ? names[i] : nil;
+        [lines addObject:name.length ? [NSString stringWithFormat:@"%lu. %@（%@）", (unsigned long)i + 1, name, targets[i]] :
+            [NSString stringWithFormat:@"%lu. %@", (unsigned long)i + 1, targets[i]]];
+    }
+    __weak typeof(self) weakSelf = self;
+    SRSourceTextScreen *viewer = [[SRSourceTextScreen alloc] init]; viewer.title = row[@"name"];
+    viewer.body = [lines componentsJoinedByString:@"\n\n"];
+    viewer.verifyAccount = ^BOOL { return [weakSelf contentIsCurrent]; };
+    [self.navigationController pushViewController:viewer animated:YES];
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
+    [tableView deselectRowAtIndexPath:path animated:YES];
+    if (![self contentIsCurrent] || self.problem) { [self reload]; return; }
+    if (path.section == 0) {
+        __weak typeof(self) weakSelf = self;
+        BOOL (^verify)(void) = ^BOOL { return [weakSelf contentIsCurrent]; };
+        if ([self.source[@"type"] isEqual:@"image"]) {
+            SRSourceImageScreen *viewer = [[SRSourceImageScreen alloc] init]; viewer.title = @"图片内容";
+            viewer.source = self.source; viewer.assets = self.store.imageAssets; viewer.verifyAccount = verify;
+            [self.navigationController pushViewController:viewer animated:YES];
+        } else {
+            SRSourceTextScreen *viewer = [[SRSourceTextScreen alloc] init]; viewer.title = @"文字内容";
+            viewer.body = self.source[@"payload"][@"text"]; viewer.verifyAccount = verify;
+            [self.navigationController pushViewController:viewer animated:YES];
+        }
+    } else if (path.section == 1 && (NSUInteger)path.row < self.groups.count) {
+        self.selectedIndex = (NSUInteger)path.row;
+        [tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(1, 2)]
+            withRowAnimation:UIAccessibilityIsReduceMotionEnabled() ? UITableViewRowAnimationNone : UITableViewRowAnimationFade];
+    } else if (path.section == 2 && path.row == 1 && !self.confirmedPlan.length) {
+        if (![self.capture discardPreviewForAccount:self.account generation:self.generation]) { [self reload]; return; }
+        [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+        [self.navigationController popViewControllerAnimated:YES];
+    } else if (path.section == 2 && path.row == 0) [self continuePressed];
+}
+- (void)continuePressed {
+    if (self.navigationController.topViewController != self) return;
+    if (![self contentIsCurrent] || self.selectedIndex >= self.groups.count) { [self reload]; return; }
+    NSDictionary *selected = self.groups[self.selectedIndex];
+    if ([selected[@"overTargetLimit"] boolValue]) { SRScreenAlert(self, @"分组超过上限", selected[@"blockedText"]); return; }
+    NSError *error = nil;
+    if (!self.confirmedPlan.length) {
+        self.confirmedPlan = [self.capture confirmForCurrentAccount:self.account generation:self.generation error:&error];
+        if (!self.confirmedPlan) { SRScreenAlert(self, @"确认失败，未发送", error.localizedDescription); return; }
+    }
+    /* Keep the exact plan ID even if readback fails. A retry cannot consume the
+     * same preview again or accidentally confirm a newly captured message. */
+    NSArray *cards = [self.store ruleCardsForPlan:self.confirmedPlan account:self.account error:&error];
+    NSDictionary *card = [SRRunProjection confirmedCardForRow:selected atIndex:self.selectedIndex cards:cards];
+    if (!card) {
+        self.selectedIndex = NSNotFound;
+        [self reload];
+        SRScreenAlert(self, @"分组核对未完成", error.localizedDescription ?: @"所选分组与已保存内容不一致，请重新选择并核对。未开始发送。");
+        return;
+    }
+    [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil];
+    UIViewController *groups = SRCreateGroupList(self.store, self.execution, self.account, self.verifyAccount, self.confirmedPlan, nil);
+    NSDictionary *run = SRDictionary(card[@"latestRun"]);
+    UIViewController *detail = SRCreateRunDetail(self.store, self.execution, self.account, self.verifyAccount,
+        self.confirmedPlan, card[@"id"], run[@"id"]);
+    NSMutableArray *stack = [self.navigationController.viewControllers mutableCopy];
+    [stack removeLastObject]; [stack addObject:groups]; [stack addObject:detail];
+    [self.navigationController setViewControllers:stack animated:YES];
+}
+@end
+
 UIViewController *SRCreateCapturedForwarding(SRStore *store, SRSourceCapture *capture, NSString *account, NSNumber *generation,
                                              BOOL (^verifyAccount)(void), SRSmallGroupSession *execution) {
-    SRRecordScreen *screen = (SRRecordScreen *)SRCreateCapturePreview(store, capture, account, verifyAccount, execution);
-    screen.previewGeneration = generation;
-    screen.opensForwardingGroups = YES; screen.title = @"转发分组";
+    SRCapturedForwardingScreen *screen = [[SRCapturedForwardingScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    screen.store = store; screen.capture = capture; screen.account = account; screen.generation = generation;
+    screen.verifyAccount = verifyAccount; screen.execution = execution; screen.selectedIndex = NSNotFound;
     return screen;
 }
 UIViewController *SRCreatePlanList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *execution) {
     SRRecordScreen *screen = [[SRRecordScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.kind = SRRecordPlans; screen.store = store; screen.account = account;
-    screen.verifyAccount = verifyAccount; screen.execution = execution; screen.title = @"已确认内容计划"; return screen;
+    screen.verifyAccount = verifyAccount; screen.execution = execution; screen.title = @"历史内容"; return screen;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -470,6 +742,9 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     return result;
 }
 
+/* Keep model section identities stable while placing content first visually. */
+static NSInteger SRHomeModelSection(NSInteger section) { return section < 2 ? 1 - section : section; }
+
 @interface SROperationsHomeScreen : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, strong) SRSourceCapture *capture;
@@ -517,15 +792,25 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         name:SRRelayStateChangedNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:)
         name:@"andyz.syncrelay.smallGroupChanged" object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(hideContent)
+        name:UIApplicationWillResignActiveNotification object:nil];
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 - (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reload]; }
 - (void)stateChanged:(__unused NSNotification *)notification { if (self.viewIfLoaded.window) [self reload]; }
+- (void)hideContent {
+    self.envelope = nil; self.frozenConfiguration = nil; self.cards = @[]; self.groupRows = @[];
+    self.runActions = @[]; self.accountInvalid = YES;
+    [self.tableView reloadData];
+}
 - (BOOL)verified {
     @try { return self.verifyAccount && self.verifyAccount(); }
     @catch (__unused id exception) { return NO; }
 }
 - (void)reload {
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { [self hideContent]; return; }
     self.operations = nil; self.envelope = nil; self.planID = nil;
     self.mode = SRHomeModeNone; self.capturedAt = nil; self.frozenConfiguration = nil;
     self.previewGeneration = nil;
@@ -703,28 +988,31 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
 }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.accountInvalid || self.problem) return 1;
+    section = SRHomeModelSection(section);
     if (section == 0) return 3 + (NSInteger)self.runActions.count;
-    if (section == 1) return 4;
-    return (section == 2) ? 2 : 1;
+    if (section == 1) return 1;
+    return (section == 2) ? 3 : 1;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (self.accountInvalid) return @"账号";
     if (self.problem) return @"读取已停止";
-    return @[@"运行状态", @"当前内容", @"分组概览", @"最近一次结果"][section];
+    return @[@"当前内容", @"监听与进度", @"转发分组", @"最近一次结果"][section];
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (self.accountInvalid) return @"当前账号无法核对或已经改变，旧内容已隐藏。请关闭后重新打开群同步。";
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
-    if (section == 0) return @"打开本页不会开始捕获、创建计划或发送；所有操作都需要明确点击。";
+    section = SRHomeModelSection(section);
+    if (section == 0) return @"持续监听暂未开放；目前可到设置手动等待一条。切后台后不会自动重开。";
     if (section == 1) return [self.mode isEqual:SRHomeModePreview] ?
-        @"这是未确认预览：确认后才会建立计划和冻结分组，本页不会自动确认或发送。已确认的旧内容可在“全部内容计划”中查看。" :
-        @"内容以捕获/确认时的冻结快照为准；未确认预览不是已确认内容，本页不会自动确认。";
-    if (section == 2) return @"分组来自该内容的冻结计划；修改设置只影响以后使用的内容。";
+        @"先核对内容和分组，再确认转发。忽略不会删除历史。" :
+        @"修改设置只影响之后捕获的内容。";
+    if (section == 2) return @"按分组顺序执行；不会自动开始下一组。";
     return @"最近一次结果只指向这一次运行，不代表其他分组，也不代表全部送达。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"operations-home"] ?:
         [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"operations-home"];
+    path = [NSIndexPath indexPathForRow:path.row inSection:SRHomeModelSection(path.section)];
     SRStyleSettingsCell(cell); cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil; cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -758,7 +1046,9 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         if (path.row == 0) {
             if (self.previewGeneration) {
                 cell.textLabel.text = @"转发分组";
-                cell.detailTextLabel.text = @"有 1 条待同步消息 · 查看内容和目标分组，不会立即发送";
+                cell.detailTextLabel.text = [SRRunProjection excerptForEnvelope:self.envelope limit:180];
+                cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+                cell.textLabel.textColor = SRSettingsAccent();
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 return cell;
@@ -768,26 +1058,18 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
             if (self.envelope) { cell.selectionStyle = UITableViewCellSelectionStyleDefault; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; }
             return cell;
         }
-        if (path.row == 1) {
-            cell.textLabel.text = @"插件捕获时间";
-            cell.detailTextLabel.text = self.capturedAt ? [SRRunProjection localDateTimeText:self.capturedAt] : @"未记录";
-            return cell;
-        }
-        if (path.row == 2) {
-            cell.textLabel.text = @"插件来源时间";
-            cell.detailTextLabel.text = [NSString stringWithFormat:@"观察 %@\n抓取完成 %@",
-                [SRRunProjection observedTimeTextForEnvelope:self.envelope],
-                [SRRunProjection frozenTimeTextForEnvelope:self.envelope]];
-            return cell;
-        }
-        cell.textLabel.text = @"宿主来源时间（未验证）";
-        cell.detailTextLabel.text = [SRRunProjection hostTimeTextForEnvelope:self.envelope];
         return cell;
     }
     if (path.section == 2) {
+        if (path.row == 2) {
+            cell.textLabel.text = @"消息库"; cell.detailTextLabel.text = @"已保存的文字和图片";
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return cell;
+        }
         if (path.row == 1) {
-            cell.textLabel.text = @"全部内容计划";
-            cell.detailTextLabel.text = @"查看历史内容与它们的规则；不会自动确认或开始";
+            cell.textLabel.text = @"历史内容";
+            cell.detailTextLabel.text = @"查看之前的内容、分组和执行记录";
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return cell;
@@ -815,6 +1097,7 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
+    path = [NSIndexPath indexPathForRow:path.row inSection:SRHomeModelSection(path.section)];
     if (![self verified]) return;
     if (self.problem) { [self reload]; return; }
     if (path.section == 0 && path.row >= 2) {
@@ -846,6 +1129,11 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         return;
     }
     if (path.section == 2) {
+        if (path.row == 2) {
+            [self.navigationController pushViewController:SRCreateLibraryList(self.store, self.account,
+                self.verifyAccount, self.execution) animated:YES];
+            return;
+        }
         if (path.row == 1) {
             /* A secondary, explicitly labelled route to the full plan history.
              * The group entry above never falls back to it. */
@@ -856,6 +1144,13 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         /* The group entry is bound to this content's frozen plan; it never opens
          * the 全部计划历史 list. Without a plan it opens the read-only view of the
          * configuration frozen with this content. */
+        if (self.previewGeneration) {
+            NSNumber *generation = self.previewGeneration;
+            if (![self.capture previewSnapshotForAccount:self.account generation:generation]) { [self reload]; return; }
+            [self.navigationController pushViewController:SRCreateCapturedForwarding(self.store, self.capture, self.account,
+                generation, self.verifyAccount, self.execution) animated:YES];
+            return;
+        }
         [self.navigationController pushViewController:SRCreateGroupList(self.store, self.execution, self.account,
             self.verifyAccount, self.planID, self.frozenConfiguration) animated:YES];
         return;
@@ -1152,6 +1447,7 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
 @property(nonatomic, copy) NSArray *targetIdentifiers;
 @property(nonatomic, strong) NSDictionary *card;
 @property(nonatomic, strong) NSDictionary *summary;
+@property(nonatomic, copy) NSDictionary *envelope;
 @property(nonatomic, copy) NSArray *actionRows;
 @property(nonatomic, copy, nullable) NSDictionary *problem;
 @property(nonatomic) BOOL accountInvalid;
@@ -1167,20 +1463,37 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         name:SRRelayStateChangedNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:)
         name:@"andyz.syncrelay.smallGroupChanged" object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(hideContent)
+        name:UIApplicationWillResignActiveNotification object:nil];
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 - (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reload]; }
 - (void)stateChanged:(__unused NSNotification *)notification { if (self.viewIfLoaded.window) [self reload]; }
+- (void)hideContent {
+    self.envelope = nil; self.card = nil; self.summary = nil; self.actionRows = @[];
+    self.targetIdentifiers = @[]; self.accountInvalid = YES;
+    [self.tableView reloadData];
+}
 - (BOOL)verified {
     @try { return self.verifyAccount && self.verifyAccount(); }
     @catch (__unused id exception) { return NO; }
 }
 - (void)reload {
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { [self hideContent]; return; }
     self.card = nil; self.summary = nil; self.actionRows = @[]; self.problem = nil;
+    self.envelope = nil;
     self.targetIdentifiers = @[]; self.replaced = NO;
     self.accountInvalid = ![self verified];
     if (self.accountInvalid || !self.planID.length) { [self buildActions]; [self.tableView reloadData]; return; }
     NSError *error = nil;
+    NSDictionary *plan = [self.store plan:self.planID account:self.account error:&error];
+    if (!plan) {
+        self.problem = @{@"title": @"内容读取失败", @"message": error.localizedDescription ?: @"请返回重新打开这条内容。"};
+        [self.tableView reloadData]; return;
+    }
+    self.envelope = SRDictionary(plan[@"snapshot"]);
     NSArray *cards = [self.store ruleCardsForPlan:self.planID account:self.account error:&error];
     if (!cards) {
         self.problem = @{@"title": @"读取失败", @"message": error.localizedDescription ?: @"无法读取该分组的状态。"};
@@ -1202,6 +1515,7 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     self.replaced = [SRRunProjection pageIsStaleForBoundRun:self.runID currentRunID:currentRunID];
     // A stale page must not present the other run's numbers as its own.
     self.summary = (run && !self.replaced) ? [SRRunProjection runSummary:run] : nil;
+    self.title = self.summary ? @"执行进度" : @"转发核对";
     self.targetIdentifiers = [self loadTargetIdentifiers];
     [self buildActions];
     [self.tableView reloadData];
@@ -1315,7 +1629,6 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         return cell;
     }
     NSDictionary *card = self.card ?: @{};
-    NSDictionary *run = [self currentRun];
     if (path.section == 0) {
         if (path.row == 0) {
             cell.textLabel.text = @"分组名称";
@@ -1334,13 +1647,13 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
             }
             return cell;
         }
-        cell.textLabel.text = @"批次";
-        /* Show the identity this page was opened with. When the page is stale,
-         * the run that appeared afterwards is not presented as this page's. */
-        if (self.replaced) cell.detailTextLabel.text = self.runID.length ?
-            [NSString stringWithFormat:@"%@（本页记录的批次已失效）", self.runID] :
-            @"本页打开时没有批次，之后已出现新批次";
-        else cell.detailTextLabel.text = run ? [NSString stringWithFormat:@"%@", run[@"id"]] : @"尚未开始";
+        cell.textLabel.text = self.replaced ? @"页面已失效" : @"本次转发内容";
+        cell.detailTextLabel.text = self.replaced ? @"分组批次已经改变，请返回重新核对。" :
+            [SRRunProjection excerptForEnvelope:self.envelope limit:180];
+        if (!self.replaced && self.envelope) {
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
         return cell;
     }
     if (path.section == 1) {
@@ -1352,6 +1665,10 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.textLabel.textColor = [action[@"destructive"] isEqual:@YES] ? UIColor.systemRedColor : UIColor.labelColor;
+                if ([action[@"kind"] isEqual:@"start"]) {
+                    cell.textLabel.textColor = SRSettingsAccent();
+                    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+                }
             } else cell.textLabel.textColor = UIColor.secondaryLabelColor;
             return cell;
         }
@@ -1393,6 +1710,9 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     [tableView deselectRowAtIndexPath:path animated:YES];
     if (![self verified]) return;
     if (self.problem) { [self reload]; return; }
+    if (path.section == 0 && path.row == 2 && !self.replaced && self.envelope) {
+        SRPushContentViewer(self, self.store, self.envelope, self.verifyAccount); return;
+    }
     if (path.section == 0 && path.row == 1 && self.targetIdentifiers.count) {
         SRSourceTextScreen *viewer = [[SRSourceTextScreen alloc] init];
         viewer.title = @"目标群标识（只读）";

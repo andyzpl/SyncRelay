@@ -152,9 +152,10 @@ class ProbeForwardingContracts(unittest.TestCase):
 
 class PlanScreenRowContracts(unittest.TestCase):
     def test_time_rows_are_appended_after_the_content_entry(self):
-        rows = method_body(SCREENS, '- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {')
+        record = SCREENS.split('@implementation SRRecordScreen', 1)[1].split('@end', 1)[0]
+        rows = method_body(record, '- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {')
         self.assertIn('section == 0 ? 8 :', rows)
-        cell = method_body(SCREENS, '- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {')
+        cell = method_body(record, '- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {')
         self.assertIn('@"消息内容（点开完整查看）",', cell)
         self.assertIn('@"插件首次观察时间"', cell)
         self.assertIn('@"抓取完成时间"', cell)
@@ -162,8 +163,8 @@ class PlanScreenRowContracts(unittest.TestCase):
         # Row 4 keeps the disclosure indicator that opens the text/image viewer.
         self.assertIn('else if (path.row == 4) {', cell)
         self.assertIn('else cell.detailTextLabel.text = SRSourceTimeText(source, path.row);', cell)
-        select = method_body(SCREENS, '- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {')
-        self.assertIn('if (path.row == (self.opensForwardingGroups ? 0 : 4)) {', select)
+        select = method_body(record, '- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {')
+        self.assertIn('if (path.row == 4) {', select)
 
     def test_host_created_at_is_never_rendered_as_a_date(self):
         # B-2 moved the formatting into Core/SRRunProjection so the operations

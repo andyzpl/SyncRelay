@@ -302,6 +302,16 @@ static NSString *SRProjectionString(id value, NSString *fallback) {
     return rows;
 }
 
++ (NSDictionary *)confirmedCardForRow:(NSDictionary *)row atIndex:(NSUInteger)index cards:(NSArray<NSDictionary *> *)cards {
+    if (index >= cards.count) return nil;
+    NSDictionary *card = cards[index];
+    if (![card isKindOfClass:NSDictionary.class] || ![card[@"id"] isKindOfClass:NSString.class] || ![card[@"id"] length]) return nil;
+    if (![card[@"position"] isEqual:@(index + 1)] || ![card[@"name"] isEqual:row[@"name"]] ||
+        ![row[@"targets"] isKindOfClass:NSArray.class] || ![card[@"targetIdentifiers"] isEqual:row[@"targets"]] ||
+        ![card[@"targetCount"] isEqual:row[@"targetCount"]]) return nil;
+    return card;
+}
+
 + (NSArray<NSString *> *)filterIdentifiers {
     return @[SRGroupFilterAll, SRGroupFilterNotStarted, SRGroupFilterActive,
         SRGroupFilterCompleted, SRGroupFilterAbnormal];

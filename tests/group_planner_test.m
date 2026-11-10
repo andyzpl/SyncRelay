@@ -45,6 +45,19 @@ static NSUInteger scalar(sqlite3 *database, const char *sql) {
 
 int main(void) {
     @autoreleasepool {
+        NSMutableDictionary *poolDraft = draft();
+        poolDraft[@"rules"] = @[@{@"id": @"rule", @"name": @"Group", @"targets": @[group(0), group(9)]}];
+        poolDraft[@"excludedGroups"] = @[group(1), group(8)];
+        NSArray *summaryPool = @[group(0), group(1), group(2), group(2), poolDraft[@"sourceGroup"]];
+        NSDictionary *poolBefore = [SRSourceMessage frozenJSON:poolDraft];
+        NSDictionary *summary = [SRGroupPlanner poolSummaryForRows:summaryPool draft:poolDraft];
+        CHECK([summary[@"pool"] isEqual:@3]);
+        CHECK([summary[@"assigned"] isEqual:@1] && [summary[@"unassigned"] isEqual:@1] && [summary[@"excluded"] isEqual:@1]);
+        CHECK([poolDraft isEqual:poolBefore]);
+        CHECK(![SRGroupPlanner poolSummaryForRows:(id)NSNull.null draft:poolDraft]);
+        CHECK(![SRGroupPlanner poolSummaryForRows:@[@{@"id": @"invalid", @"name": @"Group"}] draft:poolDraft]);
+        CHECK(![SRGroupPlanner poolSummaryForRows:summaryPool draft:@{}]);
+        CHECK([[SRGroupPlanner poolSummaryForRows:@[] draft:poolDraft][@"pool"] isEqual:@0]);
         NSArray *recipe = @[@{@"size": @100, @"count": @10}, @{@"size": @200, @"count": @10}];
         NSMutableDictionary *original = draft(); NSDictionary *before = [SRSourceMessage frozenJSON:original];
         NSDictionary *preview = [SRGroupPlanner previewWithRows:groups(3000) draft:original recipe:recipe error:NULL];

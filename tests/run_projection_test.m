@@ -438,6 +438,27 @@ static void checkContentProjection(void) {
     CHECK([[SRRunProjection observedTimeTextForEnvelope:@{@"sourceTime": @{@"receivedAt": @YES}}] isEqual:@"未记录"]);
 }
 
+static void checkCaptureSelectionReadback(void) {
+    NSDictionary *row = @{ @"name": @"Same name", @"targets": @[@"a", @"b"], @"targetCount": @2 };
+    NSDictionary *card = @{ @"id": @"durable-rule", @"position": @1, @"name": @"Same name",
+        @"targetIdentifiers": @[@"a", @"b"], @"targetCount": @2 };
+    CHECK([[SRRunProjection confirmedCardForRow:row atIndex:0 cards:@[card]][@"id"] isEqual:@"durable-rule"]);
+    CHECK(![SRRunProjection confirmedCardForRow:row atIndex:1 cards:@[card]]);
+    CHECK(![SRRunProjection confirmedCardForRow:row atIndex:NSNotFound cards:@[card]]);
+    CHECK(![SRRunProjection confirmedCardForRow:row atIndex:0 cards:@[]]);
+    // Same name/count cannot authorize a different target order or position.
+    for (NSDictionary *change in @[@{@"targetIdentifiers": @[@"b", @"a"]}, @{@"targetIdentifiers": @[@"a", @"c"]},
+        @{@"targetCount": @1}, @{@"position": @2}, @{@"name": @"Other"}, @{@"id": @""}]) {
+        NSMutableDictionary *changed = [card mutableCopy]; [changed addEntriesFromDictionary:change];
+        CHECK(![SRRunProjection confirmedCardForRow:row atIndex:0 cards:@[changed]]);
+    }
+    CHECK(![SRRunProjection confirmedCardForRow:row atIndex:0 cards:(id)@[NSNull.null]]);
+    CHECK(![SRRunProjection confirmedCardForRow:@{} atIndex:0 cards:@[card]]);
+    NSDictionary *second = @{ @"id": @"second-rule", @"position": @2, @"name": @"Same name",
+        @"targetIdentifiers": @[@"a", @"b"], @"targetCount": @2 };
+    CHECK([[SRRunProjection confirmedCardForRow:row atIndex:1 cards:@[card, second]][@"id"] isEqual:@"second-rule"]);
+}
+
 int main(void) {
     @autoreleasepool {
         checkTimeTexts();
@@ -451,6 +472,7 @@ int main(void) {
         checkFrozenTargetSearch();
         checkStalePageBinding();
         checkContentProjection();
+        checkCaptureSelectionReadback();
         puts("PASS: pure Phase B projections cover empty/preview/confirmed inputs, per-run phase and count "
              "separation, the 20-group limit, read-only search and filter, frozen target identifiers, "
              "stale page binding, missing/cross-day time text, and unverified host-time semantics");
