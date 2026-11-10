@@ -158,6 +158,25 @@ class UIRedesignSpecContracts(unittest.TestCase):
         self.assertIn('CGRectGetMinY(text) >= CGRectGetMaxY(row)', native)
         self.assertIn('needed.height <= CGRectGetHeight(text)', native)
 
+    def test_message_detail_projects_stored_content_before_forwarding(self):
+        library = (ROOT / 'UI/SRLibraryScreens.m').read_text(encoding='utf-8')
+        detail = library.split('@implementation SRLibraryItemScreen', 1)[1].split('@end', 1)[0]
+        for text in ('消息详情', '消息内容', '本次转发', '目标分组', '预计目标', '选择分组转发', '版本与记录'):
+            self.assertIn(f'@"{text}"', detail)
+        self.assertIn('self.recordsOnly ? 3 : 2', detail)
+        self.assertIn('return [self messageCellAtIndexPath:path]', detail)
+        self.assertIn('[self.view addSubview:button]', detail)
+        self.assertIn('constraintEqualToAnchor:button.topAnchor constant:-12', detail)
+        prompt = detail.split('- (void)promptForward {', 1)[1].split('\n}', 1)[0]
+        self.assertIn('![self verified]', prompt)
+        self.assertIn('topViewController != self', prompt)
+        self.assertIn('SRCreateTargetPicker', prompt)
+        for forbidden in ('createLibraryTaskForAccount:', 'startLibraryTask:'):
+            self.assertNotIn(forbidden, prompt)
+        native = (ROOT / 'tests/ios/SRNavigationTests.m').read_text(encoding='utf-8')
+        self.assertIn('store.reads == reads && button.hidden', native)
+        self.assertIn('CGRectGetMaxY(table.frame) <= CGRectGetMinY(button.frame)', native)
+
     def test_result_close_is_bound_to_one_durable_terminal_run(self):
         close = PANEL.split('self.floatingProgress.closeResultAction =', 1)[1].split('self.floatingProgress.action =', 1)[0]
         for expected in ('verifyAccount:account', 'entry.smallGroupSession.busy',

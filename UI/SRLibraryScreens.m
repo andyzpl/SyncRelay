@@ -249,7 +249,13 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 /* 条目详情                                                                  */
 /* ------------------------------------------------------------------------ */
 
-@interface SRLibraryItemScreen : UITableViewController
+@interface SRLibraryItemScreen : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property(nonatomic, strong) UITableView *tableView;
+@property(nonatomic, strong) UIRefreshControl *refreshControl;
+@property(nonatomic, strong) UIButton *forwardButton;
+@property(nonatomic) UITableViewStyle detailTableStyle;
+@property(nonatomic) BOOL recordsOnly;
+- (instancetype)initWithStyle:(UITableViewStyle)style;
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) BOOL (^verifyAccount)(void);
@@ -267,6 +273,31 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @end
 
 @implementation SRLibraryItemScreen
+- (instancetype)initWithStyle:(UITableViewStyle)style {
+    if ((self = [super initWithNibName:nil bundle:nil])) _detailTableStyle = style;
+    return self;
+}
+- (NSDictionary *)currentVersion {
+    for (NSDictionary *version in self.versions)
+        if ([version[@"id"] isEqual:self.entry[@"current_version_id"]]) return version;
+    return nil;
+}
+- (BOOL)canChooseTargets {
+    NSString *kind = [self currentVersion][@"kind"];
+    return !self.masked && !self.accountInvalid && !self.problem && self.session &&
+        ([kind isEqual:@"text"] || [kind isEqual:@"image"]);
+}
+- (void)updateForwardButton {
+    self.forwardButton.hidden = ![self canChooseTargets];
+    self.forwardButton.enabled = !self.forwardButton.hidden;
+}
+- (void)showRecords {
+    if (self.masked || ![self verified] || self.navigationController.topViewController != self) return;
+    SRLibraryItemScreen *records = [[SRLibraryItemScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    records.store = self.store; records.account = self.account; records.item = self.item;
+    records.verifyAccount = self.verifyAccount; records.session = self.session; records.recordsOnly = YES;
+    [self.navigationController pushViewController:records animated:YES];
+}
 - (void)showActions {
     if (self.masked || self.accountInvalid || self.problem || ![self verified]) return;
     NSString *kind = [self.entry[@"kind"] isKindOfClass:NSString.class] ? self.entry[@"kind"] : @"";
@@ -274,10 +305,12 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    if (forwardable) {
+    if (forwardable && self.session && [self currentVersion]) {
         [sheet addAction:[UIAlertAction actionWithTitle:@"转发到群…" style:UIAlertActionStyleDefault
             handler:^(__unused UIAlertAction *a) { [weakSelf promptForward]; }]];
     }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"版本与记录" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *a) { [weakSelf showRecords]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"删除条目" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *a) { [weakSelf confirmDelete]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -303,6 +336,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 }
 
 - (void)promptForward {
+    if (![self canChooseTargets] || ![self verified] || self.navigationController.topViewController != self) return;
     __weak typeof(self) weakSelf = self;
     UIViewController *picker = SRCreateTargetPicker(self.store, self.account, ^(NSArray<NSString *> *targets) {
         [weakSelf forwardToGroups:targets];
@@ -370,12 +404,65 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"条目详情";
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"操作"
-        style:UIBarButtonItemStylePlain target:self action:@selector(showActions)];
-    SRStyleSettingsTable(self);
+    self.title = self.recordsOnly ? @"版本与记录" : @"消息详情";
+    if (!self.recordsOnly) self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"ellipsis"] style:UIBarButtonItemStylePlain
+        target:self action:@selector(showActions)];
+    self.navigationItem.rightBarButtonItem.accessibilityLabel = @"更多操作";
+    SRStyleSettingsController(self);
+    self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:self.detailTableStyle];
+    UITableView *table = self.tableView;
+    table.translatesAutoresizingMaskIntoConstraints = NO;
+    table.delegate = self; table.dataSource = self;
+    table.backgroundColor = self.view.backgroundColor;
+    table.rowHeight = UITableViewAutomaticDimension; table.estimatedRowHeight = 56;
+    table.sectionFooterHeight = UITableViewAutomaticDimension; table.estimatedSectionFooterHeight = 44;
+    table.sectionHeaderTopPadding = 0;
+    table.separatorInset = UIEdgeInsetsMake(0, 18, 0, 18);
+    if (!self.recordsOnly) {
+        table.separatorStyle = UITableViewCellSeparatorStyleNone;
+        table.layoutMargins = UIEdgeInsetsMake(0, 12, 0, 12);
+        table.cellLayoutMarginsFollowReadableWidth = NO;
+    }
+    table.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 8)];
+    [self.view addSubview:table];
+    [NSLayoutConstraint activateConstraints:@[
+        [table.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]]];
+    if (self.recordsOnly) {
+        [table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor].active = YES;
+    } else {
+        self.forwardButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIButton *button = self.forwardButton;
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+        configuration.baseBackgroundColor = UIColor.systemBlueColor;
+        configuration.baseForegroundColor = UIColor.whiteColor;
+        configuration.cornerStyle = UIButtonConfigurationCornerStyleFixed;
+        configuration.background.cornerRadius = 12;
+        configuration.contentInsets = NSDirectionalEdgeInsetsMake(12, 16, 12, 16);
+        configuration.attributedTitle = [[NSAttributedString alloc] initWithString:@"选择分组转发"
+            attributes:@{NSFontAttributeName: [[UIFontMetrics metricsForTextStyle:UIFontTextStyleHeadline]
+                scaledFontForFont:[UIFont systemFontOfSize:18 weight:UIFontWeightSemibold]]}];
+        button.configuration = configuration;
+        button.titleLabel.adjustsFontForContentSizeCategory = YES;
+        button.titleLabel.numberOfLines = 0; button.titleLabel.textAlignment = NSTextAlignmentCenter;
+        button.accessibilityIdentifier = @"SyncRelay.LibraryChooseGroups";
+        [button addTarget:self action:@selector(promptForward) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:button];
+        [NSLayoutConstraint activateConstraints:@[
+            [button.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:12],
+            [button.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-12],
+            [button.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-18],
+            [button.heightAnchor constraintGreaterThanOrEqualToConstant:46],
+            [table.bottomAnchor constraintEqualToAnchor:button.topAnchor constant:-12]]];
+    }
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    self.tableView.refreshControl = self.refreshControl;
+    [self updateForwardButton];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(resigningActive:)
         name:UIApplicationWillResignActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:)
@@ -386,14 +473,14 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)resigningActive:(__unused NSNotification *)notification {
     self.masked = YES;
     self.entry = nil; self.versions = @[]; self.problem = nil;
-    [self.tableView reloadData];
+    [self updateForwardButton]; [self.tableView reloadData];
 }
 - (void)becameActive:(__unused NSNotification *)notification {
     if (!self.viewIfLoaded.window) return;
     if (![self verified]) {
         self.accountInvalid = YES; self.masked = NO;
         self.entry = nil; self.versions = @[]; self.problem = nil;
-        [self.tableView reloadData]; return;
+        [self updateForwardButton]; [self.tableView reloadData]; return;
     }
     [self reload];
 }
@@ -405,7 +492,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)reload {
     self.entry = nil; self.versions = @[]; self.problem = nil; self.masked = NO;
     self.accountInvalid = ![self verified];
-    if (self.accountInvalid) { [self.refreshControl endRefreshing]; [self.tableView reloadData]; return; }
+    if (self.accountInvalid) { [self.refreshControl endRefreshing]; [self updateForwardButton]; [self.tableView reloadData]; return; }
     NSError *error = nil;
     NSDictionary *entry = [self.store libraryItem:self.item account:self.account error:&error];
     if (!entry) self.problem = @{@"title": @"读取失败",
@@ -417,13 +504,14 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         self.tasks = [self.store libraryTasksForItem:self.item account:self.account limit:20 error:NULL] ?: @[];
     }
     [self.refreshControl endRefreshing];
-    [self.tableView reloadData];
+    [self updateForwardButton]; [self.tableView reloadData];
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView {
-    return (self.masked || self.accountInvalid || self.problem) ? 1 : 3;
+    return (self.masked || self.accountInvalid || self.problem) ? 1 : (self.recordsOnly ? 3 : 2);
 }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.masked || self.accountInvalid || self.problem) return 1;
+    if (!self.recordsOnly) return section == 0 ? 1 : 3;
     if (section == 0) return 5;
     if (section == 1) return self.versions.count ? (NSInteger)self.versions.count : 1;
     return self.tasks.count ? (NSInteger)self.tasks.count : 1;
@@ -432,6 +520,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (self.masked) return @"内容已隐藏";
     if (self.accountInvalid) return @"账号";
     if (self.problem) return @"读取已停止";
+    if (!self.recordsOnly) return nil;
     if (section == 0) return @"条目";
     return section == 1 ? @"版本（只读）" : @"发送记录";
 }
@@ -439,6 +528,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (self.masked) return @"离开前台时已清除本页显示；回到前台会重新核对账号后再读取。";
     if (self.accountInvalid) return @"当前账号无法核对或已经改变，本页已失去显示资格。";
     if (self.problem) return @"本页只读，不会创建、删除或发送任何条目。";
+    if (!self.recordsOnly) return section == 1 ? @"只处理本次选择的分组，不会自动接下一组。" : nil;
     if (section == 0) return @"条目只属于打开本页时的账号；数量与版本以持久记录为准。";
     if (section == 1) return @"文字与图片版本可转发到群；删除只隐藏条目，不删除历史版本与媒体。";
     return @"发送记录只读：显示每次冻结任务的目标数、运行状态与创建时间。";
@@ -466,6 +556,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         return cell;
     }
+    if (!self.recordsOnly) return [self messageCellAtIndexPath:path];
     NSDictionary *entry = self.entry ?: @{};
     if (path.section == 0) {
         NSArray *titles = @[@"条目标识", @"内容类型", @"版本数", @"创建时间", @"更新时间"];
@@ -515,8 +606,12 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
     if (self.masked) return;
-    if (![self verified]) { self.accountInvalid = YES; [self.tableView reloadData]; return; }
+    if (![self verified]) { self.accountInvalid = YES; [self updateForwardButton]; [self.tableView reloadData]; return; }
     if (self.problem) { [self reload]; return; }
+    if (!self.recordsOnly) {
+        if (path.section == 1 && path.row == 1) [self promptForward];
+        return;
+    }
     if (path.section != 1 || !self.versions.count) return;
     if (self.navigationController.topViewController != self) return;
     NSDictionary *version = self.versions[(NSUInteger)path.row];
@@ -526,6 +621,92 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     NSString *body = [text isKindOfClass:NSString.class] ? text : @"没有可显示的文字内容";
     [self.navigationController pushViewController:SRCreateReadOnlyText(@"版本内容（只读）", body,
         self.verifyAccount) animated:YES];
+}
+- (CGFloat)tableView:(__unused UITableView *)tableView heightForHeaderInSection:(__unused NSInteger)section {
+    return self.recordsOnly ? UITableViewAutomaticDimension : 0.01;
+}
+- (CGFloat)tableView:(__unused UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    if (!self.recordsOnly && !self.masked && !self.accountInvalid && !self.problem && section == 0) return 14;
+    return UITableViewAutomaticDimension;
+}
+- (void)tableView:(__unused UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
+    if (!self.recordsOnly && section == 1 && [view isKindOfClass:UITableViewHeaderFooterView.class]) {
+        UILabel *label = ((UITableViewHeaderFooterView *)view).textLabel;
+        label.textAlignment = NSTextAlignmentCenter;
+        label.font = SRSettingsFont(13, UIFontTextStyleFootnote); label.numberOfLines = 0;
+    }
+}
+- (UILabel *)messageLabel:(NSString *)text size:(CGFloat)size weight:(UIFontWeight)weight {
+    UILabel *label = [[UILabel alloc] init]; label.text = text; label.numberOfLines = 0;
+    label.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[UIFont systemFontOfSize:size weight:weight]];
+    label.adjustsFontForContentSizeCategory = YES; label.textColor = UIColor.labelColor;
+    return label;
+}
+- (UITableViewCell *)messageCellAtIndexPath:(NSIndexPath *)path {
+    BOOL accessible = UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:accessible ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1 reuseIdentifier:nil];
+    SRStyleSettingsCell(cell);
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
+    if (path.section == 1) {
+        if (path.row == 0) {
+            cell.textLabel.text = @"本次转发";
+            cell.textLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleHeadline]
+                scaledFontForFont:[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold]];
+        } else {
+            cell.textLabel.text = path.row == 1 ? @"目标分组" : @"预计目标";
+            cell.detailTextLabel.text = path.row == 1 ? @"尚未选择" : @"选择分组后显示";
+            cell.detailTextLabel.font = SRSettingsFont(15, UIFontTextStyleSubheadline);
+            if (path.row == 1 && [self canChooseTargets]) {
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+                cell.accessibilityIdentifier = @"SyncRelay.LibraryTargetGroup";
+            }
+            if (path.row == 1) {
+                UIView *line = [[UIView alloc] init]; line.backgroundColor = UIColor.separatorColor;
+                line.translatesAutoresizingMaskIntoConstraints = NO; [cell.contentView addSubview:line];
+                [NSLayoutConstraint activateConstraints:@[
+                    [line.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:14],
+                    [line.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-14],
+                    [line.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
+                    [line.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale]]];
+            }
+        }
+        cell.layoutMargins = UIEdgeInsetsMake(14, 18, 14, 18);
+        return cell;
+    }
+    NSDictionary *version = [self currentVersion];
+    UILabel *heading = [self messageLabel:@"消息内容" size:17 weight:UIFontWeightSemibold];
+    NSString *kind = version[@"kind"];
+    NSString *body = nil;
+    if ([kind isEqual:@"text"]) {
+        id text = SRLibraryDictionary(version[@"payload"])[@"text"];
+        body = [text isKindOfClass:NSString.class] ? text : @"没有可显示的文字内容";
+    } else if ([kind isEqual:@"image"]) body = SRLibraryVersionBody(version);
+    else body = @"没有可显示的受支持内容";
+    UILabel *message = [self messageLabel:body size:18 weight:UIFontWeightRegular];
+    message.accessibilityIdentifier = @"SyncRelay.LibraryMessageBody";
+    UIView *line = [[UIView alloc] init]; line.backgroundColor = UIColor.separatorColor;
+    [line.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale].active = YES;
+    NSString *type = [SRMediaProjection libraryKindText:kind];
+    UILabel *origin = [self messageLabel:[NSString stringWithFormat:@"%@消息 · 来自消息库", type]
+        size:13 weight:UIFontWeightRegular];
+    UILabel *time = [self messageLabel:[SRRunProjection localDateTimeText:version[@"captured_at"]]
+        size:13 weight:UIFontWeightRegular];
+    origin.textColor = UIColor.secondaryLabelColor; time.textColor = UIColor.secondaryLabelColor;
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[heading, message, line, origin, time]];
+    stack.axis = UILayoutConstraintAxisVertical; stack.spacing = 10;
+    [stack setCustomSpacing:20 afterView:heading]; [stack setCustomSpacing:14 afterView:message];
+    [stack setCustomSpacing:4 afterView:origin];
+    stack.translatesAutoresizingMaskIntoConstraints = NO; [cell.contentView addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:18],
+        [stack.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-18],
+        [stack.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:14],
+        [stack.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-16]]];
+    return cell;
 }
 @end
 

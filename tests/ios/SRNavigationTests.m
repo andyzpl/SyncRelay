@@ -1,6 +1,8 @@
-/* Link with SRNavigationController.m and the UIKit test-app entry point. */
+/* UIKit test app: link with the production UI and dependencies (no Tweak entry),
+ * plus SRFloatingProgressTests.m. These cases are not macOS Foundation tests. */
 #import "UI/SRNavigationController.h"
 #import "UI/SRNativeStyle.h"
+#import "UI/SRLibraryScreens.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -15,6 +17,59 @@
     if (!self.dirty) SRPopPluginPage(self, NO);
 }
 @end
+
+/* Stored fixtures only: any accidental task creation/start would be an
+ * unrecognized selector, rather than performing real work. */
+@interface SRMessageStoreFixture : NSObject
+@property(nonatomic) NSUInteger reads;
+@end
+@implementation SRMessageStoreFixture
+- (NSDictionary *)libraryItem:(__unused NSString *)item account:(__unused NSString *)account error:(__unused NSError **)error {
+    self.reads++;
+    return @{@"id": @"fixture-item", @"kind": @"text", @"current_version_id": @"fixture-version",
+        @"versions": @[@{@"id": @"fixture-version", @"kind": @"text", @"captured_at": @100,
+            @"payload": @{@"text": @"周五会议提前到下午三点，新的安排我整理后发群里。"}}]};
+}
+- (NSArray *)libraryTasksForItem:(__unused NSString *)item account:(__unused NSString *)account
+                          limit:(__unused NSUInteger)limit error:(__unused NSError **)error { return @[]; }
+@end
+
+static UIView *SRFindMessageElement(UIView *view, NSString *identifier) {
+    if ([view.accessibilityIdentifier isEqual:identifier]) return view;
+    for (UIView *child in view.subviews) {
+        UIView *match = SRFindMessageElement(child, identifier);
+        if (match) return match;
+    }
+    return nil;
+}
+
+static void SRRunMessageDetailTests(UIWindow *window) {
+    SRMessageStoreFixture *store = [[SRMessageStoreFixture alloc] init];
+    __block BOOL allowed = YES;
+    UIViewController *detail = SRCreateLibraryItem((id)store, @"fixture-account", ^{ return allowed; },
+        @"fixture-item", (id)[[NSObject alloc] init]);
+    window.rootViewController = [[SRNavigationController alloc] initWithRootViewController:detail];
+    [detail.view layoutIfNeeded];
+    UITableView *table = [detail valueForKey:@"tableView"];
+    [table.refreshControl sendActionsForControlEvents:UIControlEventValueChanged]; [table layoutIfNeeded];
+    assert([detail.title isEqual:@"消息详情"]);
+    assert(table.numberOfSections == 2 && [table numberOfRowsInSection:0] == 1);
+    assert([table numberOfRowsInSection:1] == 3);
+    UILabel *body = (id)SRFindMessageElement(detail.view, @"SyncRelay.LibraryMessageBody");
+    assert([body.text containsString:@"周五会议"]);
+    UIButton *button = (id)SRFindMessageElement(detail.view, @"SyncRelay.LibraryChooseGroups");
+    assert(button && !button.hidden && button.enabled);
+    assert(CGRectGetMaxY(table.frame) <= CGRectGetMinY(button.frame));
+    assert(CGRectGetMaxY(button.frame) <= CGRectGetMaxY(detail.view.bounds));
+    [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+    [table layoutIfNeeded];
+    assert(button.hidden && !button.enabled);
+    assert(!SRFindMessageElement(detail.view, @"SyncRelay.LibraryMessageBody"));
+    NSUInteger reads = store.reads; allowed = NO;
+    [table.refreshControl sendActionsForControlEvents:UIControlEventValueChanged]; [table layoutIfNeeded];
+    assert(store.reads == reads && button.hidden && table.numberOfSections == 1);
+    puts("PASS: content-first detail, fixed CTA, inactive masking and account rejection without dispatch");
+}
 
 @interface SRFooterLayoutFixture : UITableViewController
 @end
@@ -61,6 +116,7 @@ static void SRSettleNavigation(SRNavigationController *navigation) {
 
 void SRRunNavigationTests(UIWindow *window) {
     SRRunFooterLayoutTests(window);
+    SRRunMessageDetailTests(window);
     UIViewController *home = [[UIViewController alloc] init];
     SRNavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:home];
     window.rootViewController = navigation; [navigation view];
