@@ -180,6 +180,9 @@ static BOOL SRMenuSamePublishedSelection(SRMenuMessageContext *a, SRMenuMessageC
  * be kept alive by the registry itself. */
 @property(nonatomic, strong) NSMapTable *publishedItems;
 @property(nonatomic, strong) NSMutableDictionary *publishedGenerations;
+- (NSArray *)appendHostItemToItems:(NSArray *)items menu:(id)menu source:(SRMenuMessageContext *)source
+                         itemClass:(Class)itemClass generation:(NSString *)generation
+              allowDetachedReuse:(BOOL)allowDetachedReuse;
 @end
 
 /* -------------------------------------------------------------------------
@@ -1203,6 +1206,13 @@ static BOOL SRImplicitParametersMatch(Method method) {
 
 - (NSArray *)appendHostItemToItems:(NSArray *)items menu:(id)menu source:(SRMenuMessageContext *)source
                          itemClass:(Class)itemClass generation:(NSString *)generation {
+    return [self appendHostItemToItems:items menu:menu source:source itemClass:itemClass
+                            generation:generation allowDetachedReuse:NO];
+}
+
+- (NSArray *)appendHostItemToItems:(NSArray *)items menu:(id)menu source:(SRMenuMessageContext *)source
+                         itemClass:(Class)itemClass generation:(NSString *)generation
+              allowDetachedReuse:(BOOL)allowDetachedReuse {
     NSArray *original = [items isKindOfClass:NSArray.class] ? items : @[];
     if (!self.enabled || !self.enabled()) return original;
     if (!menu || !source || !itemClass || !generation.length) return original;
@@ -1224,7 +1234,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
     @synchronized(self.lock) {
         id publishedItem = [self.publishedItems objectForKey:source.ownerToken];
         SRMenuMessageContext *publishedContext = publishedItem ? [self.contexts objectForKey:publishedItem] : nil;
-        if (publishedItem && SRMenuSamePublishedSelection(publishedContext, source)) {
+        if (publishedItem && (containsPublished || allowDetachedReuse) &&
+            SRMenuSamePublishedSelection(publishedContext, source)) {
             /* contextForMenu: tentatively records the new setter generation.
              * Restore the generation belonging to the item we keep, otherwise
              * the click would fail the generation gate even though the message
@@ -2650,7 +2661,8 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     }
     (void)reused;
     return [self.hook appendHostItemToItems:items menu:menu source:context
-                                  itemClass:self.itemClass generation:generation];
+                                  itemClass:self.itemClass generation:generation
+                       allowDetachedReuse:YES];
 }
 - (void)prepareMenu:(id)menu responder:(id)responder {
     if (!self.hook || !menu) return;
@@ -2680,7 +2692,8 @@ static void SRMenuBuildForward(id self, SEL command, id items) {
     SRMenuMessageContext *context = [self.hook contextForMenu:menu generation:generation responder:responder];
     if (!context) return;
     NSArray *published = [self.hook appendHostItemToItems:items menu:menu source:context
-                                                itemClass:self.itemClass generation:generation];
+                                                itemClass:self.itemClass generation:generation
+                                     allowDetachedReuse:YES];
     if (published == items) return;
     if ([items isKindOfClass:NSMutableArray.class]) {
         [(NSMutableArray *)items setArray:published];
