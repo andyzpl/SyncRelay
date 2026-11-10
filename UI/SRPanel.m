@@ -377,7 +377,6 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
         self.tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
         self.tableView.estimatedRowHeight = 52;
         self.tableView.sectionHeaderHeight = 44;
-        self.tableView.sectionFooterHeight = 18;
     }
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:self.returnsToOperationsHome ? @"返回" : @"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:self.page == SRPanelPageGroups ? @"保存分组" : @"保存" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
@@ -588,11 +587,9 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     return @[@"来源设置", @"发送间隔", @"目标群与规则", @"源消息与计划", @"高级设置"][section];
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (self.page == SRPanelPageSource) return section == 0 ?
-        (self.dirty ? @"修改尚未保存，请点右上角「保存」。" : @"保存只更新来源条件，不捕获、不发送。") :
-        (section == 1 ? @"持续监听尚未开放。目前需手动等待一条；切后台停止，回前台不会自动开启。" : nil);
+    if (self.page == SRPanelPageSource) return section == 0 && self.dirty ? @"修改尚未保存，请点右上角「保存」。" : nil;
     if (self.page == SRPanelPageGroups) return self.dirty ? @"分组修改尚未保存。保存不会改变已有内容或发送记录。" : @"母群自动排除。分组规格和实际发送上限分别管理；先预览，再保存分组。";
-    if (self.page == SRPanelPageSettings) return section == 0 ? @"最低 3 秒；上下限相同则使用固定间隔。" : nil;
+    if (self.page == SRPanelPageSettings) return nil;
     section = SRPanelSection(section);
     if (section == 0) return [NSString stringWithFormat:@"SyncRelay %@ · 开发版\n%@", SR_PLUGIN_VERSION, self.status ?: @"小群测试需手动开始"];
     if (section == 1) return self.dirty ? @"修改尚未保存，请点右上角“保存”。" : @"所有规则共用来源条件；图片先捕获并预览，不自动发送。";
@@ -604,7 +601,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     path = [self modelPathForDisplayPath:path];
     NSInteger section = path.section;
     BOOL accessible = UIContentSizeCategoryIsAccessibilityCategory(tableView.traitCollection.preferredContentSizeCategory);
-    BOOL subtitle = accessible || (section == 0 && path.row == 12) || (section == 0 && path.row == 13 && self.page != SRPanelPageSettings) || (section == 5 && path.row == 1);
+    BOOL subtitle = accessible || (section == 0 && path.row == 12 && self.page != SRPanelPageSettings) || (section == 0 && path.row == 13 && self.page != SRPanelPageSettings) || (section == 5 && path.row == 1);
     NSString *reuse = subtitle ? @"setting-accessible" : @"setting-value";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuse] ?: [[UITableViewCell alloc]
         initWithStyle:subtitle ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1 reuseIdentifier:reuse];
@@ -765,6 +762,8 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
         if (path.row == 6) { cell.textLabel.text = @"消息库"; cell.detailTextLabel.text = @"只读 · 条目与版本"; }
         if (path.row == 7) { cell.textLabel.text = @"资源容量"; cell.detailTextLabel.text = @"只读 · 共用素材上限"; }
     }
+    /* Formal preferences show values only; explanatory copy belongs in details. */
+    if (self.page == SRPanelPageSettings && section != 2) cell.detailTextLabel.text = nil;
     if (section > 0 && !self.ready) cell.textLabel.textColor = UIColor.tertiaryLabelColor;
     return cell;
 }

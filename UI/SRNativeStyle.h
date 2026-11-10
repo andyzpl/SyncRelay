@@ -35,6 +35,9 @@ static inline void SRStyleSettingsTable(UITableViewController *controller) {
     table.tintColor = SRSettingsAccent();
     table.rowHeight = UITableViewAutomaticDimension;
     table.estimatedRowHeight = 56;
+    // Multiline footers need their full height below the last row.
+    table.sectionFooterHeight = UITableViewAutomaticDimension;
+    table.estimatedSectionFooterHeight = 44;
     table.sectionHeaderTopPadding = 0;
     table.separatorInset = UIEdgeInsetsMake(0, 16, 0, 0);
     table.cellLayoutMarginsFollowReadableWidth = YES;

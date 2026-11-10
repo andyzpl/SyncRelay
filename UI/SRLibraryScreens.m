@@ -960,7 +960,7 @@ static id SRLibraryReadGetter(id object, NSString *name) {
 
 UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account,
                                       void (^completion)(NSArray<NSString *> *targets)) {
-    SRTargetPickerScreen *screen = [[SRTargetPickerScreen alloc] initWithStyle:UITableViewStyleGrouped];
+    SRTargetPickerScreen *screen = [[SRTargetPickerScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
     screen.store = store; screen.account = account; screen.completion = completion;
     return screen;
 }
@@ -972,13 +972,13 @@ UIViewController *SRCreateLibraryList(SRStore *store, NSString *account, BOOL (^
     return screen;
 }
 UIViewController *SRCreateLibraryItem(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), NSString *item, SRSmallGroupSession *session) {
-    SRLibraryItemScreen *screen = [[SRLibraryItemScreen alloc] initWithStyle:UITableViewStyleGrouped];
+    SRLibraryItemScreen *screen = [[SRLibraryItemScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
     screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount;
     screen.item = item; screen.versions = @[]; screen.session = session;
     return screen;
 }
 UIViewController *SRCreateMediaResources(SRStore *store, NSString *account, BOOL (^verifyAccount)(void)) {
-    SRMediaResourcesScreen *screen = [[SRMediaResourcesScreen alloc] initWithStyle:UITableViewStyleGrouped];
+    SRMediaResourcesScreen *screen = [[SRMediaResourcesScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
     screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount;
     screen.resources = @[];
     return screen;

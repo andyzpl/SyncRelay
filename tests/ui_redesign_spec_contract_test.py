@@ -137,6 +137,27 @@ class UIRedesignSpecContracts(unittest.TestCase):
         for removed in ('@[@0,@1]', '@[@0,@5]'):
             self.assertNotIn(removed, sections)
 
+    def test_feedback_cleanup_keeps_live_values_and_unsaved_warning(self):
+        footer = PANEL.split('titleForFooterInSection:(NSInteger)section {', 1)[1].split('section = SRPanelSection', 1)[0]
+        self.assertIn('section == 0 && self.dirty', footer)
+        self.assertIn('修改尚未保存', footer)
+        self.assertIn('self.page == SRPanelPageSettings) return nil', footer)
+        self.assertNotIn('保存只更新来源条件', footer)
+        self.assertNotIn('持续监听尚未开放', footer)
+        self.assertIn('self.page == SRPanelPageSettings && section != 2) cell.detailTextLabel.text = nil', PANEL)
+        self.assertIn('self.draft[@"minimum"], self.draft[@"maximum"]', PANEL)
+
+    def test_tertiary_pages_and_multiline_footer_share_native_style(self):
+        library = (ROOT / 'UI/SRLibraryScreens.m').read_text(encoding='utf-8')
+        for screen in ('SRLibraryItemScreen', 'SRMediaResourcesScreen', 'SRTargetPickerScreen'):
+            self.assertIn(f'{screen} alloc] initWithStyle:UITableViewStyleInsetGrouped', library)
+        style = (ROOT / 'UI/SRNativeStyle.h').read_text(encoding='utf-8')
+        self.assertIn('table.sectionFooterHeight = UITableViewAutomaticDimension', style)
+        self.assertNotIn('self.tableView.sectionFooterHeight = 18', PANEL)
+        native = (ROOT / 'tests/ios/SRNavigationTests.m').read_text(encoding='utf-8')
+        self.assertIn('CGRectGetMinY(text) >= CGRectGetMaxY(row)', native)
+        self.assertIn('needed.height <= CGRectGetHeight(text)', native)
+
     def test_result_close_is_bound_to_one_durable_terminal_run(self):
         close = PANEL.split('self.floatingProgress.closeResultAction =', 1)[1].split('self.floatingProgress.action =', 1)[0]
         for expected in ('verifyAccount:account', 'entry.smallGroupSession.busy',
