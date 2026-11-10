@@ -1234,6 +1234,8 @@ static BOOL SRImplicitParametersMatch(Method method) {
     @synchronized(self.lock) {
         id publishedItem = [self.publishedItems objectForKey:source.ownerToken];
         SRMenuMessageContext *publishedContext = publishedItem ? [self.contexts objectForKey:publishedItem] : nil;
+        BOOL containsPublished = NO;
+        for (id existing in original) if (existing == publishedItem) { containsPublished = YES; break; }
         if (publishedItem && (containsPublished || allowDetachedReuse) &&
             SRMenuSamePublishedSelection(publishedContext, source)) {
             /* contextForMenu: tentatively records the new setter generation.
