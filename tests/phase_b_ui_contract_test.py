@@ -118,7 +118,7 @@ class PhaseBUIContracts(unittest.TestCase):
         panel = self.text("UI/SRPanel.m")
         self.assertNotIn('BOOL dockedWaiting', source)
         self.assertIn('SRCapsuleDockSide(', source)
-        self.assertIn('self.docked || idle ? 44', source)
+        self.assertIn('self.docked ? 44 : (idle ? 88 * scale', source)
         self.assertIn('if (self.docked) {', source)
         self.assertIn('self.menuButton.hidden = YES;', source)
         self.assertIn('@"countText": @"等待中"', panel)
@@ -207,7 +207,7 @@ class PhaseBUIContracts(unittest.TestCase):
         close = panel.split("- (void)close {", 1)[1].split("\n- (void)save", 1)[0]
         stacked = close.split("returnsToOperationsHome &&", 1)[1]
         stacked = stacked.split("if (!self.dirty)", 1)[1].split("\n", 1)[0]
-        self.assertIn("popViewControllerAnimated:YES", stacked)
+        self.assertIn("SRPopPluginPage(self, YES)", stacked)
         self.assertNotIn("dismissViewControllerAnimated", stacked)
         # The unsaved-draft guard is kept in both close paths.
         self.assertEqual(close.count("放弃未保存的修改"), 2)

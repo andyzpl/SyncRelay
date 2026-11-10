@@ -91,9 +91,9 @@
     BOOL preview = [self.model[@"phase"] isEqual:@"preview"];
     BOOL idle = [self.model[@"phase"] isEqual:@"idle"];
     BOOL expanded = !self.docked && ((preview && !self.previewCollapsed) || (!preview && self.progressExpanded));
-    CGFloat width = self.docked || idle ? 44 : MIN(CGRectGetWidth(available), (expanded ? 264 : 240) * scale);
+    CGFloat width = self.docked ? 44 : (idle ? 88 * scale : MIN(CGRectGetWidth(available), (expanded ? 264 : 240) * scale));
     CGFloat height = self.docked ? 90 : (idle ? 44 : (expanded ? (preview ? 90 : 116) : 56) * scale);
-    CGFloat minimumWidth = self.docked || idle ? 44 : (expanded ? 196 : 216) * scale;
+    CGFloat minimumWidth = self.docked ? 44 : (idle ? 88 * scale : (expanded ? 196 : 216) * scale);
     CGFloat minimumHeight = height;
     if (CGRectGetHeight(available) < minimumHeight) { self.hidden = YES; return; }
     if (width < minimumWidth || height < minimumHeight) { self.hidden = YES; return; }
@@ -122,12 +122,14 @@
     self.backgroundColor = self.docked || idle ? UIColor.clearColor : SRSettingsCellBackground();
     self.layer.shadowOpacity = self.docked || idle ? 0 : 0.10;
     if (idle) {
-        self.idleSurface.frame = CGRectMake(3, 3, 38, 38);
-        self.countLabel.text = @"S"; self.countLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold];
+        self.idleSurface.frame = CGRectInset(self.bounds, 2, 2);
+        self.idleSurface.layer.cornerRadius = (height - 4) / 2;
+        self.countLabel.text = @"同步"; self.countLabel.font = SRSettingsFont(16, UIFontTextStyleHeadline);
+        self.countLabel.textColor = UIColor.labelColor;
         self.countLabel.textAlignment = NSTextAlignmentCenter; self.countLabel.frame = self.bounds;
         self.phaseLabel.hidden = YES; self.actionButton.hidden = YES; self.menuButton.hidden = YES;
         self.isAccessibilityElement = YES; self.accessibilityTraits = UIAccessibilityTraitButton;
-        self.accessibilityLabel = @"SyncRelay 快捷入口"; self.accessibilityHint = @"打开入口，不会发送消息";
+        self.accessibilityLabel = @"同步快捷入口"; self.accessibilityHint = @"打开入口，不会发送消息";
         return;
     }
     self.isAccessibilityElement = NO; self.accessibilityLabel = nil; self.accessibilityHint = nil;

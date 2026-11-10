@@ -86,6 +86,29 @@ class UIRedesignSpecContracts(unittest.TestCase):
         self.assertIn('[weakSelf.entryPreferences setFloatingEntryPlacementUnitX:unitX unitY:unitY]', PANEL)
         self.assertIn('setInitialPositionUnitX:self.entryPreferences.floatingEntryUnitX', PANEL)
 
+    def test_idle_uses_sync_pill_without_execution_controls(self):
+        idle = CAPSULE.split('if (idle) {', 1)[1].split('return;', 1)[0]
+        self.assertIn('self.countLabel.text = @"同步"', idle)
+        self.assertIn('self.actionButton.hidden = YES', idle)
+        self.assertNotIn('self.action()', idle)
+        self.assertNotIn('self.countLabel.text = @"S"', CAPSULE)
+
+    def test_owned_navigation_preserves_root_and_dirty_guard(self):
+        navigation = (ROOT / 'UI/SRNavigationController.m').read_text(encoding='utf-8')
+        for expected in ('navigation.topViewController != controller', 'stack.count < 2',
+                         'stack.count - 1', 'sr_hasUnsavedChanges', 'sr_requestClose',
+                         'weakSelf.topViewController == weakPage'):
+            self.assertIn(expected, navigation)
+        self.assertNotIn('interactivePopGestureRecognizer.enabled = NO', PANEL)
+        self.assertIn('@interface SRPanel : UITableViewController <SRNavigationBackGuard>', PANEL)
+        self.assertIn('SRNavigationController alloc', PANEL)
+
+    def test_native_navigation_cases_cover_the_reported_return_failure(self):
+        native = (ROOT / 'tests/ios/SRNavigationTests.m').read_text(encoding='utf-8')
+        for expected in ('destination < 4', 'settings.dirty = YES', 'settings.closeRequests == 2',
+                         '!SRPopPluginPage(settings, NO)', 'navigation.topViewController == home'):
+            self.assertIn(expected, native)
+
     def test_capsule_commands_recheck_displayed_run_and_action(self):
         refresh = PANEL.split('- (void)refreshFloatingProgress {', 1)[1].split('- (void)ignorePreviewForAccount:', 1)[0]
         self.assertIn('if (!account.length) { [self.floatingProgress hide]; return; }', refresh)
@@ -110,7 +133,7 @@ class UIRedesignSpecContracts(unittest.TestCase):
         self.assertEqual(sections.count('@"title"'), 3)
         for title in ('转发设置', '显示', '维护与关于'):
             self.assertIn(f'@"{title}"', sections)
-        self.assertIn('page == SRPanelPageSettings ? UITableViewStyleInsetGrouped', PANEL)
+        self.assertIn('SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleInsetGrouped]', PANEL)
         for removed in ('@[@0,@1]', '@[@0,@5]'):
             self.assertNotIn(removed, sections)
 

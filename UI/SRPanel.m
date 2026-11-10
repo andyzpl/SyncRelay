@@ -177,6 +177,7 @@ static __weak id SRCapturedMenuFirstResponder;
 #import "Adapter/SRMessageMenuHook.h"
 #import "SRPlanScreens.h"
 #import "SRSettingsFallback.h"
+#import "SRNavigationController.h"
 #import "SRNativeStyle.h"
 #import "SRFloatingProgress.h"
 #include <errno.h>
@@ -316,7 +317,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     SRPanelPageRecovery, SRPanelPageSource, SRPanelPageGroups, SRPanelPageSettings
 };
 
-@interface SRPanel : UITableViewController
+@interface SRPanel : UITableViewController <SRNavigationBackGuard>
 @property(nonatomic) SRPanelPage page;
 @property(nonatomic, copy) NSString *expectedAccount;
 @property(nonatomic) BOOL showingExcluded;
@@ -372,7 +373,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     [super viewDidLoad];
     self.title = @[@"SyncRelay 转发", @"群同步", @"群分组", @"设置"][self.page];
     SRStyleSettingsTable(self);
-    if (self.page == SRPanelPageSettings) {
+    if (self.page != SRPanelPageRecovery) {
         self.tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
         self.tableView.estimatedRowHeight = 52;
         self.tableView.sectionHeaderHeight = 44;
@@ -380,7 +381,6 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     }
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:self.returnsToOperationsHome ? @"返回" : @"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:self.page == SRPanelPageGroups ? @"保存分组" : @"保存" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
-    self.navigationController.interactivePopGestureRecognizer.enabled = NO;
     if (self.page == SRPanelPageGroups) {
         self.groupTabs = [[UISegmentedControl alloc] initWithItems:@[@"目标分组", @"排除的群"]];
         self.groupTabs.selectedSegmentIndex = 0;
@@ -388,7 +388,14 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
         self.groupTabs.frame = CGRectMake(16, 8, self.tableView.bounds.size.width - 32, 36);
         self.groupTabs.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 52)];
-        [header addSubview:self.groupTabs]; self.tableView.tableHeaderView = header;
+        self.groupTabs.translatesAutoresizingMaskIntoConstraints = NO;
+        [header addSubview:self.groupTabs];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.groupTabs.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:14],
+            [self.groupTabs.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-14],
+            [self.groupTabs.topAnchor constraintEqualToAnchor:header.topAnchor constant:8],
+            [self.groupTabs.heightAnchor constraintEqualToConstant:32]]];
+        self.tableView.tableHeaderView = header;
     }
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     self.reader = [[SRWeChatReader alloc] initWithVersion:version classResolver:^Class(NSString *name) { return NSClassFromString(name); }];
@@ -437,7 +444,6 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    self.navigationController.interactivePopGestureRecognizer.enabled = NO;
     if (self.ready && ![self.reader verifyAccount:self.account error:NULL]) {
         [self cancelTextExperiment];
         self.ready = NO; self.status = @"账号无法核对或已经改变，请重新读取。原账号的设置没有写入新账号。";
@@ -448,10 +454,6 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     if (self.page == SRPanelPageGroups) self.groupPool = self.ready ? [self.reader groups:NULL] : nil;
     [self refresh];
 }
-- (void)viewWillDisappear:(BOOL)animated {
-    [super viewWillDisappear:animated];
-    self.navigationController.interactivePopGestureRecognizer.enabled = YES;
-}
 - (void)groupTabChanged:(UISegmentedControl *)tabs {
     self.showingExcluded = tabs.selectedSegmentIndex == 1; [self refresh];
 }
@@ -459,7 +461,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
  * Each page still edits and saves the one account-bound draft through Core. */
 - (NSArray<NSDictionary *> *)pageSections {
     if (self.page == SRPanelPageSource) return @[
-        @{@"title": @"消息来源", @"rows": @[@[@1,@0], @[@1,@1], @[@1,@2], @[@1,@3]]},
+        @{@"title": @"来源设置", @"rows": @[@[@1,@0], @[@1,@1], @[@1,@2], @[@1,@3]]},
         @{@"title": @"捕获状态", @"rows": @[@[@4,@0], @[@4,@1]]},
         @{@"title": @"转发进度", @"rows": @[@[@5,@2]]}];
     if (self.page == SRPanelPageGroups) {
@@ -538,16 +540,18 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     }
     [self refresh];
 }
+- (BOOL)sr_hasUnsavedChanges { return self.dirty; }
+- (void)sr_requestClose { [self close]; }
 - (void)close {
     [self cancelTextExperiment]; self.singleTextSendEnabled = NO;
     /* Stacked on the operations home, closing returns to the home rather than
      * dismissing the whole modal. The unsaved-draft guard is unchanged. */
     if (self.returnsToOperationsHome && self.navigationController.viewControllers.count > 1) {
-        if (!self.dirty) { [self.navigationController popViewControllerAnimated:YES]; return; }
+        if (!self.dirty) { SRPopPluginPage(self, YES); return; }
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"放弃未保存的修改？" message:@"已经保存的设置不会被删除。" preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"放弃并关闭" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-            [self.navigationController popViewControllerAnimated:YES];
+            SRPopPluginPage(self, YES);
         }]];
         [self presentViewController:alert animated:YES completion:nil];
         return;
@@ -600,7 +604,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     path = [self modelPathForDisplayPath:path];
     NSInteger section = path.section;
     BOOL accessible = UIContentSizeCategoryIsAccessibilityCategory(tableView.traitCollection.preferredContentSizeCategory);
-    BOOL subtitle = accessible || (section == 0 && path.row == 13 && self.page != SRPanelPageSettings) || (section == 5 && path.row == 1);
+    BOOL subtitle = accessible || (section == 0 && path.row == 12) || (section == 0 && path.row == 13 && self.page != SRPanelPageSettings) || (section == 5 && path.row == 1);
     NSString *reuse = subtitle ? @"setting-accessible" : @"setting-value";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuse] ?: [[UITableViewCell alloc]
         initWithStyle:subtitle ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1 reuseIdentifier:reuse];
@@ -2308,7 +2312,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
      * block, so a strong capture would form a retain cycle. The navigation is
      * fetched back and re-checked at call time instead. */
     __weak typeof(self) weakSelf = self;
-    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:[[UIViewController alloc] init]];
+    UINavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:[[UIViewController alloc] init]];
     __weak UINavigationController *weakNavigation = navigation;
     void (^openDestination)(NSUInteger) = ^void(NSUInteger destination) {
         SREntry *entry = weakSelf;
@@ -2366,7 +2370,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     /* No re-entry while the stack is presenting or dismissing. */
     if (navigation.isBeingPresented || navigation.isBeingDismissed ||
         navigation.transitionCoordinator || navigation.presentedViewController) return;
-    SRPanel *panel = [[SRPanel alloc] initWithStyle:page == SRPanelPageSettings ? UITableViewStyleInsetGrouped : UITableViewStyleGrouped]; panel.store = self.store;
+    SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleInsetGrouped]; panel.store = self.store;
     panel.page = page; panel.expectedAccount = account;
     panel.capture = self.capture; panel.receiver = self.receiver; panel.sourceTimeProbe = self.sourceTimeProbe;
     panel.imageSource = self.imageSource;
@@ -2403,7 +2407,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     }
     while (presenter.presentedViewController) presenter = presenter.presentedViewController;
     if (!presenter || presenter.isBeingDismissed || presenter.isBeingPresented || [presenter isKindOfClass:UIAlertController.class]) return;
-    SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleGrouped]; panel.store = self.store;
+    SRPanel *panel = [[SRPanel alloc] initWithStyle:UITableViewStyleInsetGrouped]; panel.store = self.store;
     panel.page = SRPanelPageSettings;
     panel.capture = self.capture; panel.receiver = self.receiver; panel.sourceTimeProbe = self.sourceTimeProbe;
     panel.imageSource = self.imageSource;
@@ -2422,7 +2426,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
     panel.settingsFooterActive = self.settingsFooterActive;
     __weak typeof(self) weakSelf = self;
     panel.didClose = ^{ weakSelf.presented = nil; [weakSelf install]; };
-    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:panel];
+    UINavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:panel];
     UINavigationController *hostNavigation = [presenter isKindOfClass:UINavigationController.class] ? (UINavigationController *)presenter : presenter.navigationController;
     SRStyleSettingsNavigation(navigation, hostNavigation);
     navigation.modalPresentationStyle = UIModalPresentationFullScreen;

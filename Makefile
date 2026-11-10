@@ -19,6 +19,7 @@ SyncRelay_FILES += Adapter/SRMenuABIProbe.m
 SyncRelay_FILES += Core/SROperationsState.c
 SyncRelay_FILES += Core/SRMediaQuota.c Core/SRMediaAlertState.m
 SyncRelay_FILES += Core/SRRelayCoordinator.m
+SyncRelay_FILES += UI/SRNavigationController.m
 SyncRelay_FILES += Adapter/SRSourceTimeProbe.m
 SyncRelay_CFLAGS = -fobjc-arc -Wall -Wextra -Werror -I$(THEOS_PROJECT_DIR)
 SyncRelay_FRAMEWORKS = Foundation UIKit ImageIO CoreGraphics

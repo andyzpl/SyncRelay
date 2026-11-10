@@ -69,7 +69,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @implementation SRLibraryListScreen
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"消息库";
+    self.title = @"消息库转发";
     SRStyleSettingsTable(self);
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
@@ -151,6 +151,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     SRStyleSettingsCell(cell);
     cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil;
+    cell.imageView.image = nil;
     cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleNone;
     if (self.masked) {
         cell.textLabel.text = @"内容已隐藏";
@@ -180,9 +181,11 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     }
     NSDictionary *row = self.rows[(NSUInteger)path.row];
     cell.textLabel.text = [SRMediaProjection libraryKindText:row[@"kind"]];
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@ 个版本\n更新于 %@ · 条目 %@",
-        row[@"kind"] ?: @"未记录", row[@"versionCount"] ?: @0,
-        [SRRunProjection localDateTimeText:row[@"updated_at"]], SRLibraryShortID(row[@"id"])];
+    NSString *symbol = [@{@"image": @"photo", @"text": @"doc.text"} objectForKey:row[@"kind"] ?: @""] ?: @"questionmark.square";
+    cell.imageView.image = [UIImage systemImageNamed:symbol];
+    cell.imageView.tintColor = UIColor.systemBlueColor;
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"更新于 %@ · %@ 个版本",
+        [SRRunProjection localDateTimeText:row[@"updated_at"]], row[@"versionCount"] ?: @0];
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
@@ -963,7 +966,7 @@ UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account,
 }
 
 UIViewController *SRCreateLibraryList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *session) {
-    SRLibraryListScreen *screen = [[SRLibraryListScreen alloc] initWithStyle:UITableViewStyleGrouped];
+    SRLibraryListScreen *screen = [[SRLibraryListScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
     screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount; screen.session = session;
     screen.rows = [NSMutableArray array];
     return screen;

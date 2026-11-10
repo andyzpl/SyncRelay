@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
+extern void SRRunNavigationTests(UIWindow *window);
 
 @interface SRFloatingProgress (VisualTests)
 - (void)openPressed;
@@ -44,8 +45,8 @@ static void SRRunVisualTests(UIWindow *window) {
     view.closeResultAction = ^{ closes++; };
     [view showModel:SRVisualModel(@"idle") inWindow:window];
     UILabel *count = [view valueForKey:@"countLabel"];
-    assert(CGRectGetWidth(view.frame) == 44 && CGRectGetHeight(view.frame) == 44);
-    assert([count.text isEqual:@"S"]);
+    assert(CGRectGetWidth(view.frame) >= 88 && CGRectGetHeight(view.frame) == 44);
+    assert([count.text isEqual:@"同步"]);
     assert([view accessibilityActivate]); assert(opens == 1 && commands == 0);
     [view showModel:SRVisualModel(@"running") inWindow:window];
     assert(![[view valueForKey:@"progressExpanded"] boolValue]);
@@ -99,7 +100,7 @@ static void SRRunVisualTests(UIWindow *window) {
     assert(![[view valueForKey:@"docked"] boolValue]);
     assert(![[view valueForKey:@"progressExpanded"] boolValue]);
     [view showModel:SRVisualModel(@"idle") inWindow:window];
-    assert([count.text isEqual:@"S"] && ![[view valueForKey:@"docked"] boolValue]);
+    assert([count.text isEqual:@"同步"] && ![[view valueForKey:@"docked"] boolValue]);
     puts("PASS: native UIKit idle, running, edge docking, restore, paused and ended projections");
 }
 
@@ -111,7 +112,7 @@ static void SRRunVisualTests(UIWindow *window) {
     self.window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 390, 844)];
     self.window.rootViewController = [[UIViewController alloc] init];
     [self.window makeKeyAndVisible];
-    dispatch_async(dispatch_get_main_queue(), ^{ SRRunVisualTests(self.window); exit(0); });
+    dispatch_async(dispatch_get_main_queue(), ^{ SRRunVisualTests(self.window); SRRunNavigationTests(self.window); exit(0); });
     return YES;
 }
 @end

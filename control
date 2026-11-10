@@ -1,6 +1,6 @@
 Package: andyz.syncrelay
 Name: SyncRelay (Development)
-Version: 0.2.27
+Version: 0.2.28
 Architecture: iphoneos-arm
 Description: Explicitly started serial text or static-image forwarding with a configurable target limit. Foreground only, persistent attempts, manual pending-only continuation. No automatic next rule or retry.
 Maintainer: andyz

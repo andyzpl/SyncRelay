@@ -98,7 +98,10 @@ class B3ReadOnlyPages(unittest.TestCase):
         # Image versions never open a viewer or read asset bytes.
         self.assertIn('if (![version[@"kind"] isEqual:@"text"]) return;', source)
         self.assertNotIn("dataForPayload", source)
-        self.assertNotIn("UIImage", source)
+        # Type symbols are UI chrome; never decode an item's image bytes here.
+        self.assertIn("[UIImage systemImageNamed:symbol]", source)
+        for forbidden in ("imageWithData:", "imageWithContentsOfFile:", "initWithData:"):
+            self.assertNotIn(forbidden, source)
 
     def test_unknown_kinds_are_not_degraded_to_text(self):
         projection = read("Core/SRMediaProjection.m")
