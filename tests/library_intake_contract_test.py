@@ -100,7 +100,7 @@ class IntakeContracts(unittest.TestCase):
         """The library started read-only. It now exposes deletion and text
         forwarding through the frozen-task API, and nothing else."""
         screens = read("UI/SRLibraryScreens.m")
-        for token in ("deleteLibraryEntry", "createLibraryTaskForAccount", "startRule:",
+        for token in ("deleteLibraryEntry", "createLibraryTaskForAccount", "startLibraryTask:",
                       "deleteLibraryEntry:item account:error:"[:0] or "删除条目", "转发到群"):
             self.assertIn(token, screens, token)
         # Intake and sending stay outside the pages.

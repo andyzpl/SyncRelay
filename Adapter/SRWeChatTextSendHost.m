@@ -393,10 +393,16 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
     if (!NSThread.isMainThread) { if (completion) completion(@"uncertain", nil, @"main_thread_required"); return; }
     NSString *reason = nil;
     @try {
+        BOOL librarySource = [request[@"sourceKind"] isEqual:@"message_library"];
+        BOOL sourceIdentityValid = librarySource
+            ? (request[@"sourceGroup"] == nil && request[@"sourceSender"] == nil && request[@"sourceMessageID"] == nil &&
+               SRHostIdentifier(request[@"itemID"], NO) && SRHostIdentifier(request[@"versionID"], NO))
+            : (request[@"sourceKind"] == nil && SRHostIdentifier(request[@"sourceGroup"], YES) &&
+               ![request[@"sourceGroup"] isEqual:request[@"target"]] &&
+               SRHostIdentifier(request[@"sourceSender"], NO) && SRHostIdentifier(request[@"sourceMessageID"], NO));
         if (![request isKindOfClass:NSDictionary.class] || ![request[@"payload"] isKindOfClass:NSDictionary.class] ||
             ![request[@"type"] isEqual:@"text"] || !SRHostIdentifier(request[@"account"], NO) || !SRHostIdentifier(request[@"target"], YES) ||
-            !SRHostIdentifier(request[@"sourceGroup"], YES) || [request[@"sourceGroup"] isEqual:request[@"target"]] ||
-            !SRHostIdentifier(request[@"sourceSender"], NO) || !SRHostIdentifier(request[@"sourceMessageID"], NO) ||
+            !sourceIdentityValid ||
             ![request[@"payload"][@"text"] isKindOfClass:NSString.class] || ![request[@"payload"][@"text"] length]) {
             reason = @"invalid_request";
         } else {

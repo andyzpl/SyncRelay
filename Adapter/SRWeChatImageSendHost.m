@@ -456,10 +456,16 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
         NSData *frozen = [request isKindOfClass:NSDictionary.class] && [NSJSONSerialization isValidJSONObject:request] ?
             [NSJSONSerialization dataWithJSONObject:request options:0 error:NULL] : nil;
         request = frozen ? [NSJSONSerialization JSONObjectWithData:frozen options:0 error:NULL] : nil;
+        BOOL librarySource = [request[@"sourceKind"] isEqual:@"message_library"];
+        BOOL sourceIdentityValid = librarySource
+            ? (request[@"sourceGroup"] == nil && request[@"sourceSender"] == nil && request[@"sourceMessageID"] == nil &&
+               SRHostIdentifier(request[@"itemID"], NO) && SRHostIdentifier(request[@"versionID"], NO))
+            : (request[@"sourceKind"] == nil && SRHostIdentifier(request[@"sourceGroup"], YES) &&
+               ![request[@"sourceGroup"] isEqual:request[@"target"]] &&
+               SRHostIdentifier(request[@"sourceSender"], NO) && SRHostIdentifier(request[@"sourceMessageID"], NO));
         if (![request isKindOfClass:NSDictionary.class] || ![request[@"payload"] isKindOfClass:NSDictionary.class] ||
             ![request[@"type"] isEqual:@"image"] || !SRHostIdentifier(request[@"account"], NO) || !SRHostIdentifier(request[@"target"], YES) ||
-            !SRHostIdentifier(request[@"sourceGroup"], YES) || [request[@"sourceGroup"] isEqual:request[@"target"]] ||
-            !SRHostIdentifier(request[@"sourceSender"], NO) || !SRHostIdentifier(request[@"sourceMessageID"], NO) ||
+            !sourceIdentityValid ||
             ![SRImageAssetStore validPayload:request[@"payload"]]) {
             reason = @"invalid_request";
         } else {
@@ -476,9 +482,17 @@ static BOOL SRHostSetInteger(id target, NSString *name, unsigned long long value
                 }
                 // Reserve this process attempt before loader/constructor/setter reentrancy or native writes.
                 self.consumed = YES; self.validationStage = @"image_material";
-                NSDictionary *source = @{@"account": self.account, @"group": request[@"sourceGroup"],
-                    @"sender": request[@"sourceSender"], @"messageID": request[@"sourceMessageID"],
-                    @"type": @"image", @"generatedByRelay": @NO, @"payload": request[@"payload"]};
+                NSMutableDictionary *source = [@{@"account": self.account, @"type": @"image",
+                    @"generatedByRelay": @NO, @"payload": request[@"payload"]} mutableCopy];
+                if (librarySource) {
+                    source[@"sourceKind"] = @"message_library";
+                    source[@"itemID"] = request[@"itemID"];
+                    source[@"versionID"] = request[@"versionID"];
+                } else {
+                    source[@"group"] = request[@"sourceGroup"];
+                    source[@"sender"] = request[@"sourceSender"];
+                    source[@"messageID"] = request[@"sourceMessageID"];
+                }
                 self.material = self.materialLoader(source, &error);
                 id image = self.material[@"image"], data = self.material[@"data"];
                 Class imageClass = self.resolver(@"UIImage");

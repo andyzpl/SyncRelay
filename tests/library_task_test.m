@@ -81,7 +81,7 @@ int main(void) {
         CHECK([card[@"versionID"] isEqual:frozenVersion]);
         CHECK([card[@"targets"] count] == 2 && [card[@"targetCount"] isEqual:@2]);
         CHECK([card[@"payload"][@"text"] isEqual:@"first body"]);
-        CHECK([card[@"dispatchAvailable"] isEqual:@NO]);
+        CHECK([card[@"dispatchAvailable"] isEqual:@YES]);
         NSDictionary *plan = [store plan:card[@"planID"] account:@"account" error:NULL];
         CHECK([plan[@"source_group"] isEqual:@""]);
         // A frozen snapshot may not carry a group source identity at all.
@@ -105,6 +105,13 @@ int main(void) {
             targets:@[@"one@chatroom", @"one@chatroom"] minimum:5 maximum:10 error:NULL]);
         CHECK(![store createLibraryTaskForAccount:@"account" item:text version:nil confirmationID:@"confirm-3"
             targets:@[@"not-a-group"] minimum:5 maximum:10 error:NULL]);
+        NSMutableArray *tooManyTargets = [NSMutableArray array];
+        for (NSUInteger index = 0; index < 21; index++)
+            [tooManyTargets addObject:[NSString stringWithFormat:@"bounded-%lu@chatroom", (unsigned long)index]];
+        NSUInteger beforeRejectedLargeTask = taskCount(store, @"account");
+        CHECK(![store createLibraryTaskForAccount:@"account" item:text version:nil confirmationID:@"too-many"
+            targets:tooManyTargets minimum:5 maximum:10 error:NULL]);
+        CHECK(taskCount(store, @"account") == beforeRejectedLargeTask);
         CHECK(![store createLibraryTaskForAccount:@"account" item:text version:nil confirmationID:@"confirm-3"
             targets:targets() minimum:1 maximum:10 error:NULL]);
         CHECK(![store createLibraryTaskForAccount:@"account" item:text version:nil confirmationID:@""
@@ -169,20 +176,28 @@ int main(void) {
         CHECK([store operationsContentForAccount:@"other" error:NULL][@"libraryOccupancy"] == NSNull.null);
         // One active execution per account: the second task cannot start yet.
         CHECK(![store startLibraryTask:second account:@"account" error:NULL]);
-        // Continuing is a different entry from re-sending, and this build has no
-        // library dispatch, so the continue entry refuses instead of pretending.
-        CHECK(![store resumeRun:run error:NULL]);
+        // A library run uses its own frozen identity and durable native claim.
+        CHECK([store smallGroupRun:run account:@"account" error:&error] && !error);
+        CHECK([store resumeRun:run error:&error] && !error);
+        NSDictionary *delivery = [store claimNextForRun:run error:&error]; CHECK(delivery && !error);
+        NSDictionary *librarySource = [store smallGroupRun:run account:@"account" error:NULL][@"source"];
+        CHECK([librarySource[@"sourceKind"] isEqual:@"message_library"]);
+        CHECK(librarySource[@"group"] == nil && librarySource[@"sender"] == nil && librarySource[@"messageID"] == nil);
+        CHECK(![store claimSmallGroupDelivery:delivery source:@{@"account": @"account", @"group": @"invented@chatroom",
+            @"sender": @"invented", @"messageID": @"invented", @"type": @"text", @"payload": @{@"text": @"first body"}}
+            account:@"account" error:NULL]);
+        CHECK(![store recordResultForDelivery:delivery[@"id"] attempt:delivery[@"attempt_id"] state:@"uncertain"
+            messageID:nil reason:@"unclaimed callback" error:NULL]);
+        CHECK([store claimSmallGroupDelivery:delivery source:librarySource account:@"account" error:&error] && !error);
+        CHECK([store recordResultForDelivery:delivery[@"id"] attempt:delivery[@"attempt_id"] state:@"uncertain"
+            messageID:nil reason:@"synthetic unknown" error:&error] && !error);
         CHECK(![store claimNextForRun:run error:NULL]);
 
         // 6. Legacy senders and callbacks cannot enter a library task.
         NSString *rule = [store libraryTask:first account:@"account" error:NULL][@"ruleID"];
         CHECK(![store startSmallGroupRule:rule account:@"account" error:NULL]);
         CHECK(![store startRule:rule replay:NO error:NULL]);
-        CHECK(![store smallGroupRun:run account:@"account" error:NULL]);
-        CHECK(![store claimSmallGroupDelivery:@{@"id": @"delivery", @"run_id": run,
-            @"attempt_id": @"attempt", @"target": @"one@chatroom"} source:@{@"account": @"account",
-            @"group": @"mother@chatroom", @"sender": @"wxid_sender", @"messageID": @"svr:invented",
-            @"type": @"text", @"payload": @{@"text": @"x"}} account:@"account" error:NULL]);
+        CHECK([store smallGroupRun:run account:@"account" error:NULL]);
         // Cancelling stays available for every run kind.
         CHECK([store cancelOperationsRun:run account:@"account" error:&error]);
         CHECK([[store summaryForRun:run error:NULL][@"state"] isEqual:@"ended"]);

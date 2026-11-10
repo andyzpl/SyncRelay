@@ -24,6 +24,7 @@ typedef id<SRSmallGroupHost> _Nullable (^SRSmallGroupHostFactory)(NSDictionary *
                    hostFactory:(SRSmallGroupHostFactory)hostFactory
                          clock:(double (^)(void))clock random:(double (^)(void))random;
 - (BOOL)startRule:(NSString *)rule account:(NSString *)account error:(NSError **)error;
+- (BOOL)startLibraryTask:(NSString *)task account:(NSString *)account error:(NSError **)error;
 - (BOOL)resumeRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
 - (BOOL)pauseForAccount:(NSString *)account error:(NSError **)error;
 - (BOOL)endRun:(NSString *)run account:(NSString *)account error:(NSError **)error;

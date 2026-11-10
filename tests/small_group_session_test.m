@@ -189,6 +189,22 @@ int main(void) {
         CHECK(count(store, run, @"uncertain") == 1 && !session.needsIdleTimer);
         CHECK([session endRun:run account:@"account" error:NULL]); targetAllowed = YES;
 
+        // Message-library runs attach through their task identity and do not
+        // manufacture group-sync source IDs for the native transport.
+        NSString *libraryItem = [store createLibraryItemForAccount:@"account" kind:@"text"
+            payload:@{@"text": @"Frozen library text"} capturedAt:100 error:NULL]; CHECK(libraryItem);
+        NSString *libraryTask = [store createLibraryTaskForAccount:@"account" item:libraryItem version:nil
+            confirmationID:@"library-session" targets:@[@"library-target@chatroom"] minimum:5 maximum:5 error:NULL];
+        CHECK(libraryTask && [session startLibraryTask:libraryTask account:@"account" error:NULL]);
+        run = [store libraryTask:libraryTask account:@"account" error:NULL][@"runID"];
+        now += 5; [session tick]; pump(session);
+        CHECK([hosts.lastObject.request[@"sourceKind"] isEqual:@"message_library"]);
+        CHECK([hosts.lastObject.request[@"itemID"] isEqual:libraryItem]);
+        CHECK(hosts.lastObject.request[@"sourceGroup"] == nil && hosts.lastObject.request[@"sourceSender"] == nil &&
+              hosts.lastObject.request[@"sourceMessageID"] == nil);
+        CHECK([hosts.lastObject.request[@"payload"][@"text"] isEqual:@"Frozen library text"]);
+        [hosts.lastObject finish]; [session tick]; CHECK(!session.busy && count(store, run, @"submitted") == 1);
+
         // Native claims are exact, durable and never transferable to another delivery/source/account.
         rules = makePlan(store, @"claims", 3); rule = rules[0][@"id"];
         run = [store startSmallGroupRule:rule account:@"account" error:NULL]; CHECK(run);

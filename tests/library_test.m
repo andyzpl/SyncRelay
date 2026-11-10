@@ -170,7 +170,7 @@ static void checkReferencedImageReplacement(NSString *root) {
             targets:@[@"target@chatroom"] minimum:5 maximum:10 error:NULL]; CHECK(task);
         NSString *run = [store startLibraryTask:task account:@"account" error:NULL]; CHECK(run);
         NSDictionary *frozen = [store libraryTask:task account:@"account" error:NULL]; CHECK(frozen);
-        CHECK(![frozen[@"dispatchAvailable"] boolValue]);
+        CHECK([frozen[@"dispatchAvailable"] boolValue]);
         NSString *file = [store.imageAssets.directory stringByAppendingPathComponent:[asset[@"mediaReference"] stringByAppendingString:@".srimage"]];
         if ([mode isEqual:@"missing"]) CHECK([NSFileManager.defaultManager removeItemAtPath:file error:NULL]);
         else CHECK([[NSData dataWithBytes:"corrupt" length:7] writeToFile:file atomically:NO]);

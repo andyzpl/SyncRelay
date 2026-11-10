@@ -273,11 +273,12 @@ class B3SettingsEntry(unittest.TestCase):
         self.assertIn("if (path.row == 7) [self openMediaResources];", panel)
         self.assertIn("if (section == 4) return 8;", panel)
 
-    def test_unwired_capabilities_stay_unavailable(self):
-        """Source switching, import and library dispatch are not exposed."""
+    def test_source_switching_and_import_stay_unavailable(self):
+        """Only explicit bounded forwarding from a frozen library task is exposed."""
         source = screens() + read("UI/SRPanel.m")
-        for forbidden in ("setSourceMode", "库派发", "立即导入", "从消息库发送"):
+        for forbidden in ("setSourceMode", "立即导入"):
             self.assertNotIn(forbidden, source, forbidden)
+        self.assertIn("startLibraryTask:", source)
 
 
 class B3Registration(unittest.TestCase):
@@ -291,6 +292,13 @@ class B3Registration(unittest.TestCase):
         syntax = read("tools/syntax_check.py")
         for unit in ("Core/SRMediaProjection.m", "UI/SRLibraryScreens.m", "tests/media_projection_test.m"):
             self.assertIn(unit, syntax, unit)
+
+    def test_library_image_material_uses_the_account_library_scope(self):
+        material = read("Adapter/SRWeChatImageMaterial.m")
+        self.assertIn('source[@"sourceKind"] isEqual:@"message_library"', material)
+        self.assertIn("libraryScopeForAccount:source[@\"account\"]", material)
+        self.assertIn("dataForPayload:source[@\"payload\"] scopeSHA256:scope", material)
+        self.assertIn('source[@"group"] || source[@"sender"] || source[@"messageID"]', material)
 
     def test_version_is_the_next_functional_release(self):
         version = re.search(r'#define SR_PLUGIN_VERSION @"([^"]+)"', read("Core/SRVersion.h")).group(1)

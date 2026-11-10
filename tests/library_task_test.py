@@ -435,14 +435,13 @@ class LibraryTaskTests(unittest.TestCase):
         task = self.fx.confirm('confirm-1')
         run = self.fx.start(task)
         self.assertEqual(task, self.db.execute(self.fx.by_run, (run,)).fetchone()[0])
-        # Every legacy entry point checks membership before touching the run.
-        for guard in ('Message-library continuation is unavailable',
-                      'A message-library task is never dispatched by the legacy runner',
-                      'A message-library task never accepts a legacy delivery result'):
-            with self.subTest(guard=guard):
-                self.assertIn(guard, STORE)
+        # Dispatch authorization is derived from the verified frozen task, not
+        # from a synthetic group origin or the ordinary source-claim ledger.
+        self.assertIn('Message-library task is outside the bounded dispatch scope', STORE)
+        self.assertIn('Frozen message-library source is invalid', STORE)
+        self.assertIn('Message-library forwarding is limited to 1–20 groups', STORE)
         self.assertEqual(1, count('SELECT id,account FROM library_tasks WHERE run_id=?'))
-        self.assertEqual(3, STORE.count('[self libraryTaskForRunUnchecked:'))
+        self.assertGreaterEqual(STORE.count('[self libraryTaskForRunUnchecked:'), 4)
         # A library plan may be driven by the execution session, but only from
         # its frozen library source (no group identity is invented).
         self.assertIn('[sourceKind isEqual:@"message_library"]', STORE)
@@ -603,7 +602,7 @@ class LibraryTaskTests(unittest.TestCase):
     def test_read_back_declares_each_local_once(self):
         # A duplicated block re-declared `snapshot` in the same scope, which does
         # not compile. The whole second copy is gone, not renamed.
-        readback = STORE.split('- (NSDictionary *)libraryTaskUnchecked:', 1)[1].split('\n}', 1)[0]
+        readback = STORE.split('- (NSDictionary *)libraryTaskUnchecked:', 2)[2].split('\n}', 1)[0]
         self.assertEqual(1, readback.count('NSDictionary *snapshot ='))
         for check in ('Frozen task snapshot was altered',
                       'Frozen task source identity is inconsistent',

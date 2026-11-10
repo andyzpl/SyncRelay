@@ -117,6 +117,12 @@ static BOOL SRSmallSubmitted(NSDictionary *evidence, NSDictionary *source, NSStr
     if (!attached) [self.store pauseRun:run error:NULL];
     return attached;
 }
+- (BOOL)startLibraryTask:(NSString *)task account:(NSString *)account error:(NSError **)error {
+    if (!NSThread.isMainThread || self.busy || ![self environmentForAccount:account])
+        return SRSmallFail(error, @"Keep WeChat in the foreground and stop other experiments before forwarding");
+    NSString *run = [self.store startLibraryTask:task account:account error:error];
+    return run ? [self attach:run account:account error:error] : NO;
+}
 - (BOOL)resumeRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
     if (!NSThread.isMainThread || ![self environmentForAccount:account]) return SRSmallFail(error, @"Account or foreground environment is unavailable; automatic continuation is disabled");
     return [self attach:run account:account error:error];
@@ -182,14 +188,17 @@ static BOOL SRSmallSubmitted(NSDictionary *evidence, NSDictionary *source, NSStr
             self.host = nil; completion(@"uncertain", nil, self.nativeProblem); return;
         }
         id<SRSmallGroupHost> host = self.host;
-        // Library snapshots intentionally carry no group/sender/message identity.
-        // The host request needs one anyway, so a fixed synthetic origin is used
-        // for that wire field only; nothing is written back to the snapshot.
-        NSString *sourceGroup = source[@"group"] ?: @"sync_relay_library@chatroom";
-        NSString *sourceSender = source[@"sender"] ?: @"sync_relay_library";
-        NSString *sourceMessageID = source[@"messageID"] ?: (delivery[@"id"] ?: @"sync-relay-library");
-        NSDictionary *request = @{@"account": source[@"account"], @"target": delivery[@"target"], @"sourceGroup": sourceGroup,
-            @"sourceSender": sourceSender, @"sourceMessageID": sourceMessageID, @"type": source[@"type"], @"payload": source[@"payload"]};
+        NSMutableDictionary *request = [@{@"account": source[@"account"], @"target": delivery[@"target"],
+            @"type": source[@"type"], @"payload": source[@"payload"]} mutableCopy];
+        if ([source[@"sourceKind"] isEqual:@"message_library"]) {
+            request[@"sourceKind"] = @"message_library";
+            request[@"itemID"] = source[@"itemID"];
+            request[@"versionID"] = source[@"versionID"];
+        } else {
+            request[@"sourceGroup"] = source[@"group"];
+            request[@"sourceSender"] = source[@"sender"];
+            request[@"sourceMessageID"] = source[@"messageID"];
+        }
         __block BOOL finished = NO;
         [host submitRequest:request completion:^(NSString *state, __unused NSString *messageID, NSString *reason) {
             void (^finish)(void) = ^{

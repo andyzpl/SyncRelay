@@ -14,6 +14,9 @@ class SmallGroupContracts(unittest.TestCase):
         action = text.split('- (void)submit:(NSDictionary *)delivery source:', 2)[2]
         self.assertLess(action.index('claimSmallGroupDelivery:'), action.index('self.hostFactory(source, allowed)'))
         self.assertLess(action.index('claimSmallGroupDelivery:'), action.index('submitRequest:request'))
+        self.assertIn('request[@"sourceKind"] = @"message_library"', action)
+        for synthetic in ('sync_relay_library@chatroom', 'sync_relay_library', 'sync-relay-library'):
+            self.assertNotIn(synthetic, action)
 
     def test_no_synchronous_hop_to_main(self):
         text = self.text('Adapter/SRSmallGroupSession.m')

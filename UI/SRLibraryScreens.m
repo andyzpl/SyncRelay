@@ -258,6 +258,9 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, copy, nullable) NSDictionary *problem;
 @property(nonatomic) BOOL accountInvalid;
 @property(nonatomic) BOOL masked;
+- (void)promptForward;
+- (void)forwardToGroups:(NSArray<NSString *> *)targets;
+- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets;
 @end
 
 @implementation SRLibraryItemScreen
@@ -299,18 +302,33 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)promptForward {
     __weak typeof(self) weakSelf = self;
     UIViewController *picker = SRCreateTargetPicker(self.store, self.account,
-        (NSUInteger)SREntryMaxTargetsPerTask(), ^(NSArray<NSString *> *targets) {
+        MIN((NSUInteger)SREntryMaxTargetsPerTask(), 20), ^(NSArray<NSString *> *targets) {
         [weakSelf forwardToGroups:targets];
     });
     [self.navigationController pushViewController:picker animated:YES];
 }
 
 - (void)forwardToGroups:(NSArray<NSString *> *)targets {
-    NSUInteger limit = (NSUInteger)SREntryMaxTargetsPerTask();
+    NSUInteger limit = MIN((NSUInteger)SREntryMaxTargetsPerTask(), 20);
+    if (![self verified]) return;
     if (targets.count < 1 || targets.count > limit) {
-        [self showFailure:[NSString stringWithFormat:@"目标数量需在 1–%lu 之间", (unsigned long)limit] error:nil];
+        [self showFailure:[NSString stringWithFormat:@"消息库转发本轮限 1–%lu 个群", (unsigned long)limit] error:nil];
         return;
     }
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"确认转发消息库内容？"
+        message:[NSString stringWithFormat:@"将按顺序转发已冻结的 %@ 内容到 %lu 个群，每个目标间隔 5–8 秒。微信切到后台会暂停；提交结果未知的群不会自动重发。",
+            [self.entry[@"kind"] isEqual:@"image"] ? @"图片" : @"文字", (unsigned long)targets.count]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [confirm addAction:[UIAlertAction actionWithTitle:@"确认并开始" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        [weakSelf createAndStartForwardToGroups:targets];
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+
+- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets {
+    if (![self verified]) return;
     NSError *error = nil;
     // A stable key makes an identical request (same entry, version and ordered
     // targets) resolve to the frozen task that already exists instead of
@@ -323,9 +341,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         version:self.entry[@"current_version_id"] confirmationID:confirmation targets:targets
         minimum:5 maximum:8 error:&error];
     if (!task.length) { [self showFailure:@"创建转发任务失败" error:error]; return; }
-    NSDictionary *frozen = [self.store libraryTask:task account:self.account error:&error];
-    NSString *rule = frozen[@"ruleID"];
-    if (!rule.length || !self.session || ![self.session startRule:rule account:self.account error:&error]) {
+    if (!self.session || ![self.session startLibraryTask:task account:self.account error:&error]) {
         [self showFailure:@"启动转发任务失败" error:error];
         return;
     }

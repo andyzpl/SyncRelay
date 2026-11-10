@@ -244,6 +244,14 @@ int main(void) {
         CHECK(manager.addCount == count);
         CHECK(callbackShapeOK);
 
+        SRWeChatTextSendHost *libraryHost = makeHost(@"8.0.79", account, allowed);
+        NSDictionary *libraryRequest = @{@"account": @"wxid_account", @"target": @"room@chatroom", @"type": @"text",
+            @"sourceKind": @"message_library", @"itemID": @"item-v1", @"versionID": @"version-v1",
+            @"payload": @{@"text": @"frozen library text"}};
+        [libraryHost submitRequest:libraryRequest completion:nil];
+        CHECK(manager.addCount == ++count && [manager.lastWrap.m_nsContent isEqual:@"frozen library text"]);
+        CHECK([libraryHost.diagnostics[@"submissionAttempted"] boolValue]);
+
         CHECK(![makeHost(@"8.0.80", account, allowed) readyForAccount:@"wxid_account" error:NULL]);
         CHECK(![makeHost(@"8.0.79", account, ^BOOL { return NO; }) readyForAccount:@"wxid_account" error:NULL]);
         CHECK(![makeHost(@"8.0.79", ^NSString * { return @"wxid_other"; }, allowed) readyForAccount:@"wxid_account" error:NULL]);

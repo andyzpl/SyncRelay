@@ -8,7 +8,18 @@ BOOL SRImageMaterialSupportsPayload(NSDictionary *payload) {
 }
 NSDictionary *SRCreateImageMaterial(SRImageAssetStore *assets, NSDictionary *source, NSError **error) {
     if (!NSThread.isMainThread || !SRImageMaterialSupportsPayload(source[@"payload"])) return nil;
-    NSData *snapshot = [assets dataForPayload:source[@"payload"] source:source error:error];
+    NSData *snapshot = nil;
+    if ([source[@"sourceKind"] isEqual:@"message_library"]) {
+        if (![source[@"itemID"] isKindOfClass:NSString.class] || ![source[@"itemID"] length] ||
+            ![source[@"versionID"] isKindOfClass:NSString.class] || ![source[@"versionID"] length] ||
+            source[@"group"] || source[@"sender"] || source[@"messageID"]) return nil;
+        NSString *scope = [SRImageAssetStore libraryScopeForAccount:source[@"account"]];
+        snapshot = scope ? [assets dataForPayload:source[@"payload"] scopeSHA256:scope error:error] : nil;
+    } else {
+        if (source[@"sourceKind"] || ![source[@"group"] isKindOfClass:NSString.class] ||
+            ![source[@"sender"] isKindOfClass:NSString.class] || ![source[@"messageID"] isKindOfClass:NSString.class]) return nil;
+        snapshot = [assets dataForPayload:source[@"payload"] source:source error:error];
+    }
     if (!snapshot) return nil;
     UIImage *image = [UIImage imageWithData:snapshot scale:1];
     CGImageRef raster = image.CGImage;

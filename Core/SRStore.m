@@ -12,6 +12,9 @@
 }
 @property(nonatomic) NSInteger schemaVersion;
 - (BOOL)libraryVersionRelationsPassed;
+- (NSDictionary *)libraryTaskForRunUnchecked:(NSString *)run;
+- (NSDictionary *)libraryTaskUnchecked:(NSString *)task account:(NSString *)account;
+- (NSDictionary *)smallGroupRunUnchecked:(NSString *)run account:(NSString *)account;
 - (nullable id)protectedMediaTokensError:(NSError **)error;
 - (NSString *)mediaAlertPath;
 @end
@@ -596,12 +599,28 @@ static NSArray *SRImagePayloadKeys(void) {
 }
 - (NSDictionary *)smallGroupRunUnchecked:(NSString *)run account:(NSString *)account {
     NSMutableDictionary *row = [[self query:@"SELECT x.* FROM runs x JOIN small_group_runs s ON s.run_id=x.id WHERE x.id=? AND x.account=?" values:@[run, account]].firstObject mutableCopy];
-    SRRequire(row != nil, @"Run has no small-group authorization for this account");
-    NSDictionary *source = [self smallGroupSourceForRule:row[@"rule_id"] account:account];
-    SRRequire([row[@"snapshot"] isEqual:[self json:source]], @"Run source differs from the authorized plan");
+    NSDictionary *source = nil;
+    NSDictionary *libraryTask = [self libraryTaskForRunUnchecked:run];
+    if (libraryTask) {
+        NSDictionary *task = [self libraryTaskUnchecked:libraryTask[@"id"] account:account];
+        SRRequire([task[@"dispatchAvailable"] isEqual:@YES] && [task[@"runID"] isEqual:run],
+                  @"Message-library task is outside the bounded dispatch scope");
+        row = [[self query:@"SELECT * FROM runs WHERE id=? AND account=? AND rule_id=?"
+            values:@[run, account, task[@"ruleID"]]].firstObject mutableCopy];
+        SRRequire(row && [row[@"snapshot"] isEqual:task[@"frozen"]],
+                  @"Run source differs from the frozen message-library task");
+        source = [NSJSONSerialization JSONObjectWithData:[task[@"frozen"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        SRRequire([source isKindOfClass:NSDictionary.class] && [source[@"sourceKind"] isEqual:@"message_library"] &&
+                  [source[@"account"] isEqual:account], @"Frozen message-library source is invalid");
+    } else {
+        SRRequire(row != nil, @"Run has no small-group authorization for this account");
+        source = [self smallGroupSourceForRule:row[@"rule_id"] account:account];
+        SRRequire([row[@"snapshot"] isEqual:[self json:source]], @"Run source differs from the authorized plan");
+    }
     NSArray *targets = [self query:@"SELECT target FROM deliveries WHERE run_id=? ORDER BY position" values:@[run]];
     NSArray *allocated = [self query:@"SELECT target FROM allocations WHERE rule_id=? ORDER BY position" values:@[row[@"rule_id"]]];
-    SRRequire(targets.count > 0 && targets.count <= 600 && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
+    NSUInteger maximum = libraryTask ? 20 : 600;
+    SRRequire(targets.count > 0 && targets.count <= maximum && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
     row[@"source"] = source; row[@"targets"] = [targets valueForKey:@"target"];
     row[@"counts"] = [self countsForRun:run];
     return row;
@@ -611,8 +630,11 @@ static NSArray *SRImagePayloadKeys(void) {
 }
 - (BOOL)endSmallGroupRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
     return [self perform:^id{
-        NSDictionary *row = [self query:@"SELECT x.state FROM runs x JOIN small_group_runs s ON s.run_id=x.id WHERE x.id=? AND x.account=?" values:@[run, account]].firstObject;
-        SRRequire(row != nil, @"Run has no small-group authorization for this account");
+        NSDictionary *row = [self query:@"SELECT state FROM runs WHERE id=? AND account=?" values:@[run, account]].firstObject;
+        SRRequire(row != nil, @"Run is unavailable for this account");
+        if ([self libraryTaskForRunUnchecked:run]) (void)[self smallGroupRunUnchecked:run account:account];
+        else SRRequire([self query:@"SELECT run_id FROM small_group_runs WHERE run_id=?" values:@[run]].count == 1,
+                       @"Run has no small-group authorization for this account");
         if ([@[@"completed", @"ended"] containsObject:row[@"state"]]) return @YES;
         // Ending must remain possible even if the source image is now missing.
         SRRequire([self endRun:run error:NULL], @"Cannot end this small-group run");
@@ -670,12 +692,11 @@ static NSArray *SRImagePayloadKeys(void) {
 
 - (BOOL)resumeRun:(NSString *)run error:(NSError **)error {
     return [self perform:^id{
-        // Continuing a frozen library task is not implemented in this build: no
-        // library dispatch path has been written or verified, so the entry is
-        // refused rather than presented as a run that happens to be paused. This
-        // states what is missing, not a proven architectural conclusion.
-        SRRequire([self libraryTaskForRunUnchecked:run] == nil,
-                  @"Message-library continuation is unavailable; confirm a new task to re-send");
+        if ([self libraryTaskForRunUnchecked:run]) {
+            NSDictionary *identity = [self query:@"SELECT account FROM runs WHERE id=?" values:@[run]].firstObject;
+            SRRequire(identity != nil, @"Run is unavailable");
+            (void)[self smallGroupRunUnchecked:run account:identity[@"account"]];
+        }
         SRRequire([self query:@"SELECT run_id FROM operations_cancellations WHERE run_id=?" values:@[run]].count == 0,
                   @"Cancelled runs cannot be resumed; an explicit new batch is required");
         SRRequire([self query:@"SELECT id FROM deliveries WHERE run_id=? AND state='submitting' LIMIT 1" values:@[run]].count == 0,
@@ -702,9 +723,9 @@ static NSArray *SRImagePayloadKeys(void) {
 
 - (NSDictionary *)claimNextForRun:(NSString *)run error:(NSError **)error {
     return [self perform:^id{
-        SRRequire([self libraryTaskForRunUnchecked:run] == nil,
-                  @"A message-library task is never dispatched by the legacy runner");
-        NSDictionary *batch = [self query:@"SELECT state FROM runs WHERE id=?" values:@[run]].firstObject;
+        NSDictionary *batch = [self query:@"SELECT state,account FROM runs WHERE id=?" values:@[run]].firstObject;
+        SRRequire(batch != nil, @"Run is unavailable");
+        if ([self libraryTaskForRunUnchecked:run]) (void)[self smallGroupRunUnchecked:run account:batch[@"account"]];
         SRRequire([batch[@"state"] isEqual:@"running"], @"Run is not running");
         SRRequire([self query:@"SELECT id FROM deliveries WHERE run_id=? AND state='submitting' LIMIT 1" values:@[run]].count == 0,
                   @"An in-flight delivery must finish before another target");
@@ -727,10 +748,14 @@ static NSArray *SRImagePayloadKeys(void) {
         SRRequire(![state isEqual:@"confirmed"] || messageID.length, @"Confirmed result requires a correlated message ID");
         NSDictionary *row = [self query:@"SELECT * FROM deliveries WHERE id=? AND attempt_id=?" values:@[delivery, attempt]].firstObject;
         SRRequire(row != nil, @"Unmatched attempt");
-        // A legacy result can never enter a frozen library task: no legacy host
-        // ever obtains one of its deliveries, so such a callback is stale.
-        SRRequire([self libraryTaskForRunUnchecked:row[@"run_id"]] == nil,
-                  @"A message-library task never accepts a legacy delivery result");
+        NSDictionary *runIdentity = [self query:@"SELECT account FROM runs WHERE id=?" values:@[row[@"run_id"]]].firstObject;
+        SRRequire(runIdentity != nil, @"Run is unavailable");
+        if ([self libraryTaskForRunUnchecked:row[@"run_id"]]) {
+            (void)[self smallGroupRunUnchecked:row[@"run_id"] account:runIdentity[@"account"]];
+            SRRequire([self query:@"SELECT delivery_id FROM native_attempt_claims WHERE delivery_id=? AND attempt_id=?"
+                values:@[delivery, attempt]].count == 1,
+                @"Message-library result has no durable native attempt claim");
+        }
         BOOL submitted = [state isEqual:@"submitted"];
         BOOL receipt = [self query:@"SELECT delivery_id FROM submission_receipts WHERE delivery_id=? AND attempt_id=?" values:@[delivery, attempt]].count > 0;
         // Dispatch evidence is a separate axis; it never claims actual delivery.
@@ -1220,8 +1245,8 @@ static BOOL SRSameOptionalValue(id left, id right) {
                                          origin:(NSString *)origin {
     SRPacing pacing = {0};
     SRRequire(SRPacingConfigure(&pacing, minimum, maximum), @"Interval must satisfy 3 <= minimum <= maximum");
-    SRRequire([targets isKindOfClass:NSArray.class] && targets.count > 0 && targets.count <= 600,
-              @"A frozen task needs 1 to 600 target groups");
+    SRRequire([targets isKindOfClass:NSArray.class] && targets.count > 0 && targets.count <= 20,
+              @"A dispatchable message-library task needs 1 to 20 target groups");
     SRRequire([NSSet setWithArray:targets].count == targets.count, @"Duplicate targets");
     for (NSString *target in targets)
         SRRequire([target isKindOfClass:NSString.class] && [target hasSuffix:@"@chatroom"], @"Invalid target group");
@@ -1332,17 +1357,14 @@ static BOOL SRSameOptionalValue(id left, id right) {
               @"Frozen target count was altered");
     SRRequire([SRTargetDigest([targets valueForKey:@"target"]) isEqual:row[@"target_sha256"]],
               @"Frozen target scope was altered");
+    BOOL dispatchAvailable = targets.count > 0 && targets.count <= 20;
     return [@{@"id": row[@"id"], @"confirmationID": row[@"confirmation_id"], @"itemID": row[@"item_id"],
         @"versionID": row[@"version_id"], @"planID": row[@"plan_id"], @"ruleID": row[@"rule_id"],
         @"runID": row[@"run_id"], @"mediaToken": row[@"media_token"], @"type": snapshot[@"type"],
         @"payload": snapshot[@"payload"], @"frozen": row[@"frozen_snapshot"], @"frozenSha256": row[@"frozen_sha256"],
         @"targetCount": row[@"target_count"], @"originTaskID": row[@"origin_task_id"], @"createdAt": row[@"created_at"],
         @"startedAt": row[@"started_at"], @"targets": targets, @"sourceKind": @"message_library",
-        // This build implements storage, freeze and a start that only reserves
-        // the account slot; it has written and verified no library send path, so
-        // the card never claims one. "Not implemented" is the observed fact;
-        // whether it needs a different ABI is untested and is not claimed here.
-        @"dispatchAvailable": @NO} mutableCopy];
+        @"dispatchAvailable": @(dispatchAvailable)} mutableCopy];
 }
 
 - (NSString *)createLibraryTaskForAccount:(NSString *)account item:(NSString *)item
@@ -1393,10 +1415,12 @@ static BOOL SRSameOptionalValue(id left, id right) {
 }
 
 /* Explicit start of an already frozen task. The run begins awaiting_resume with
- * pending deliveries and no attempt; nothing is dispatched by this build. */
+ * pending deliveries and no attempt; the execution session must attach it. */
 - (NSString *)startLibraryTask:(NSString *)task account:(NSString *)account error:(NSError **)error {
     return [self perform:^id{
         NSDictionary *frozen = [self libraryTaskUnchecked:task account:account];
+        SRRequire([frozen[@"dispatchAvailable"] isEqual:@YES],
+                  @"Message-library forwarding is limited to 1–20 groups in this build");
         if (frozen[@"runID"] != NSNull.null) return frozen[@"runID"];
         SRRequire([self query:@"SELECT id FROM operations_contents WHERE account=? AND archived_at IS NULL" values:@[account]].count == 0,
                   @"Handle the current group-sync content before starting a library task");
