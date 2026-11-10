@@ -28,7 +28,7 @@
 - 完整 Python：430 项通过，日志 `.build-cache/ui-visual-contract.log`。
 - C：节奏、操作状态、媒体配额、胶囊几何四个程序均以 `-Wall -Wextra -Werror` 编译并执行通过。胶囊用例覆盖外推阈值、取消不收纳、恢复方向，以及 320–1024 pt 宽度下两侧可见表面零缝隙。
 - 双架构语法：arm64 / arm64e 各 66 单元零诊断，包含新增 UIKit 测试源码；日志 `.build-cache/ui-visual-syntax.log`、`.build-cache/syntax-report.json`。这不是 Objective-C 链接或原生执行证据。
-- UIKit 原生用例：新增 `tests/ios/SRFloatingProgressTests.m`，是独立 iOS 测试 App 的入口源码，需与 `UI/SRFloatingProgress.m` 一起链接 UIKit 后在模拟器运行。覆盖 S 打开、运行直接暂停、普通贴边、取消外推、两侧主动收纳、贴边暂停/收尾/结束、点/拉回不执行命令、新 run 恢复完整胶囊。该文件独立于 macOS Foundation 回归清单，本轮未链接、未运行，没有修改或触发 CI。
+- UIKit 原生用例：新增 `tests/ios/SRFloatingProgressTests.m`，是独立 iOS 测试 App 的入口源码，需与 `UI/SRFloatingProgress.m` 一起链接 UIKit 后在模拟器运行。覆盖 S 打开、运行直接暂停、普通贴边、取消外推、两侧主动收纳、贴边暂停/收尾/结束、点/拉回不执行命令、新 run 恢复完整胶囊。该文件独立于 macOS Foundation 回归清单，本轮未链接、未运行；初次源码交付未触发 CI，随后用户授权的 0.2.27 CI 也不执行此 UIKit 测试 App。
 - 初次源码交付时没有生产构建、打包、安装、迁移或设备操作，旧 0.2.26 包不含这些修正。用户随后授权推送打包，0.2.27 的精确构建身份及验证结果另见 [BUILD-0.2.27.md](BUILD-0.2.27.md)；安装仍由用户操作，旧 CI 结果不覆盖本轮代码。
 
 ## 仍待实际运行验收
