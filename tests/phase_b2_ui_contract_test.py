@@ -341,7 +341,8 @@ class PhaseB2UI(unittest.TestCase):
         self.assertIn("SRTargetLimitMessage(targetCount, limit)", project_source())
         self.assertIn("overTargetLimit", project_source())
         store = (ROOT / "Core/SRStore.m").read_text(encoding="utf-8")
-        self.assertIn("[self requireForwardingTargetCount:targets.count]", store)
+        start = store.split('- (NSString *)startSmallGroupRule:', 1)[1].split('\n}', 1)[0]
+        self.assertLess(start.index('[self requireForwardingTargetCount:'), start.index('[self startRuleUnchecked:'))
 
     # --- 执行详情 ---
 

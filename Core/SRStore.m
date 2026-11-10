@@ -535,11 +535,11 @@ static NSArray *SRImagePayloadKeys(void) {
                 values:@[config[@"plan_id"], config[@"position"]]];
             SRRequire(blocked.count == 0, @"Previous rule has not ended");
         }
-        NSArray *targets = [self query:@"SELECT target,position FROM allocations WHERE rule_id=? ORDER BY position" values:@[rule]];
-        [self requireForwardingTargetCount:targets.count];
         NSString *run = NSUUID.UUID.UUIDString;
         [self query:@"INSERT INTO runs(id,rule_id,account,state,started_at,minimum,maximum,snapshot) VALUES(?,?,?,'running',?,?,?,?)"
             values:@[run, rule, config[@"account"], @(NSDate.date.timeIntervalSince1970), config[@"minimum"], config[@"maximum"], config[@"snapshot"]]];
+        NSArray *targets = [self query:@"SELECT target,position FROM allocations WHERE rule_id=? ORDER BY position" values:@[rule]];
+        SRRequire(targets.count > 0, @"No targets");
         for (NSDictionary *target in targets) [self query:@"INSERT INTO deliveries(id,run_id,target,position,state) VALUES(?,?,?,?,'pending')"
             values:@[NSUUID.UUID.UUIDString, run, target[@"target"], target[@"position"]]];
         return run;
@@ -601,6 +601,8 @@ static NSArray *SRImagePayloadKeys(void) {
     return [self perform:^id{
         SRRequire(account.length && rule.length, @"Account and rule are required");
         [self smallGroupSourceForRule:rule account:account];
+        NSDictionary *scope = [self query:@"SELECT COUNT(*) AS target_count FROM allocations WHERE rule_id=?" values:@[rule]].firstObject;
+        [self requireForwardingTargetCount:[scope[@"target_count"] unsignedIntegerValue]];
         NSString *run = [self startRuleUnchecked:rule replay:NO];
         [self query:@"INSERT INTO small_group_runs VALUES(?,?)" values:@[run, @(NSDate.date.timeIntervalSince1970)]];
         return run;

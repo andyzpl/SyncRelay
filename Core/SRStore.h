@@ -23,7 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
                             targets:(NSArray<NSString *> *)targets
                             minimum:(double)minimum maximum:(double)maximum
                               error:(NSError **)error;
-/* replay=YES requires history and explicit caller confirmation before invocation. */
+/* Low-level run constructor for core tests. Live forwarding uses startSmallGroupRule or startLibraryTask. */
 - (nullable NSString *)startRule:(NSString *)rule replay:(BOOL)replay error:(NSError **)error;
 - (BOOL)pauseRun:(NSString *)run error:(NSError **)error;
 /* Manual continuation sends only pending targets. Uncertain/failed attempts
