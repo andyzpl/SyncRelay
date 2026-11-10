@@ -117,6 +117,21 @@ NSDictionary<NSString *, id> *SRMenuLibraryStatus(void) {
 - (NSString *)body { return _body; }
 @end
 
+/* A setter rebuild can mint a new generation without changing the selected
+ * message. Keep the already-published item in that case: UIKit may already
+ * have a menu-item view pointing at it. A changed message, account, epoch or
+ * direction is a real replacement and must revoke the old item. */
+static BOOL SRMenuSamePublishedSelection(SRMenuMessageContext *a, SRMenuMessageContext *b) {
+    if (!a || !b || ![a.account isEqual:b.account] ||
+        ![a.ownerToken isEqual:b.ownerToken] ||
+        ![a.messageIdentity isEqual:b.messageIdentity] ||
+        ![a.session isEqual:b.session] ||
+        ![a.messageType isEqual:b.messageType] ||
+        ![a.createdAt isEqual:b.createdAt] ||
+        ![a.epoch isEqual:b.epoch]) return NO;
+    return [a.messageType isEqual:@"3"] || [a.body isEqual:b.body];
+}
+
 @interface SRMessageMenuHook ()
 @property(nonatomic, strong) SRLibraryIntake *intake;
 @property(nonatomic, copy, nullable) NSString * (^currentAccount)(void);
@@ -907,31 +922,26 @@ static BOOL SRImplicitParametersMatch(Method method) {
     // Off means transparent: the host array is returned untouched.
     if (!self.enabled || !self.enabled()) return original;
     @synchronized(self.lock) {
-        // Rebuilding the same generation is idempotent only when the incoming
-        // array still contains our own item. If a host rebuilt the array from
-        // foreign items alone, append the item again rather than silently
-        // dropping the entry.
-        if ([self.activeGeneration isEqual:generation] && self.activeItem) {
-            BOOL foundActive = NO;
+        id publishedItem = [self.publishedItems objectForKey:source.ownerToken];
+        SRMenuMessageContext *publishedContext = publishedItem ? [self.contexts objectForKey:publishedItem] : nil;
+        if (publishedItem && SRMenuSamePublishedSelection(publishedContext, source)) {
+            NSMutableArray *normalized = [NSMutableArray arrayWithCapacity:original.count];
+            BOOL addedPublished = NO;
             BOOL hasOtherOwn = NO;
             for (id item in original) {
-                if (![self.contexts objectForKey:item]) continue;
-                if (item == self.activeItem && !foundActive) foundActive = YES;
-                else hasOtherOwn = YES;
-            }
-            if (foundActive && !hasOtherOwn) return original;
-            if (foundActive) {
-                NSMutableArray *normalized = [NSMutableArray arrayWithCapacity:original.count];
-                BOOL addedActive = NO;
-                for (id item in original) {
-                    if (item == self.activeItem) {
-                        if (!addedActive) [normalized addObject:item];
-                        addedActive = YES;
+                if ([self.contexts objectForKey:item]) {
+                    if (item == publishedItem && !addedPublished) {
+                        [normalized addObject:item];
+                        addedPublished = YES;
+                    } else {
+                        hasOtherOwn = YES;
                     }
-                    else if (![self.contexts objectForKey:item]) [normalized addObject:item];
+                } else {
+                    [normalized addObject:item];
                 }
-                return [normalized copy];
             }
+            if (!addedPublished) [normalized addObject:publishedItem];
+            return (hasOtherOwn || normalized.count != original.count || !addedPublished) ? [normalized copy] : original;
         }
         SRMenuOwnItem *own = [SRMenuOwnItem new];
         /* Freeze by value through the designated initializer. The caller's object
@@ -1211,6 +1221,32 @@ static BOOL SRImplicitParametersMatch(Method method) {
     // expected class (or a subclass); anything else would break the host menu.
     if (!item || !SRMenuHookClassIsKindOf(object_getClass(item), itemClass)) return original;
     @synchronized(self.lock) {
+        id publishedItem = [self.publishedItems objectForKey:source.ownerToken];
+        SRMenuMessageContext *publishedContext = publishedItem ? [self.contexts objectForKey:publishedItem] : nil;
+        if (publishedItem && SRMenuSamePublishedSelection(publishedContext, source)) {
+            /* contextForMenu: tentatively records the new setter generation.
+             * Restore the generation belonging to the item we keep, otherwise
+             * the click would fail the generation gate even though the message
+             * and item are unchanged. */
+            [self.menuGenerations setObject:publishedContext.generation forKey:menu];
+            NSMutableArray *normalized = [NSMutableArray arrayWithCapacity:original.count];
+            BOOL addedPublished = NO;
+            BOOL hasOtherOwn = NO;
+            for (id existing in original) {
+                if ([self.contexts objectForKey:existing]) {
+                    if (existing == publishedItem && !addedPublished) {
+                        [normalized addObject:existing];
+                        addedPublished = YES;
+                    } else {
+                        hasOtherOwn = YES;
+                    }
+                } else {
+                    [normalized addObject:existing];
+                }
+            }
+            if (!addedPublished) [normalized addObject:publishedItem];
+            return (hasOtherOwn || normalized.count != original.count || !addedPublished) ? [normalized copy] : original;
+        }
         SRMenuMessageContext *frozen = [[SRMenuMessageContext alloc]
             initWithAccount:source.account body:source.body generation:generation
                  ownerToken:source.ownerToken messageIdentity:source.messageIdentity

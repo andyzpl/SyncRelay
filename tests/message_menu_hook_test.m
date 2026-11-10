@@ -1068,6 +1068,7 @@ int main(void) {
         NSArray *twice = [hook appendHostItemToItems:once menu:hostMenu source:hostContext
                                            itemClass:SRFakeMenuItem.class generation:@"g-dedupe-2"];
         CHECK(twice.count == 2);
+        CHECK(twice.lastObject == once.lastObject);
 
         // A presentation refreshes the item even when the host kept a cached
         // array: the show interposer appends before the menu is displayed.
@@ -1104,9 +1105,11 @@ int main(void) {
         CHECK(firstPublish.count == 1 && [hook ownsItem:firstPublish.lastObject]);
         NSArray *secondPublish = [buildHook publishItems:@[] menu:rebuildMenu];
         CHECK(secondPublish.count == 1);
+        CHECK(secondPublish.lastObject == firstPublish.lastObject);
         cover.delegate = nil;                       // source resolution fails
         NSArray *reusedPublish = [buildHook publishItems:@[] menu:rebuildMenu];
         CHECK(reusedPublish.count == 1 && [hook ownsItem:reusedPublish.lastObject]);
+        CHECK(reusedPublish.lastObject == firstPublish.lastObject);
         buildHook.reuseWindow = 0;
         NSArray *droppedPublish = [buildHook publishItems:@[] menu:rebuildMenu];
         CHECK(droppedPublish.count == 0);
