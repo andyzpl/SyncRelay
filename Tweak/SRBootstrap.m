@@ -34,7 +34,7 @@ __attribute__((constructor)) static void SRInitialize(void) {
                 }
                 SRShowSettings(SRRepository);
                 [SRRuntimeLog.shared record:@"boot" facts:@{@"storageReady": @YES}];
-                NSLog(@"[SyncRelay] %@ initialized. Explicit 1-3-group checkpoint available; no automatic start or large batches.", SR_PLUGIN_VERSION);
+                NSLog(@"[SyncRelay] %@ initialized. Forwarding requires an explicit start.", SR_PLUGIN_VERSION);
             }
         });
     }

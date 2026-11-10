@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
  * completes. This is the current schema, not a compatibility or upgrade claim. */
 @property(nonatomic, readonly) NSInteger schemaVersion;
 - (nullable instancetype)initWithPath:(NSString *)path error:(NSError **)error;
+- (nullable instancetype)initWithPath:(NSString *)path defaults:(NSUserDefaults *)defaults error:(NSError **)error;
+@property(nonatomic, readonly) NSUInteger forwardingTargetLimit;
 /* Low-level constructor retained for core tests; capture uses the atomic API below. */
 - (nullable NSString *)createPlanForAccount:(NSString *)account
                                sourceGroup:(NSString *)group

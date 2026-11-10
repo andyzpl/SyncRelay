@@ -23,7 +23,6 @@ FOUNDATION_EXPORT NSString *const SRGroupFilterAbnormal;
 
 /* The per-rule execution range enforced by SRStore (1...20 targets). This is
  * the same constant, not a second policy: pages only display it. */
-FOUNDATION_EXPORT NSUInteger const SRRunProjectionTargetLimit;
 
 /* Pure, Foundation-only presentation projections for the operations pages.
  *
@@ -84,14 +83,14 @@ FOUNDATION_EXPORT NSUInteger const SRRunProjectionTargetLimit;
 /* Group rows from the frozen plan cards of SRStore.ruleCardsForPlan:. Frozen
  * plans do not persist target names, so search matches the group name and the
  * stored target identifiers; names are only available in configuration mode. */
-+ (NSArray<NSDictionary *> *)groupRowsForCards:(nullable NSArray<NSDictionary *> *)cards;
++ (NSArray<NSDictionary *> *)groupRowsForCards:(nullable NSArray<NSDictionary *> *)cards targetLimit:(NSUInteger)limit;
 /* Read-only rows from the saved configuration: the group and member list can
  * be inspected when no content is confirmed, but nothing is executable. */
-+ (NSArray<NSDictionary *> *)groupRowsForConfiguration:(nullable NSDictionary *)configuration;
++ (NSArray<NSDictionary *> *)groupRowsForConfiguration:(nullable NSDictionary *)configuration targetLimit:(NSUInteger)limit;
 
 /* Row keys: identifier, name, targetCount, targets, targetNames, phase,
  * statusText, progressText, blockedText (NSNull when executable),
- * executable, runID (NSNull when not started), run (summary or NSNull). */
+ * executable, overTargetLimit, runID (NSNull when not started), run (summary or NSNull). */
 + (NSArray<NSDictionary *> *)rows:(nullable NSArray<NSDictionary *> *)rows
                      matchingText:(nullable NSString *)text filter:(nullable NSString *)filter;
 + (NSArray<NSString *> *)filterIdentifiers;

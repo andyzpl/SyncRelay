@@ -10,7 +10,6 @@
 #import "Core/SRVersion.h"
 #import "Core/SRImageAssetStore.h"
 #import "Core/SRExecutionProgress.h"
-#import "Core/SRRunProjection.h"
 #import "SRLibraryScreens.h"
 #import "Adapter/SRWeChatImageSource.h"
 #import "Adapter/SRWeChatImageSendProbe.h"
@@ -29,6 +28,8 @@
 #import "Adapter/SRMenuABIProbe.h"
 #import "Adapter/SRRuntime.h"
 #import <objc/runtime.h>
+
+static NSString *const SRTargetLimitAcknowledgment = @"andyz";
 
 /* 8.0.79 no longer exposes the menu responder. Capture the current first
  * responder the same way Mikoto does: an action sent to nil walks the responder
@@ -441,7 +442,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     self.dirty = NO;
     self.singleTextSendEnabled = NO;
     [self.textSendAdapter reset];
-    self.status = self.ready ? @"1–20 群规则测试可用 · 保存和捕获不会自动发送" : error.localizedDescription ?: @"无法读取账号";
+    self.status = self.ready ? @"转发需手动开始 · 保存和捕获不会自动发送" : error.localizedDescription ?: @"无法读取账号";
     [self refresh];
 }
 - (BOOL)checkAccount {
@@ -521,7 +522,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     return [self.draft[@"rules"] count] + 3;
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @[@"来源设置", @"发送间隔", @"目标群与规则", @"源消息与计划", @"更多设置"][section];
+    return @[@"来源设置", @"发送间隔", @"目标群与规则", @"源消息与计划", @"高级设置"][section];
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     section = SRPanelSection(section);
@@ -534,9 +535,10 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     NSInteger section = SRPanelSection(path.section);
     BOOL accessible = UIContentSizeCategoryIsAccessibilityCategory(tableView.traitCollection.preferredContentSizeCategory);
-    NSString *reuse = accessible ? @"setting-accessible" : @"setting-value";
+    BOOL subtitle = accessible || (section == 0 && path.row == 13);
+    NSString *reuse = subtitle ? @"setting-accessible" : @"setting-value";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuse] ?: [[UITableViewCell alloc]
-        initWithStyle:accessible ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1 reuseIdentifier:reuse];
+        initWithStyle:subtitle ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1 reuseIdentifier:reuse];
     SRStyleSettingsCell(cell);
     cell.accessoryView = nil; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
@@ -598,13 +600,12 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
             cell.accessibilityLabel = @"菜单调用观察（临时）";
             cell.accessibilityValue = [self menuCallObservationText];
         }
-        /* Explicit opt-in for the production library entry. Off by default and
-         * unrelated to the temporary observation session above. */
         if (path.row == 13) {
-            cell.textLabel.text = @"目标上限（超管）";
-            cell.detailTextLabel.text = [NSString stringWithFormat:@"当前 %ld 个群，最多 600",
-                (long)self.entryPreferences.maxTargetsPerTask];
+            cell.textLabel.text = @"单次转发目标上限";
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"当前 %ld 个群\n默认密码：%@（输入表示已知晓）",
+                (long)self.entryPreferences.maxTargetsPerTask, SRTargetLimitAcknowledgment];
         }
+        /* Independent opt-in for the library menu entry. */
         if (path.row == 12) {
             cell.textLabel.text = @"菜单入库（长按文字）";
             cell.detailTextLabel.text = @"长按文字消息后从菜单存入库";
@@ -851,7 +852,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     NSDictionary *snapshot = [SRSourceMessage frozenJSON:self.draft]; NSString *account = self.account;
     NSError *error = nil;
     NSDictionary *preview = [SRGroupPlanner previewWithRows:groups draft:snapshot recipe:recipe
-        intent:intent executionLimit:SRRunProjectionTargetLimit error:&error];
+        intent:intent executionLimit:SRForwardingTargetCeiling error:&error];
     if (!preview) { SRAlert(self, @"无法生成分组", error.localizedDescription); return; }
     if (![preview[@"generatedRuleCount"] unsignedIntegerValue] && ![preview[@"topUpCount"] unsignedIntegerValue]) {
         SRAlert(self, @"没有变更", [NSString stringWithFormat:@"本次要求 %@ 个群，实际可分配 0 个，也没有可补位的分组。请检查排除项和已有规则；原有设置不变。", preview[@"requestedCount"]]); return;
@@ -921,7 +922,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     NSDictionary *rule = self.draft[@"rules"][index];
     BOOL custom = [rule[@"origin"] isEqual:@"custom"];
     NSString *provenance = custom ? @"当前为自定义分组：新群不会自动补进来。"
-        : [NSString stringWithFormat:@"自动分组：新群会补到 %lu 个；可执行范围更小时按较小值。",
+        : [NSString stringWithFormat:@"自动分组：新群最多补到 %lu 个；单次转发上限另在高级设置修改。",
             (unsigned long)[SRGroupPlanner capacityForRule:rule]];
     NSString *message = [NSString stringWithFormat:
         @"共用本计划的母群、发送者 wxid、类型和间隔，不需要单独配置。此分组尚未执行；移除后，其中的群可重新分配。\n\n%@",
@@ -1129,12 +1130,12 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     view.font = SRSettingsFont(17, UIFontTextStyleBody); view.adjustsFontForContentSizeCategory = YES;
     view.textColor = UIColor.labelColor; view.backgroundColor = SRSettingsCellBackground();
     view.textContainerInset = UIEdgeInsetsMake(16, 16, 24, 16);
-    view.text = @"当前版本\n这是开发测试版，已开放每条 1–20 个授权群的真实串行转发。保存、捕获、预览及确认计划都不自动发送；确认计划后，进入内容计划点击规则，再点“开始小群测试”。不需要打开旧单群实验开关。100/200 群大规则和重新执行尚未开放。\n\n"
+    view.text = @"当前版本\n保存、捕获、预览及确认计划都不自动发送。可从消息库或已确认计划手动开始串行转发，不需要打开旧单群实验开关。\n\n"
         @"来源条件\n所有规则共用母群、来源成员 wxid、消息类型和间隔。“我”对应已核对的当前登录账号；其他成员按原始 wxid 识别，不按昵称。图片支持捕获、资源校验、实际预览及小群测试；发送的是已加载快照重新生成的 JPEG，不承诺原图质量或动态图片。等待资源最多 30 秒；如未就绪，请在母群点开图片加载后重新等待并发送一张新图。\n\n"
         @"群聊与分组\n母群和已分配群自动排除。只需搜索并排除不想转发的群，默认按每条 100 群自动分组；200 群保留为高级规格。数量不足按实际生成，不建空规则。手动全选也默认拆分为每条 100 群。\n\n"
         @"等待源消息\n先保存设置，再手动开始等待。关闭面板回母群，由指定成员或本人发一条文字；须取得服务器消息 ID 才进入预览。本人候选最多等待确认 30 秒，不用临时本地 ID 替代。\n\n"
         @"预览与计划\n第一条匹配内容锁定后停止等待。核对母群、发送者 wxid、类型和完整正文再确认；候选可能包含离线补同步，不能只凭回调时间判断新旧。确认只建立计划，不开始执行任何规则。\n\n"
-        @"小群执行\n测试时手动只选 1–20 个群组成规则；大分组可以保存，但本轮不能实发。每条规则点一次开始，内部串行处理，不逐群弹窗。暂停后手动继续未尝试群；切后台、锁屏或账号改变会暂停，回前台或重启不自动继续。等待和在途观察时保持常亮，暂停收尾和完成时释放。已提交不等于确认送达，失败/未知不自动重发，当前规则结束不自动执行下一条。\n\n"
+        @"转发执行\n新批次使用高级设置的单次转发目标上限；它不改变已保存的分组或已启动的批次。每条规则点一次开始，内部串行处理，不逐群弹窗。暂停后手动继续未尝试群；切后台、锁屏或账号改变会暂停，回前台或重启不自动继续。等待和在途观察时保持常亮，暂停收尾和完成时释放。已提交不等于确认送达，失败/未知不自动重发，当前规则结束不自动执行下一条。\n\n"
         @"暂停采集\n切后台、锁屏或账号改变会取消等待，回前台不自动重启。预览未确认前只保留在内存，退出微信后需重新捕获；已确认计划与历史独立于当前设置。\n\n"
         @"间隔与发送观察\n默认间隔 5–10 秒，最低 3 秒，上限可自定义；上下限相同为固定间隔。间隔仅控制本插件的发送节奏，不保证发送成功。手动发送观察只记录一个测试群的元数据，需你回微信手动发送，120 秒到期或切后台停止，不代发、不读取正文、不判定送达。单群文字实验必须先打开开关、选择一个目标并二次确认；回读到服务器 ID 仍只记为主机关联，不自动重试。\n\n"
         @"入口与诊断\n主入口始终是“我 → 设置 → SyncRelay 转发”。悬浮入口默认关闭，可自行开启。诊断包含版本、接口签名及脱敏观察摘要，不含账号 wxid、群 ID、消息 ID 或正文。所有采集候选及页面表现仍需真机验证。";
@@ -1494,10 +1495,9 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     SRPresentAlert(self, alert);
 }
 - (void)promptTargetLimit {
-    // Development gate: a fixed admin passphrase protects the ceiling. Replace
-    // it with a stored credential before a public release.
-    UIAlertController *auth = [UIAlertController alertControllerWithTitle:@"超管密码"
-        message:@"修改单次任务的目标上限需要超管密码。" preferredStyle:UIAlertControllerStyleAlert];
+    // This public passphrase is an acknowledgment, not access control.
+    UIAlertController *auth = [UIAlertController alertControllerWithTitle:@"确认修改转发上限"
+        message:@"提高上限会允许单次转发到更多群。请输入确认密码，表示已知晓。" preferredStyle:UIAlertControllerStyleAlert];
     [auth addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.secureTextEntry = YES;
         field.placeholder = @"密码";
@@ -1506,7 +1506,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     [auth addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [auth addAction:[UIAlertAction actionWithTitle:@"继续" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
         NSString *typed = auth.textFields.firstObject.text ?: @"";
-        if (![typed isEqual:@"sr-admin-2026"]) {
+        if (![typed isEqual:SRTargetLimitAcknowledgment]) {
             [weakSelf promptTargetLimitFailure];
             return;
         }
@@ -1524,7 +1524,7 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
 
 - (void)promptTargetLimitValue {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"目标上限"
-        message:@"输入 1–600 之间的整数。超过 100 会有风控风险提示。" preferredStyle:UIAlertControllerStyleAlert];
+        message:@"输入 1–600 之间的整数。超过 100 个目标群有风控风险。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.keyboardType = UIKeyboardTypeNumberPad;
         field.text = [NSString stringWithFormat:@"%ld", (long)self.entryPreferences.maxTargetsPerTask];
@@ -1532,8 +1532,9 @@ typedef NS_ENUM(NSInteger, SRMenuCallAction) {
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-        NSInteger value = [alert.textFields.firstObject.text integerValue];
-        if (value < 1 || value > 600) {
+        NSScanner *scanner = [NSScanner scannerWithString:alert.textFields.firstObject.text ?: @""];
+        NSInteger value = 0;
+        if (![scanner scanInteger:&value] || !scanner.isAtEnd || value < 1 || value > SRForwardingTargetCeiling) {
             UIAlertController *bad = [UIAlertController alertControllerWithTitle:@"数值无效"
                 message:@"请输入 1–600。" preferredStyle:UIAlertControllerStyleAlert];
             [bad addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];

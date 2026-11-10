@@ -10,6 +10,12 @@ static NSString *const SRFloatingEntryUnitYKey = @"andyz.syncrelay.floatingEntry
 static NSString *const SRFloatingEntryLeftEdgeKey = @"andyz.syncrelay.floatingEntryLeftEdge";
 static NSString *const SRFloatingEntryPlacementSetKey = @"andyz.syncrelay.floatingEntryPlacementSet";
 
+NSString *SRTargetLimitMessage(NSUInteger count, NSUInteger limit) {
+    return [NSString stringWithFormat:@"\u672c\u6b21\u6709 %lu \u4e2a\u76ee\u6807\u7fa4\uff0c\u5f53\u524d\u4e0a\u9650 %lu\u3002"
+                                      "\u53ef\u5230\u300c\u8bbe\u7f6e \u2192 \u9ad8\u7ea7\u8bbe\u7f6e \u2192 \u5355\u6b21\u8f6c\u53d1\u76ee\u6807\u4e0a\u9650\u300d\u66f4\u6539\u4e0a\u9650\u3002",
+        (unsigned long)count, (unsigned long)limit];
+}
+
 @interface SREntryPreferences ()
 @property(nonatomic, strong) NSUserDefaults *defaults;
 @end
@@ -33,20 +39,14 @@ static NSString *const SRFloatingEntryPlacementSetKey = @"andyz.syncrelay.floati
     id value = [self.defaults objectForKey:SRLibraryMenuEntryKey];
     return [value isKindOfClass:NSNumber.class] && [value boolValue];
 }
-NSInteger SREntryMaxTargetsPerTask(void) {
-    id value = [NSUserDefaults.standardUserDefaults objectForKey:SRMaxTargetsKey];
-    NSInteger limit = [value isKindOfClass:NSNumber.class] ? [value integerValue] : 200;
-    return MIN(MAX(limit, 1), 600);
-}
-
 - (NSInteger)maxTargetsPerTask {
     id value = [self.defaults objectForKey:SRMaxTargetsKey];
     NSInteger limit = [value isKindOfClass:NSNumber.class] ? [value integerValue] : 200;
-    return MIN(MAX(limit, 1), 600);
+    return MIN(MAX(limit, 1), SRForwardingTargetCeiling);
 }
 
 - (void)setMaxTargetsPerTask:(NSInteger)maxTargetsPerTask {
-    NSInteger clamped = MIN(MAX(maxTargetsPerTask, 1), 600);
+    NSInteger clamped = MIN(MAX(maxTargetsPerTask, 1), SRForwardingTargetCeiling);
     BOOL changed = self.maxTargetsPerTask != clamped;
     [self.defaults setInteger:clamped forKey:SRMaxTargetsKey];
     if (changed) [NSNotificationCenter.defaultCenter postNotificationName:SREntryPreferencesChangedNotification object:self];

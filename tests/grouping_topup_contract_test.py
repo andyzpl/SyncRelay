@@ -52,9 +52,9 @@ class GroupingTopUpContracts(unittest.TestCase):
         self.assertIn('@"topUpRules": topUps', planner)
         self.assertIn('@"assignedCount": @(cursor - generatedFrom)', planner)
 
-    def test_app_passes_the_real_limit_from_one_place(self):
+    def test_automatic_grouping_keeps_its_structural_ceiling(self):
         panel = read("UI/SRPanel.m")
-        self.assertIn("executionLimit:SRRunProjectionTargetLimit", panel)
+        self.assertIn("executionLimit:SRForwardingTargetCeiling", panel)
         # The hand-picked entry declares its intent in Core, not by UI copy.
         self.assertIn("intent:SRGroupingIntentCustom", panel)
         self.assertIn("intent:SRGroupingIntentAutomatic", panel)
@@ -99,7 +99,7 @@ class GroupingTopUpContracts(unittest.TestCase):
         # The row must not print the executable range as the grouping target.
         row = panel.split('@"%lu 个群 · 自动，补位到 %lu"', 1)[1].split(";", 1)[0]
         self.assertIn("capacityForRule", panel)
-        self.assertNotIn("SRRunProjectionTargetLimit", row)
+        self.assertNotIn("forwardingTargetLimit", row)
 
 
 if __name__ == "__main__":

@@ -439,7 +439,7 @@ class LibraryTaskTests(unittest.TestCase):
         # from a synthetic group origin or the ordinary source-claim ledger.
         self.assertIn('Message-library task is outside the bounded dispatch scope', STORE)
         self.assertIn('Frozen message-library source is invalid', STORE)
-        self.assertIn('Message-library forwarding is limited to 1–20 groups', STORE)
+        self.assertIn('[self requireForwardingTargetCount:[frozen[@"targetCount"] unsignedIntegerValue]]', STORE)
         self.assertEqual(1, count('SELECT id,account FROM library_tasks WHERE run_id=?'))
         self.assertGreaterEqual(STORE.count('[self libraryTaskForRunUnchecked:'), 4)
         # A library plan may be driven by the execution session, but only from

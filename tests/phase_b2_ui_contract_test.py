@@ -72,18 +72,18 @@ def evaluate_stale_binding(bound_run_id, current_run_id):
     return not (current is not None and current == bound)
 
 
-def card_allows_start(card):
+def card_allows_start(card, limit):
     """Execute the start gate of SRRunDetailScreen.startConfirmedRule:.
 
     A frozen card is only startable while it exists, still has no run, stays
-    inside the 20-group range, is unlocked and the account is not occupied. The
+    inside the configured target limit, is unlocked and the account is not occupied. The
     card that appears during a confirmation is exactly the case this guards.
     """
     if not isinstance(card, dict):
         return False
     if isinstance(card.get("latestRun"), dict):
         return False
-    if card.get("targetCount", 0) > 20:
+    if card.get("targetCount", 0) > limit:
         return False
     if card.get("initialUnlocked") is not True:
         return False
@@ -336,14 +336,12 @@ class PhaseB2UI(unittest.TestCase):
         for forbidden in ("saveConfiguration", "startRule:", "resumeRun:", "cancelRun:", "archive"):
             self.assertNotIn(forbidden, listing)
 
-    def test_group_list_keeps_the_twenty_group_limit_visible(self):
-        self.assertIn("SRRunProjectionTargetLimit", project_source())
-        self.assertIn("超过每条 %lu 群的执行范围", project_source())
-        self.assertIn("不会截取前 %lu 群", project_source())
-        # The store still refuses >20 targets; the page only displays it.
+    def test_group_list_projects_the_configured_target_limit(self):
+        self.assertIn("targetLimit:self.store.forwardingTargetLimit", screens_source())
+        self.assertIn("SRTargetLimitMessage(targetCount, limit)", project_source())
+        self.assertIn("overTargetLimit", project_source())
         store = (ROOT / "Core/SRStore.m").read_text(encoding="utf-8")
-        self.assertIn("targets.count > 0 && targets.count <= 600", store)
-        self.assertIn("SRRunProjectionTargetLimit = 600", project_source())
+        self.assertIn("[self requireForwardingTargetCount:targets.count]", store)
 
     # --- 执行详情 ---
 
@@ -668,13 +666,13 @@ class PhaseB2UI(unittest.TestCase):
         # 5. the remaining start gates are re-checked as well.
         for gate in ('if (!card)',
                      'if ([card[@"latestRun"] isKindOfClass:NSDictionary.class])',
-                     '[card[@"targetCount"] unsignedIntegerValue] > SRRunProjectionTargetLimit',
+                     'if (count > limit)',
                      '[card[@"initialUnlocked"] isEqual:@YES]',
                      '[card[@"accountOccupied"] isEqual:@YES]'):
             self.assertIn(gate, confirmed, gate)
         # 6-7. the frozen preview and the command come after every gate.
         command = confirmed.index("[self.execution startRule:rule account:account error:&error]")
-        for step in ('ruleCardsForPlan', 'smallGroupRulePreview', 'SRRunProjectionTargetLimit',
+        for step in ('ruleCardsForPlan', 'smallGroupRulePreview', 'self.store.forwardingTargetLimit',
                      '@"initialUnlocked"', '@"accountOccupied"', 'latestRun'):
             self.assertLess(confirmed.index(step), command, step)
         # 8. the identifier is adopted only after a successful start.
@@ -693,20 +691,21 @@ class PhaseB2UI(unittest.TestCase):
         # The transcription below is only meaningful while the source keeps
         # these four conditions and treats a missing card as a refusal.
         self.assertIn('if ([card[@"latestRun"] isKindOfClass:NSDictionary.class])', confirmed)
-        self.assertIn('[card[@"targetCount"] unsignedIntegerValue] > SRRunProjectionTargetLimit', confirmed)
+        self.assertIn('if (count > limit)', confirmed)
         self.assertIn('![card[@"initialUnlocked"] isEqual:@YES]', confirmed)
         self.assertIn('[card[@"accountOccupied"] isEqual:@YES]', confirmed)
         self.assertIn("if (!card) {", confirmed)
 
         clean = {"latestRun": "NSNull", "targetCount": 3, "initialUnlocked": True, "accountOccupied": False}
-        self.assertTrue(card_allows_start(clean))
+        self.assertTrue(card_allows_start(clean, 20))
         # Regression: a run appeared while the confirmation was on screen.
-        self.assertFalse(card_allows_start(dict(clean, latestRun={"id": "run-new"})))
-        self.assertFalse(card_allows_start(dict(clean, targetCount=21)))
-        self.assertFalse(card_allows_start(dict(clean, initialUnlocked=False)))
-        self.assertFalse(card_allows_start(dict(clean, accountOccupied=True)))
+        self.assertFalse(card_allows_start(dict(clean, latestRun={"id": "run-new"}), 20))
+        self.assertFalse(card_allows_start(dict(clean, targetCount=28), 20))
+        self.assertTrue(card_allows_start(dict(clean, targetCount=28), 28))
+        self.assertFalse(card_allows_start(dict(clean, initialUnlocked=False), 20))
+        self.assertFalse(card_allows_start(dict(clean, accountOccupied=True), 20))
         # A card that is no longer in the frozen plan is refused too.
-        self.assertFalse(card_allows_start(None))
+        self.assertFalse(card_allows_start(None, 20))
 
     def test_early_start_also_checks_the_card_before_the_preview(self):
         detail = detail_block()
@@ -747,7 +746,7 @@ class PhaseB2UI(unittest.TestCase):
         groups = home.split("- (BOOL)loadGroups:(NSError **)error {", 1)[1].split("\n}", 1)[0]
         self.assertIn("NSDictionary *configuration = self.frozenConfiguration;", groups)
         self.assertLess(groups.index("self.frozenConfiguration"), groups.index("configurationForAccount:"))
-        self.assertIn("[SRRunProjection groupRowsForConfiguration:configuration]", groups)
+        self.assertIn("[SRRunProjection groupRowsForConfiguration:configuration targetLimit:self.store.forwardingTargetLimit]", groups)
         # The frozen configuration reaches the group page with the plan.
         self.assertIn("self.verifyAccount, self.planID, self.frozenConfiguration", home)
         # No display fix may re-read the host, ask for a preview or use the clock.

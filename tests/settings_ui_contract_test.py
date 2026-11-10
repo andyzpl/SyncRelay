@@ -8,6 +8,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SettingsUIContractTests(unittest.TestCase):
+    def test_target_limit_acknowledgment_and_settings_hint(self):
+        panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
+        preferences = (ROOT / 'Core/SREntryPreferences.m').read_text(encoding='utf-8')
+        self.assertIn('SRTargetLimitAcknowledgment = @"andyz";', panel)
+        self.assertIn('[typed isEqual:SRTargetLimitAcknowledgment]', panel)
+        self.assertIn('默认密码：%@（输入表示已知晓）', panel)
+        self.assertNotIn('sr-admin-2026', panel)
+        settings_path = '设置 → 高级设置 → 单次转发目标上限'
+        self.assertIn(settings_path.encode('unicode_escape').decode('ascii'), preferences)
+        limit_settings = panel.split('- (void)promptTargetLimit {', 1)[1].split('- (void)libraryMenuEntryToggled:', 1)[0]
+        self.assertNotIn('startLibraryTask:', limit_settings)
+        self.assertNotIn('startRule:', limit_settings)
+        self.assertNotIn('record:', limit_settings)
+
     def test_save_uses_settings_language_without_renaming_internal_events(self):
         panel = (ROOT / 'UI/SRPanel.m').read_text(encoding='utf-8')
         self.assertIn('initWithTitle:@"\u4fdd\u5b58" style:UIBarButtonItemStyleDone', panel)

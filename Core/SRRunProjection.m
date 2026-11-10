@@ -1,4 +1,5 @@
 #import "SRRunProjection.h"
+#import "SREntryPreferences.h"
 #import <CoreFoundation/CoreFoundation.h>
 #include <math.h>
 
@@ -18,7 +19,6 @@ NSString *const SRGroupFilterActive = @"active";
 NSString *const SRGroupFilterCompleted = @"completed";
 NSString *const SRGroupFilterAbnormal = @"abnormal";
 
-NSUInteger const SRRunProjectionTargetLimit = 600;
 
 static NSArray<NSString *> *SRProjectionCountKeys(void) {
     return @[@"pending", @"submitting", @"submitted", @"confirmed", @"failed", @"uncertain", @"cancelled"];
@@ -225,7 +225,7 @@ static NSString *SRProjectionString(id value, NSString *fallback) {
         (unsigned long)total];
 }
 
-+ (NSArray<NSDictionary *> *)groupRowsForCards:(NSArray<NSDictionary *> *)cards {
++ (NSArray<NSDictionary *> *)groupRowsForCards:(NSArray<NSDictionary *> *)cards targetLimit:(NSUInteger)limit {
     NSMutableArray *rows = [NSMutableArray array];
     if (![cards isKindOfClass:NSArray.class]) return rows;
     for (id entry in cards) {
@@ -238,9 +238,8 @@ static NSString *SRProjectionString(id value, NSString *fallback) {
         BOOL unlocked = [card[@"initialUnlocked"] isEqual:@YES];
         BOOL occupied = [card[@"accountOccupied"] isEqual:@YES];
         NSString *blocked = nil;
-        if (targetCount > SRRunProjectionTargetLimit)
-            blocked = [NSString stringWithFormat:@"超过每条 %lu 群的执行范围，本组不可执行；不会截取前 %lu 群",
-                (unsigned long)SRRunProjectionTargetLimit, (unsigned long)SRRunProjectionTargetLimit];
+        BOOL overTargetLimit = !run && targetCount > limit;
+        if (overTargetLimit) blocked = SRTargetLimitMessage(targetCount, limit);
         else if (!run && !unlocked) blocked = @"等待前序分组结束";
         else if (!run && occupied) blocked = @"账号仍有活动批次，不能开始另一条";
         NSString *title = SRProjectionString(card[@"name"], @"未命名分组");
@@ -252,6 +251,7 @@ static NSString *SRProjectionString(id value, NSString *fallback) {
             @"identifier": SRProjectionString(card[@"id"], @""),
             @"name": title,
             @"targetCount": @(targetCount),
+            @"overTargetLimit": @(overTargetLimit),
             @"targets": identifiers,
             @"targetNames": @[],
             @"phase": phase,
@@ -265,7 +265,7 @@ static NSString *SRProjectionString(id value, NSString *fallback) {
     return rows;
 }
 
-+ (NSArray<NSDictionary *> *)groupRowsForConfiguration:(NSDictionary *)configuration {
++ (NSArray<NSDictionary *> *)groupRowsForConfiguration:(NSDictionary *)configuration targetLimit:(NSUInteger)limit {
     NSMutableArray *rows = [NSMutableArray array];
     NSArray *rules = [configuration isKindOfClass:NSDictionary.class] ? configuration[@"rules"] : nil;
     if (![rules isKindOfClass:NSArray.class]) return rows;
@@ -281,14 +281,14 @@ static NSString *SRProjectionString(id value, NSString *fallback) {
             NSString *name = SRProjectionString(row[@"name"], nil);
             if (name) [names addObject:name];
         }
-        NSString *blocked = targets.count > SRRunProjectionTargetLimit ?
-            [NSString stringWithFormat:@"超过每条 %lu 群的执行范围，本组不可执行；不会截取前 %lu 群",
-                (unsigned long)SRRunProjectionTargetLimit, (unsigned long)SRRunProjectionTargetLimit] :
+        BOOL overTargetLimit = targets.count > limit;
+        NSString *blocked = overTargetLimit ? SRTargetLimitMessage(targets.count, limit) :
             @"尚未确认内容，只能查看分组和群名单，不能发送";
         [rows addObject:@{
             @"identifier": SRProjectionString(rule[@"id"], @""),
             @"name": SRProjectionString(rule[@"name"], @"未命名分组"),
             @"targetCount": @(targets.count),
+            @"overTargetLimit": @(overTargetLimit),
             @"targets": identifiers,
             @"targetNames": names,
             @"phase": SRRunPhaseNotStarted,
@@ -363,7 +363,7 @@ static NSString *SRProjectionString(id value, NSString *fallback) {
         NSDictionary *row = entry;
         groups++;
         targets += [row[@"targetCount"] unsignedIntegerValue];
-        if ([row[@"targetCount"] unsignedIntegerValue] > SRRunProjectionTargetLimit) limited++;
+        if ([row[@"overTargetLimit"] boolValue]) limited++;
         NSDictionary *summary = [row[@"run"] isKindOfClass:NSDictionary.class] ? row[@"run"] : nil;
         if (summary) {
             started++;

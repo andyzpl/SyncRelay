@@ -12,7 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
  * shows anything, and refuses (rather than switching) when that account
  * changed. */
 /* Reusable target picker: grouped plans -> frozen targets. */
-FOUNDATION_EXPORT UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account, NSUInteger limit,
+FOUNDATION_EXPORT UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account,
                                                          void (^completion)(NSArray<NSString *> *targets));
 @class SRSmallGroupSession;
 FOUNDATION_EXPORT UIViewController *SRCreateLibraryList(SRStore *store, NSString *account,

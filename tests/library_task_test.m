@@ -2,6 +2,7 @@
 #import <ImageIO/ImageIO.h>
 #import <sqlite3.h>
 #import "Core/SRStore.h"
+#import "Core/SREntryPreferences.h"
 #import "Core/SRConfiguration.h"
 #import "Core/SRImageAssetStore.h"
 #include <assert.h>
@@ -41,13 +42,46 @@ static NSUInteger countForRun(NSDictionary *summary, NSString *state) {
 static NSUInteger taskCount(SRStore *store, NSString *account) {
     return [store plansForAccount:account limit:100 offset:0 error:NULL].count;
 }
+static void checkForwardingLimit(NSString *root, NSUserDefaults *defaults, SREntryPreferences *preferences) {
+    SRStore *store = [[SRStore alloc] initWithPath:[root stringByAppendingPathComponent:@"limit.sqlite3"] defaults:defaults error:NULL];
+    CHECK(store);
+    NSString *item = [store createLibraryItemForAccount:@"account" kind:@"text"
+        payload:@{@"text": @"Frozen scope"} capturedAt:100 error:NULL]; CHECK(item);
+    NSMutableArray *scope = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 28; index++)
+        [scope addObject:[NSString stringWithFormat:@"scope-%lu@chatroom", (unsigned long)index]];
+    NSString *(^confirm)(NSError **) = ^NSString *(NSError **error) {
+        return [store createLibraryTaskForAccount:@"account" item:item version:nil confirmationID:@"scope"
+            targets:scope minimum:5 maximum:10 error:error];
+    };
+    preferences.maxTargetsPerTask = 20;
+    NSError *error = nil;
+    CHECK(!confirm(&error) && [error.localizedDescription isEqual:SRTargetLimitMessage(28, 20)]);
+    CHECK(taskCount(store, @"account") == 0);
+    preferences.maxTargetsPerTask = 28;
+    NSString *task = confirm(NULL); CHECK(task);
+    preferences.maxTargetsPerTask = 20;
+    error = nil;
+    CHECK(![store startLibraryTask:task account:@"account" error:&error] && [error.localizedDescription isEqual:SRTargetLimitMessage(28, 20)]);
+    CHECK([store libraryTask:task account:@"account" error:NULL][@"runID"] == NSNull.null);
+    preferences.maxTargetsPerTask = 28;
+    NSString *run = [store startLibraryTask:task account:@"account" error:NULL]; CHECK(run);
+    preferences.maxTargetsPerTask = 20;
+    CHECK([store resumeRun:run error:NULL]);
+    CHECK([[store smallGroupRun:run account:@"account" error:NULL][@"targets"] isEqual:scope]);
+    CHECK([store endSmallGroupRun:run account:@"account" error:NULL]);
+}
 int main(void) {
     @autoreleasepool {
         NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         CHECK([NSFileManager.defaultManager createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:NULL]);
         NSString *path = [root stringByAppendingPathComponent:@"tasks.sqlite3"];
         NSError *error = nil;
-        SRStore *store = [[SRStore alloc] initWithPath:path error:&error]; CHECK(store);
+        NSString *suite = [@"SyncRelay.library-limit-test." stringByAppendingString:NSUUID.UUID.UUIDString];
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+        SREntryPreferences *preferences = [[SREntryPreferences alloc] initWithDefaults:defaults];
+        checkForwardingLimit(root, defaults, preferences);
+        SRStore *store = [[SRStore alloc] initWithPath:path defaults:defaults error:&error]; CHECK(store);
 
         // 1. A repeated confirmation resolves to the same frozen task.
         NSString *text = [store createLibraryItemForAccount:@"account" kind:@"text"
@@ -255,7 +289,7 @@ int main(void) {
         CHECK(imageRun && !error);
         NSDictionary *beforeReopen = [store libraryTask:imageTask account:@"account" error:NULL];
         store = nil;
-        store = [[SRStore alloc] initWithPath:path error:&error]; CHECK(store && !error);
+        store = [[SRStore alloc] initWithPath:path defaults:defaults error:&error]; CHECK(store && !error);
         NSDictionary *afterReopen = [store libraryTask:imageTask account:@"account" error:&error];
         CHECK(afterReopen && !error);
         CHECK([afterReopen[@"frozenSha256"] isEqual:beforeReopen[@"frozenSha256"]]);
@@ -319,6 +353,7 @@ int main(void) {
         CHECK(![store startLibraryTask:imageTask account:@"account" error:NULL]);
 
         store = nil;
+        [defaults removePersistentDomainForName:suite];
         CHECK([NSFileManager.defaultManager removeItemAtPath:root error:NULL]);
         puts("PASS: library task freeze, confirmation idempotency, immutable scope, mutual exclusion, account isolation, restart recovery and legacy-callback rejection");
     }

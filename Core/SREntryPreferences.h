@@ -3,6 +3,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSNotificationName const SREntryPreferencesChangedNotification;
+enum { SRForwardingTargetCeiling = 600 };
+FOUNDATION_EXPORT NSString *SRTargetLimitMessage(NSUInteger count, NSUInteger limit);
 
 @interface SREntryPreferences : NSObject
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults;
@@ -13,8 +15,6 @@ FOUNDATION_EXPORT NSNotificationName const SREntryPreferencesChangedNotification
 /* Upper bound for one frozen task. Defaults to 200; the admin setting may
  * raise it to 600. The store keeps 600 as its absolute ceiling. */
 @property(nonatomic) NSInteger maxTargetsPerTask;
-/* The same bound for callers that only have defaults (screens). */
-FOUNDATION_EXPORT NSInteger SREntryMaxTargetsPerTask(void);
 @property(nonatomic, readonly) CGFloat floatingEntryUnitX;
 @property(nonatomic, readonly) CGFloat floatingEntryUnitY;
 @property(nonatomic, readonly) BOOL floatingEntryLeftEdge;

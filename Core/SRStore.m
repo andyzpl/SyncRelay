@@ -1,4 +1,5 @@
 #import "SRStore.h"
+#import "SREntryPreferences.h"
 #import "SRPacing.h"
 #import "SRConfiguration.h"
 #import "SRSourceMessage.h"
@@ -11,6 +12,7 @@
     sqlite3 *_db;
 }
 @property(nonatomic) NSInteger schemaVersion;
+@property(nonatomic, strong) SREntryPreferences *entryPreferences;
 - (BOOL)libraryVersionRelationsPassed;
 - (NSDictionary *)libraryTaskForRunUnchecked:(NSString *)run;
 - (NSDictionary *)libraryTaskUnchecked:(NSString *)task account:(NSString *)account;
@@ -106,8 +108,23 @@ static NSArray *SRImagePayloadKeys(void) {
 }
 
 - (instancetype)initWithPath:(NSString *)path error:(NSError **)error {
+    return [self initWithPath:path defaults:NSUserDefaults.standardUserDefaults error:error];
+}
+
+- (NSUInteger)forwardingTargetLimit {
+    return (NSUInteger)self.entryPreferences.maxTargetsPerTask;
+}
+
+- (void)requireForwardingTargetCount:(NSUInteger)count {
+    NSUInteger limit = self.forwardingTargetLimit;
+    SRRequire(count > 0, @"No targets");
+    if (count > limit) SRRequire(NO, SRTargetLimitMessage(count, limit));
+}
+
+- (instancetype)initWithPath:(NSString *)path defaults:(NSUserDefaults *)defaults error:(NSError **)error {
     self = [super init];
     if (!self) return nil;
+    _entryPreferences = [[SREntryPreferences alloc] initWithDefaults:defaults];
     _imageAssets = [[SRImageAssetStore alloc] initWithDirectory:[path stringByAppendingString:@".media"]];
     if (sqlite3_open_v2(path.fileSystemRepresentation, &_db,
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
@@ -518,11 +535,11 @@ static NSArray *SRImagePayloadKeys(void) {
                 values:@[config[@"plan_id"], config[@"position"]]];
             SRRequire(blocked.count == 0, @"Previous rule has not ended");
         }
+        NSArray *targets = [self query:@"SELECT target,position FROM allocations WHERE rule_id=? ORDER BY position" values:@[rule]];
+        [self requireForwardingTargetCount:targets.count];
         NSString *run = NSUUID.UUID.UUIDString;
         [self query:@"INSERT INTO runs(id,rule_id,account,state,started_at,minimum,maximum,snapshot) VALUES(?,?,?,'running',?,?,?,?)"
             values:@[run, rule, config[@"account"], @(NSDate.date.timeIntervalSince1970), config[@"minimum"], config[@"maximum"], config[@"snapshot"]]];
-        NSArray *targets = [self query:@"SELECT target,position FROM allocations WHERE rule_id=? ORDER BY position" values:@[rule]];
-        SRRequire(targets.count > 0, @"No targets");
         for (NSDictionary *target in targets) [self query:@"INSERT INTO deliveries(id,run_id,target,position,state) VALUES(?,?,?,?,'pending')"
             values:@[NSUUID.UUID.UUIDString, run, target[@"target"], target[@"position"]]];
         return run;
@@ -594,6 +611,7 @@ static NSArray *SRImagePayloadKeys(void) {
         NSDictionary *source = [self smallGroupSourceForRule:rule account:account];
         NSDictionary *row = [self query:@"SELECT minimum,maximum FROM rules WHERE id=?" values:@[rule]].firstObject;
         NSArray *targets = [[self query:@"SELECT target FROM allocations WHERE rule_id=? ORDER BY position" values:@[rule]] valueForKey:@"target"];
+        [self requireForwardingTargetCount:targets.count];
         return @{@"source": source, @"targets": targets, @"minimum": row[@"minimum"], @"maximum": row[@"maximum"]};
     } transaction:NO error:error];
 }
@@ -603,7 +621,7 @@ static NSArray *SRImagePayloadKeys(void) {
     NSDictionary *libraryTask = [self libraryTaskForRunUnchecked:run];
     if (libraryTask) {
         NSDictionary *task = [self libraryTaskUnchecked:libraryTask[@"id"] account:account];
-        SRRequire([task[@"dispatchAvailable"] isEqual:@YES] && [task[@"runID"] isEqual:run],
+        SRRequire([task[@"runID"] isEqual:run],
                   @"Message-library task is outside the bounded dispatch scope");
         row = [[self query:@"SELECT * FROM runs WHERE id=? AND account=? AND rule_id=?"
             values:@[run, account, task[@"ruleID"]]].firstObject mutableCopy];
@@ -619,8 +637,7 @@ static NSArray *SRImagePayloadKeys(void) {
     }
     NSArray *targets = [self query:@"SELECT target FROM deliveries WHERE run_id=? ORDER BY position" values:@[run]];
     NSArray *allocated = [self query:@"SELECT target FROM allocations WHERE rule_id=? ORDER BY position" values:@[row[@"rule_id"]]];
-    NSUInteger maximum = libraryTask ? 20 : 600;
-    SRRequire(targets.count > 0 && targets.count <= maximum && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
+    SRRequire(targets.count > 0 && targets.count <= SRForwardingTargetCeiling && [targets isEqual:allocated], @"Run targets differ from the authorized rule");
     row[@"source"] = source; row[@"targets"] = [targets valueForKey:@"target"];
     row[@"counts"] = [self countsForRun:run];
     return row;
@@ -1245,8 +1262,6 @@ static BOOL SRSameOptionalValue(id left, id right) {
                                          origin:(NSString *)origin {
     SRPacing pacing = {0};
     SRRequire(SRPacingConfigure(&pacing, minimum, maximum), @"Interval must satisfy 3 <= minimum <= maximum");
-    SRRequire([targets isKindOfClass:NSArray.class] && targets.count > 0 && targets.count <= 20,
-              @"A dispatchable message-library task needs 1 to 20 target groups");
     SRRequire([NSSet setWithArray:targets].count == targets.count, @"Duplicate targets");
     for (NSString *target in targets)
         SRRequire([target isKindOfClass:NSString.class] && [target hasSuffix:@"@chatroom"], @"Invalid target group");
@@ -1357,7 +1372,8 @@ static BOOL SRSameOptionalValue(id left, id right) {
               @"Frozen target count was altered");
     SRRequire([SRTargetDigest([targets valueForKey:@"target"]) isEqual:row[@"target_sha256"]],
               @"Frozen target scope was altered");
-    BOOL dispatchAvailable = targets.count > 0 && targets.count <= 20;
+    NSUInteger limit = row[@"run_id"] == NSNull.null ? self.forwardingTargetLimit : SRForwardingTargetCeiling;
+    BOOL dispatchAvailable = targets.count > 0 && targets.count <= limit;
     return [@{@"id": row[@"id"], @"confirmationID": row[@"confirmation_id"], @"itemID": row[@"item_id"],
         @"versionID": row[@"version_id"], @"planID": row[@"plan_id"], @"ruleID": row[@"rule_id"],
         @"runID": row[@"run_id"], @"mediaToken": row[@"media_token"], @"type": snapshot[@"type"],
@@ -1373,6 +1389,8 @@ static BOOL SRSameOptionalValue(id left, id right) {
                                   minimum:(double)minimum maximum:(double)maximum error:(NSError **)error {
     return [self perform:^id{
         SRRequire(account.length && item.length, @"Account and library entry are required");
+        SRRequire([targets isKindOfClass:NSArray.class], @"Invalid targets");
+        [self requireForwardingTargetCount:targets.count];
         SRRequire([confirmationID isKindOfClass:NSString.class] && confirmationID.length && confirmationID.length <= 200,
                   @"A confirmation ID is required to make a repeated confirmation idempotent");
         NSDictionary *entry = [self query:@"SELECT kind,current_version_id FROM library_items WHERE id=? AND account=? AND NOT EXISTS(SELECT 1 FROM library_deletions d WHERE d.item_id=library_items.id)"
@@ -1419,9 +1437,8 @@ static BOOL SRSameOptionalValue(id left, id right) {
 - (NSString *)startLibraryTask:(NSString *)task account:(NSString *)account error:(NSError **)error {
     return [self perform:^id{
         NSDictionary *frozen = [self libraryTaskUnchecked:task account:account];
-        SRRequire([frozen[@"dispatchAvailable"] isEqual:@YES],
-                  @"Message-library forwarding is limited to 1–20 groups in this build");
         if (frozen[@"runID"] != NSNull.null) return frozen[@"runID"];
+        [self requireForwardingTargetCount:[frozen[@"targetCount"] unsignedIntegerValue]];
         SRRequire([self query:@"SELECT id FROM operations_contents WHERE account=? AND archived_at IS NULL" values:@[account]].count == 0,
                   @"Handle the current group-sync content before starting a library task");
         SRRequire([self query:@"SELECT id FROM runs WHERE account=? AND state IN ('running','paused','awaiting_resume') LIMIT 1" values:@[account]].count == 0,
@@ -1462,6 +1479,7 @@ static BOOL SRSameOptionalValue(id left, id right) {
         SRRequire([confirmationID isKindOfClass:NSString.class] && confirmationID.length && confirmationID.length <= 200,
                   @"A new confirmation ID is required to re-send a frozen task");
         NSArray *targets = [origin[@"targets"] valueForKey:@"target"];
+        [self requireForwardingTargetCount:targets.count];
         NSDictionary *rule = [self query:@"SELECT minimum,maximum FROM rules WHERE id=?" values:@[origin[@"ruleID"]]].firstObject;
         SRRequire(rule != nil, @"Frozen rule is missing");
         // A re-send request is identified by the whole frozen scope plus the

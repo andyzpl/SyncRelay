@@ -1,6 +1,5 @@
 #import "SRSmallGroupSession.h"
 #import "Core/SRStore.h"
-#import "Core/SRRunProjection.h"
 #import "Core/SRSourceMessage.h"
 #import "Core/SRRuntimeLog.h"
 
@@ -261,7 +260,7 @@ static BOOL SRSmallSubmitted(NSDictionary *evidence, NSDictionary *source, NSStr
         for (NSDictionary *row in summary[@"counts"]) counts[row[@"state"]] = row[@"count"];
         self.lastSummary = @{@"state": state, @"counts": [counts copy]};
     }
-    return @{@"schema": @1, @"targetLimit": @(SRRunProjectionTargetLimit), @"state": state, @"busy": @(self.busy),
+    return @{@"schema": @1, @"targetLimit": @(self.store.forwardingTargetLimit), @"state": state, @"busy": @(self.busy),
         @"dispatchEnabled": @(self.dispatchEnabled), @"needsIdleTimer": @(self.needsIdleTimer), @"usedNativeHost": @(self.usedNativeHost),
         @"problem": self.problem ?: @"", @"nativeProblem": self.nativeProblem ?: @"", @"counts": counts, @"deviceMultiGroupVerified": @NO,
         @"automaticRetry": @NO, @"automaticNextRule": @NO, @"deliveryOutcome": @"not_determined"};

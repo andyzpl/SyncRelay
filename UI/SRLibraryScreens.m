@@ -260,7 +260,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic) BOOL masked;
 - (void)promptForward;
 - (void)forwardToGroups:(NSArray<NSString *> *)targets;
-- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets;
+- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets version:(NSString *)version;
 @end
 
 @implementation SRLibraryItemScreen
@@ -301,44 +301,50 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 
 - (void)promptForward {
     __weak typeof(self) weakSelf = self;
-    UIViewController *picker = SRCreateTargetPicker(self.store, self.account,
-        MIN((NSUInteger)SREntryMaxTargetsPerTask(), 20), ^(NSArray<NSString *> *targets) {
+    UIViewController *picker = SRCreateTargetPicker(self.store, self.account, ^(NSArray<NSString *> *targets) {
         [weakSelf forwardToGroups:targets];
     });
     [self.navigationController pushViewController:picker animated:YES];
 }
 
 - (void)forwardToGroups:(NSArray<NSString *> *)targets {
-    NSUInteger limit = MIN((NSUInteger)SREntryMaxTargetsPerTask(), 20);
     if (![self verified]) return;
-    if (targets.count < 1 || targets.count > limit) {
-        [self showFailure:[NSString stringWithFormat:@"消息库转发本轮限 1–%lu 个群", (unsigned long)limit] error:nil];
+    NSUInteger limit = self.store.forwardingTargetLimit;
+    if (targets.count > limit) {
+        UIAlertController *over = [UIAlertController alertControllerWithTitle:@"超过目标上限"
+            message:SRTargetLimitMessage(targets.count, limit) preferredStyle:UIAlertControllerStyleAlert];
+        [over addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:over animated:YES completion:nil];
         return;
     }
+    if (!targets.count) return;
+    NSArray<NSString *> *confirmedTargets = [targets copy];
+    NSString *version = [self.entry[@"current_version_id"] copy];
+    if (!version.length) { [self showFailure:@"无法确认消息版本" error:nil]; return; }
+    NSString *risk = targets.count > 100 ? @"\n超过 100 个群有风控风险，建议先用更少的群验证。" : @"";
     UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"确认转发消息库内容？"
-        message:[NSString stringWithFormat:@"将按顺序转发已冻结的 %@ 内容到 %lu 个群，每个目标间隔 5–8 秒。微信切到后台会暂停；提交结果未知的群不会自动重发。",
-            [self.entry[@"kind"] isEqual:@"image"] ? @"图片" : @"文字", (unsigned long)targets.count]
+        message:[NSString stringWithFormat:@"将按顺序转发当前版本的 %@ 内容到 %lu 个群，每个目标间隔 5–8 秒。微信切到后台会暂停；提交结果未知的群不会自动重发。%@",
+            [self.entry[@"kind"] isEqual:@"image"] ? @"图片" : @"文字", (unsigned long)targets.count, risk]
         preferredStyle:UIAlertControllerStyleAlert];
     [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
     [confirm addAction:[UIAlertAction actionWithTitle:@"确认并开始" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-        [weakSelf createAndStartForwardToGroups:targets];
+        [weakSelf createAndStartForwardToGroups:confirmedTargets version:version];
     }]];
     [self presentViewController:confirm animated:YES completion:nil];
 }
 
-- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets {
+- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets version:(NSString *)version {
     if (![self verified]) return;
     NSError *error = nil;
     // A stable key makes an identical request (same entry, version and ordered
     // targets) resolve to the frozen task that already exists instead of
     // creating another plan every time the button is tapped.
-    NSString *version = self.entry[@"current_version_id"] ?: @"";
     NSString *scope = [NSString stringWithFormat:@"%@|%@|%@", self.item, version,
                        [targets componentsJoinedByString:@","]];
     NSString *confirmation = [SRImageAssetStore sha256ForData:[scope dataUsingEncoding:NSUTF8StringEncoding]];
     NSString *task = [self.store createLibraryTaskForAccount:self.account item:self.item
-        version:self.entry[@"current_version_id"] confirmationID:confirmation targets:targets
+        version:version confirmationID:confirmation targets:targets
         minimum:5 maximum:8 error:&error];
     if (!task.length) { [self showFailure:@"创建转发任务失败" error:error]; return; }
     if (!self.session || ![self.session startLibraryTask:task account:self.account error:&error]) {
@@ -718,7 +724,6 @@ static id SRLibraryReadGetter(id object, NSString *name) {
 @interface SRTargetPickerScreen : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
-@property(nonatomic) NSUInteger limit;
 @property(nonatomic, strong) NSArray *plans;
 @property(nonatomic, strong) NSArray *rules;      // saved configuration draft
 @property(nonatomic, strong) NSMutableSet *selectedRules;
@@ -762,7 +767,7 @@ static id SRLibraryReadGetter(id object, NSString *name) {
 }
 
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return [NSString stringWithFormat:@"来自设置页保存的分组规则；最多可选 %lu 个群，超过 100 个会有风控风险。", (unsigned long)self.limit];
+    if (section == 0) return [NSString stringWithFormat:@"来自设置页保存的分组规则；最多可选 %lu 个群，超过 100 个会有风控风险。", (unsigned long)self.store.forwardingTargetLimit];
     return @"已冻结的计划目标；与上方的规则可以叠加选择。";
 }
 
@@ -884,9 +889,7 @@ static id SRLibraryReadGetter(id object, NSString *name) {
     __weak typeof(self) weakSelf = self;
     [self dismissViewControllerAnimated:YES completion:^{
         if (!targets.count) return;
-        void (^completion)(NSArray<NSString *> *) = weakSelf.completion;
-        [weakSelf.navigationController popViewControllerAnimated:YES];
-        if (completion) completion(targets);
+        [weakSelf deliver:targets];
     }];
 }
 
@@ -908,9 +911,7 @@ static id SRLibraryReadGetter(id object, NSString *name) {
     }
     self.nativePicker = nil;
     if (!targets.count) return;   // host picker returned nothing usable
-    void (^completion)(NSArray<NSString *> *) = self.completion;
-    [self.navigationController popViewControllerAnimated:YES];
-    if (completion) completion(targets);
+    [self deliver:targets];
 }
 
 - (void)finish {
@@ -931,31 +932,19 @@ static id SRLibraryReadGetter(id object, NSString *name) {
         for (NSString *target in allocated)
             if ([target hasSuffix:@"@chatroom"] && ![targets containsObject:target]) [targets addObject:target];
     }
-    if (targets.count > self.limit) {
-        [self alert:@"超过目标上限" message:[NSString stringWithFormat:@"已选 %lu 个群，当前上限 %lu。",
-            (unsigned long)targets.count, (unsigned long)self.limit]];
-        return;
-    }
-    if (targets.count > 100) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"风控提示"
-            message:[NSString stringWithFormat:@"本次将发送到 %lu 个群，建议先发 100 个以内观察稳定性。",
-                (unsigned long)targets.count] preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-        __weak typeof(self) weakSelf = self;
-        [alert addAction:[UIAlertAction actionWithTitle:@"仍然继续" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
-            [weakSelf deliver:targets];
-        }]];
-        [self presentViewController:alert animated:YES completion:nil];
-        return;
-    }
     [self deliver:targets];
 }
 
 - (void)deliver:(NSArray<NSString *> *)targets {
     if (!targets.count) { [self alert:@"没有选择目标" message:@"请先选择至少一个已分组的列表。"]; return; }
+    NSUInteger limit = self.store.forwardingTargetLimit;
+    if (targets.count > limit) { [self alert:@"超过目标上限" message:SRTargetLimitMessage(targets.count, limit)]; return; }
     void (^completion)(NSArray<NSString *> *) = self.completion;
-    [self.navigationController popViewControllerAnimated:YES];
-    if (completion) completion(targets);
+    UINavigationController *navigation = self.navigationController;
+    if (navigation.topViewController != self || ![navigation popViewControllerAnimated:YES] || !completion) return;
+    if (![navigation.transitionCoordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        if (!context.isCancelled) completion(targets);
+    }]) completion(targets);
 }
 
 - (void)alert:(NSString *)title message:(NSString *)message {
@@ -966,10 +955,10 @@ static id SRLibraryReadGetter(id object, NSString *name) {
 }
 @end
 
-UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account, NSUInteger limit,
+UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account,
                                       void (^completion)(NSArray<NSString *> *targets)) {
     SRTargetPickerScreen *screen = [[SRTargetPickerScreen alloc] initWithStyle:UITableViewStyleGrouped];
-    screen.store = store; screen.account = account; screen.limit = limit; screen.completion = completion;
+    screen.store = store; screen.account = account; screen.completion = completion;
     return screen;
 }
 

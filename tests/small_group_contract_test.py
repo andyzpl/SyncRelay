@@ -65,11 +65,12 @@ class SmallGroupContracts(unittest.TestCase):
         result = text.split('- (void)recordDelivery:', 1)[1].split('- (BOOL)tick', 1)[0]
         self.assertIn('SRPacingSubmitted(&_pacing, _clock(), _random())', result)
 
-    def test_test_actions_do_not_enable_large_rules_or_replay(self):
+    def test_actions_check_configured_limit_and_do_not_enable_replay(self):
         text = self.text('UI/SRPlanScreens.m')
         # B-2 closeout moved every command into the execution detail page, so
         # the bounded-rule gate and the start/continue calls are pinned there.
-        self.assertIn('[card[@"targetCount"] unsignedIntegerValue] > SRRunProjectionTargetLimit', text)
+        self.assertIn('limit = self.store.forwardingTargetLimit', text)
+        self.assertIn('SRTargetLimitMessage(count, limit)', text)
         self.assertIn('startRule:rule account:account', text)
         self.assertIn('resumeRun:runID account:self.account', text)
         self.assertNotIn('replay:YES', text)

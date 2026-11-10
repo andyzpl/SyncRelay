@@ -189,7 +189,7 @@ static void checkGroupRows(void) {
         card(@"rule-b", @"Synthetic B", 2, NO, NO, nil),
         card(@"rule-c", @"Synthetic C", 4, YES, YES, nil),
         card(@"rule-d", @"Synthetic D", 5, YES, NO, run(@"run-d", @"running", @(1792700000), nil, counts(4, 1, 0, 0, 0, 0, 0)))];
-    NSArray *rows = [SRRunProjection groupRowsForCards:cards];
+    NSArray *rows = [SRRunProjection groupRowsForCards:cards targetLimit:600];
     CHECK(rows.count == 4);
 
     CHECK([rows[0][@"phase"] isEqual:SRRunPhaseNotStarted]);
@@ -206,7 +206,7 @@ static void checkGroupRows(void) {
     CHECK([rows[2][@"blockedText"] isEqual:@"账号仍有活动批次，不能开始另一条"]);
     // The gate order is unchanged: a locked group is refused first, so a card
     // that is both locked and occupied still reports the predecessor.
-    NSArray *locked = [SRRunProjection groupRowsForCards:@[card(@"rule-locked", @"Synthetic Locked", 2, NO, YES, nil)]];
+    NSArray *locked = [SRRunProjection groupRowsForCards:@[card(@"rule-locked", @"Synthetic Locked", 2, NO, YES, nil)] targetLimit:600];
     CHECK([locked[0][@"executable"] isEqual:@NO]);
     CHECK([locked[0][@"blockedText"] isEqual:@"等待前序分组结束"]);
 
@@ -236,23 +236,25 @@ static void checkGroupRows(void) {
     CHECK([empty[@"groups"] isEqual:@0] && [empty[@"targets"] isEqual:@0]);
     CHECK([empty[@"unstarted"] isEqual:@0] && [empty[@"total"] isEqual:@0]);
     CHECK([[SRRunProjection overviewForGroupRows:nil][@"groups"] isEqual:@0]);
-    CHECK([[SRRunProjection groupRowsForCards:@[]] count] == 0);
-    CHECK([[SRRunProjection groupRowsForCards:nil] count] == 0);
+    CHECK([[SRRunProjection groupRowsForCards:@[] targetLimit:600] count] == 0);
+    CHECK([[SRRunProjection groupRowsForCards:nil targetLimit:600] count] == 0);
 }
 
 static void checkTargetLimit(void) {
-    CHECK(SRRunProjectionTargetLimit == 600);
-    NSArray *over = [SRRunProjection groupRowsForCards:@[card(@"rule-big", @"Synthetic Big", 601, YES, NO, nil)]];
+    NSArray *over = [SRRunProjection groupRowsForCards:@[card(@"rule-big", @"Synthetic Big", 601, YES, NO, nil)] targetLimit:600];
     CHECK(over.count == 1);
     CHECK([over[0][@"executable"] isEqual:@NO]);
     CHECK([over[0][@"targetCount"] isEqual:@601]);
     CHECK([over[0][@"blockedText"] isKindOfClass:NSString.class]);
     CHECK([over[0][@"blockedText"] rangeOfString:@"600"].location != NSNotFound);
     // Exactly the ceiling is still executable; nothing is truncated.
-    NSArray *exact = [SRRunProjection groupRowsForCards:@[card(@"rule-max", @"Synthetic Max", 600, YES, NO, nil)]];
+    NSArray *exact = [SRRunProjection groupRowsForCards:@[card(@"rule-max", @"Synthetic Max", 600, YES, NO, nil)] targetLimit:600];
     CHECK([exact[0][@"executable"] isEqual:@YES]);
     CHECK([exact[0][@"blockedText"] isEqual:NSNull.null]);
     CHECK([[SRRunProjection overviewForGroupRows:over][@"limited"] isEqual:@1]);
+    NSArray *groups = @[card(@"rule-28", @"Synthetic 28", 28, YES, NO, nil)];
+    CHECK(![[SRRunProjection groupRowsForCards:groups targetLimit:20][0][@"executable"] boolValue]);
+    CHECK([[SRRunProjection groupRowsForCards:groups targetLimit:28][0][@"executable"] boolValue]);
 }
 
 static void checkConfigurationRows(void) {
@@ -261,7 +263,7 @@ static void checkConfigurationRows(void) {
             @{@"id": @"1@chatroom", @"name": @"Synthetic One"}, @{@"id": @"2@chatroom", @"name": @"Synthetic Two"}]},
         @{@"id": @"draft-b", @"name": @"Synthetic Draft B", @"targets": @[
             @{@"id": @"3@chatroom", @"name": @"Synthetic Three"}]}]};
-    NSArray *rows = [SRRunProjection groupRowsForConfiguration:configuration];
+    NSArray *rows = [SRRunProjection groupRowsForConfiguration:configuration targetLimit:600];
     CHECK(rows.count == 2);
     CHECK([rows[0][@"targetCount"] isEqual:@2]);
     CHECK([rows[0][@"targets"][1] isEqual:@"2@chatroom"]);
@@ -270,8 +272,8 @@ static void checkConfigurationRows(void) {
     CHECK([rows[0][@"executable"] isEqual:@NO]);
     CHECK([rows[1][@"executable"] isEqual:@NO]);
     CHECK([[rows[0][@"blockedText"] description] containsString:@"不能发送"]);
-    CHECK([[SRRunProjection groupRowsForConfiguration:@{}] count] == 0);
-    CHECK([[SRRunProjection groupRowsForConfiguration:nil] count] == 0);
+    CHECK([[SRRunProjection groupRowsForConfiguration:@{} targetLimit:600] count] == 0);
+    CHECK([[SRRunProjection groupRowsForConfiguration:nil targetLimit:600] count] == 0);
 }
 
 static void checkSearchAndFilter(void) {
@@ -280,7 +282,7 @@ static void checkSearchAndFilter(void) {
         card(@"rule-b", @"Beta", 2, NO, NO, run(@"run-b", @"paused", @(1792700000), nil, counts(1, 0, 1, 0, 0, 0, 0))),
         card(@"rule-c", @"Gamma", 2, NO, NO, run(@"run-c", @"completed", @(1792700000), @(1792700100), counts(0, 0, 1, 1, 0, 0, 0))),
         card(@"rule-d", @"Delta", 2, NO, NO, run(@"run-d", @"completed", @(1792700000), @(1792700100), counts(0, 0, 1, 0, 1, 0, 0)))];
-    NSArray *rows = [SRRunProjection groupRowsForCards:cards];
+    NSArray *rows = [SRRunProjection groupRowsForCards:cards targetLimit:600];
     NSArray *snapshot = [rows copy];
 
     CHECK([SRRunProjection filterIdentifiers].count == 5);
@@ -301,7 +303,7 @@ static void checkSearchAndFilter(void) {
     CHECK([[SRRunProjection rows:rows matchingText:@"GAMMA" filter:SRGroupFilterAll] count] == 1);
     CHECK([[SRRunProjection rows:rows matchingText:@"nothing" filter:SRGroupFilterAll] count] == 0);
     NSArray *configurationRows = [SRRunProjection groupRowsForConfiguration:@{@"schema": @1, @"rules": @[
-        @{@"id": @"draft-a", @"name": @"Alpha", @"targets": @[@{@"id": @"9@chatroom", @"name": @"Synthetic Nine"}]}]}];
+        @{@"id": @"draft-a", @"name": @"Alpha", @"targets": @[@{@"id": @"9@chatroom", @"name": @"Synthetic Nine"}]}]} targetLimit:600];
     CHECK([[SRRunProjection rows:configurationRows matchingText:@"nine" filter:SRGroupFilterAll] count] == 1);
     CHECK([[SRRunProjection rows:configurationRows matchingText:@"9@chatroom" filter:SRGroupFilterAll] count] == 1);
 
@@ -340,7 +342,7 @@ static void checkFrozenTargetSearch(void) {
                        // A card that carries no identifiers stays empty rather
                        // than borrowing another row's targets.
                        card(@"rule-b", @"Synthetic B", 2, NO, NO, nil)];
-    NSArray *rows = [SRRunProjection groupRowsForCards:cards];
+    NSArray *rows = [SRRunProjection groupRowsForCards:cards targetLimit:600];
     CHECK(rows.count == 2);
     // The frozen identifiers survive in position order.
     CHECK([rows[0][@"targets"] isEqual:targets]);
@@ -360,7 +362,7 @@ static void checkFrozenTargetSearch(void) {
     // The projection copies instead of exposing the card's own array.
     NSMutableArray *mutable = [targets mutableCopy];
     NSDictionary *mutableCard = cardWithTargets(@"rule-c", @"Synthetic C", mutable, nil);
-    NSArray *copied = [SRRunProjection groupRowsForCards:@[mutableCard]][0][@"targets"];
+    NSArray *copied = [SRRunProjection groupRowsForCards:@[mutableCard] targetLimit:600][0][@"targets"];
     [mutable addObject:@"late@chatroom"];
     CHECK(copied.count == 3);
     CHECK(![copied containsObject:@"late@chatroom"]);

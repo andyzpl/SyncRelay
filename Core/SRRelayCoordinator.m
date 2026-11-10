@@ -1,4 +1,5 @@
 #import "SRRelayCoordinator.h"
+#import "SREntryPreferences.h"
 #import "SRStore.h"
 #import "SRConfiguration.h"
 #import "SRSourceMessage.h"
@@ -384,8 +385,10 @@ static void SRRelayDiagnostic(NSString *event, NSUInteger reasonCode) {
         NSDictionary *selected = nil;
         for (NSDictionary *group in groups) if ([group[@"id"] isEqual:frozenRuleID]) selected = group;
         NSUInteger targets = [selected[@"targetCount"] unsignedIntegerValue];
-        if (!selected || selected[@"latestRun"] != NSNull.null || !targets || targets > 20)
-            return SRRelayFail(failure, @"Select an unstarted frozen group with 1 to 20 targets");
+        if (!selected || selected[@"latestRun"] != NSNull.null || !targets)
+            return SRRelayFail(failure, @"Select an unstarted frozen group with targets");
+        NSUInteger limit = self.store.forwardingTargetLimit;
+        if (targets > limit) return SRRelayFail(failure, SRTargetLimitMessage(targets, limit));
         BOOL result = [self.execution startRule:frozenRuleID account:self.account error:failure];
         NSArray *history = [self.store historyForRule:frozenRuleID account:self.account limit:1 offset:0 error:NULL];
         if (result && !history.firstObject[@"id"]) return [self fail:failure reason:@"Execution port did not persist the started run"];

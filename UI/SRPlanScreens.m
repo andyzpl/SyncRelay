@@ -4,6 +4,7 @@
 #import "Core/SRSourceCapture.h"
 #import "Core/SRImageAssetStore.h"
 #import "Core/SRRunProjection.h"
+#import "Core/SREntryPreferences.h"
 #import "Adapter/SRSmallGroupSession.h"
 #import <CoreFoundation/CoreFoundation.h>
 #include <math.h>
@@ -221,7 +222,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 - (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (self.problem) return @"本页不会创建、继续或重试发送任务。";
     if (self.kind == SRRecordPreview && section == 2) return @"确认只建立内容计划和目标分组，不发送。所有规则使用同一条已确认内容；之后修改设置不会改变此计划。";
-    if (self.kind == SRRecordPlan && section == 1) return @"点击规则进入执行详情：开始、暂停、继续、取消和结束只在那里提供，并会重新核对账号、分组与批次。本轮只开放每条 1–20 个授权测试群：开始后串行转发，暂停后手动继续；大规则和重新执行尚未开放。请保持微信前台，切后台或锁屏会暂停，不自动接下一条。";
+    if (self.kind == SRRecordPlan && section == 1) return @"点击规则进入执行详情。新批次的目标上限由高级设置控制。开始后串行转发；切后台或锁屏会暂停，不自动接下一条。";
     if (self.kind == SRRecordHistory) return @"执行完成表示本条队列处理结束，不代表全部送达。已提交与确认送达分开统计；点击批次只查看失败、结果未知和未发项。";
     if (self.kind == SRRecordExceptions) return @"无需逐群人工复核。异常保留供按需查看；继续只处理尚未尝试的目标，不自动重发已提交或结果未知的群。";
     return nil;
@@ -275,7 +276,8 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
         cell.textLabel.text = [NSString stringWithFormat:@"%@ · %@ 个群", row[@"name"], row[@"targetCount"]];
         NSDictionary *run = [row[@"latestRun"] isKindOfClass:NSDictionary.class] ? row[@"latestRun"] : nil;
         cell.detailTextLabel.text = run ? SRRunDescription(run) : ([row[@"initialUnlocked"] boolValue] ? @"未执行 · 顺序已解锁" : @"未执行 · 等待前序规则结束");
-        if ([row[@"targetCount"] unsignedIntegerValue] > 20) cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingString:@"\n超过本轮 20 群测试范围，不提供发送入口。"];
+        NSUInteger count = [row[@"targetCount"] unsignedIntegerValue], limit = self.store.forwardingTargetLimit;
+        if (!run && count > limit) cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingFormat:@"\n%@", SRTargetLimitMessage(count, limit)];
         if (!run && [row[@"accountOccupied"] boolValue]) cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingString:@"\n账号仍有活动批次，不能开始另一条。"];
     } else if (self.kind == SRRecordHistory) {
         cell.textLabel.text = SRRunDescription(row);
@@ -554,14 +556,14 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         NSArray *cards = [self.store ruleCardsForPlan:self.planID account:self.account error:error];
         if (!cards) return NO;
         self.cards = SRCardsWithCancellation(self.store, self.account, cards);
-        self.groupRows = [SRRunProjection groupRowsForCards:self.cards];
+        self.groupRows = [SRRunProjection groupRowsForCards:self.cards targetLimit:self.store.forwardingTargetLimit];
     } else {
         /* The content's frozen configuration first; the saved settings must not
          * stand in for it after the user edits them. */
         NSDictionary *configuration = self.frozenConfiguration;
         if (!configuration) configuration = [self.store configurationForAccount:self.account error:error];
         if (!configuration) return NO;
-        self.groupRows = [SRRunProjection groupRowsForConfiguration:configuration];
+        self.groupRows = [SRRunProjection groupRowsForConfiguration:configuration targetLimit:self.store.forwardingTargetLimit];
     }
     self.overview = [SRRunProjection overviewForGroupRows:self.groupRows];
     [self resolveRecentResult];
@@ -888,7 +890,7 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         }
         self.envelope = SRDictionary(plan[@"snapshot"]);
         [self.allRows addObjectsFromArray:[SRRunProjection groupRowsForCards:
-            SRCardsWithCancellation(self.store, self.account, cards)]];
+            SRCardsWithCancellation(self.store, self.account, cards) targetLimit:self.store.forwardingTargetLimit]];
     } else {
         /* No confirmed content: the content's frozen configuration can be
          * inspected, but every row stays non-executable. The saved settings are
@@ -900,7 +902,7 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
             self.problem = @{@"title": @"读取失败", @"message": error.localizedDescription ?: @"无法读取已保存的分组配置。"};
             [self.tableView reloadData]; return;
         }
-        [self.allRows addObjectsFromArray:[SRRunProjection groupRowsForConfiguration:configuration]];
+        [self.allRows addObjectsFromArray:[SRRunProjection groupRowsForConfiguration:configuration targetLimit:self.store.forwardingTargetLimit]];
     }
     [self applyFilter];
 }
@@ -1153,9 +1155,8 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     NSDictionary *run = [self currentRun];
     if (!run) {
         NSString *blocked = nil;
-        if ([card[@"targetCount"] unsignedIntegerValue] > SRRunProjectionTargetLimit)
-            blocked = [NSString stringWithFormat:@"超过每条 %lu 群的执行范围，本组不可执行；不会截取前 %lu 群。",
-                (unsigned long)SRRunProjectionTargetLimit, (unsigned long)SRRunProjectionTargetLimit];
+        NSUInteger count = [card[@"targetCount"] unsignedIntegerValue], limit = self.store.forwardingTargetLimit;
+        if (count > limit) blocked = SRTargetLimitMessage(count, limit);
         else if (![card[@"initialUnlocked"] isEqual:@YES]) blocked = @"等待前序分组结束。";
         else if ([card[@"accountOccupied"] isEqual:@YES]) blocked = @"账号仍有活动批次，不能开始另一条。";
         else if (!self.execution) blocked = @"当前没有可用的执行会话。";
@@ -1400,9 +1401,9 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     if (!card || [card[@"latestRun"] isKindOfClass:NSDictionary.class]) {
         [self reload]; SRScreenAlert(self, @"还不能开始", @"该分组的状态已经改变，请查看刷新后的详情。"); return;
     }
-    if ([card[@"targetCount"] unsignedIntegerValue] > SRRunProjectionTargetLimit) {
-        SRScreenAlert(self, @"还不能开始", [NSString stringWithFormat:@"本组超过每条 %lu 群的执行范围，不会截取前 %lu 群。",
-            (unsigned long)SRRunProjectionTargetLimit, (unsigned long)SRRunProjectionTargetLimit]); return;
+    NSUInteger count = [card[@"targetCount"] unsignedIntegerValue], limit = self.store.forwardingTargetLimit;
+    if (count > limit) {
+        SRScreenAlert(self, @"还不能开始", SRTargetLimitMessage(count, limit)); return;
     }
     if (![card[@"initialUnlocked"] isEqual:@YES]) { SRScreenAlert(self, @"还不能开始", @"前序分组尚未结束。"); return; }
     if ([card[@"accountOccupied"] isEqual:@YES]) { SRScreenAlert(self, @"还不能开始", @"账号仍有活动批次，不能开始另一条。"); return; }
@@ -1410,10 +1411,11 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
     NSDictionary *preview = [self.store smallGroupRulePreview:rule account:account error:&error];
     if (!preview) { [self showError:@"还不能开始" error:error fallback:@"当前状态不允许开始。"]; return; }
     NSArray *targets = [preview[@"targets"] isKindOfClass:NSArray.class] ? preview[@"targets"] : @[];
+    NSString *risk = targets.count > 100 ? @"\n超过 100 个群有风控风险，建议先用更少的群验证。" : @"";
     NSString *message = [NSString stringWithFormat:
-        @"将向这 %lu 个群串行发送已确认的 %@ 消息：\n%@\n\n每次结果处理后再等待 %@–%@ 秒；不会自动接下一条。保持微信前台，测试时可以暂停。已尝试但结果未知的群不自动重发。",
+        @"将向这 %lu 个群串行发送已确认的 %@ 消息：\n%@\n\n每次结果处理后再等待 %@–%@ 秒；不会自动接下一条。保持微信前台，测试时可以暂停。已尝试但结果未知的群不自动重发。%@",
         (unsigned long)targets.count, [SRRunProjection typeTextForEnvelope:preview[@"source"]],
-        [targets componentsJoinedByString:@"\n"], preview[@"minimum"], preview[@"maximum"]];
+        [targets componentsJoinedByString:@"\n"], preview[@"minimum"], preview[@"maximum"], risk];
     UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"开始真实转发？" message:message preferredStyle:UIAlertControllerStyleAlert];
     [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
@@ -1452,9 +1454,9 @@ static NSArray *SRCardsWithCancellation(SRStore *store, NSString *account, NSArr
         SRScreenAlert(self, @"还不能开始", @"确认期间该分组已出现批次，本次不会开始；请查看刷新后的详情。");
         [self finish]; return;
     }
-    if ([card[@"targetCount"] unsignedIntegerValue] > SRRunProjectionTargetLimit) {
-        SRScreenAlert(self, @"还不能开始", [NSString stringWithFormat:@"本组超过每条 %lu 群的执行范围，不会截取前 %lu 群。",
-            (unsigned long)SRRunProjectionTargetLimit, (unsigned long)SRRunProjectionTargetLimit]);
+    NSUInteger count = [card[@"targetCount"] unsignedIntegerValue], limit = self.store.forwardingTargetLimit;
+    if (count > limit) {
+        SRScreenAlert(self, @"还不能开始", SRTargetLimitMessage(count, limit));
         [self finish]; return;
     }
     if (![card[@"initialUnlocked"] isEqual:@YES]) {

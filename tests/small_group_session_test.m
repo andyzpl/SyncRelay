@@ -3,6 +3,7 @@
 #import <ImageIO/ImageIO.h>
 #import "Adapter/SRSmallGroupSession.h"
 #import "Core/SRStore.h"
+#import "Core/SREntryPreferences.h"
 #import "Core/SRConfiguration.h"
 #import "Core/SRImageAssetStore.h"
 #import "Core/SRExecutionProgress.h"
@@ -85,7 +86,11 @@ int main(void) {
         NSString *directory = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         CHECK([NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL]);
         NSString *path = [directory stringByAppendingPathComponent:@"small.sqlite3"];
-        __block SRStore *store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store);
+        NSString *suite = [@"SyncRelay.rule-limit-test." stringByAppendingString:NSUUID.UUID.UUIDString];
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+        SREntryPreferences *preferences = [[SREntryPreferences alloc] initWithDefaults:defaults];
+        preferences.maxTargetsPerTask = 20;
+        __block SRStore *store = [[SRStore alloc] initWithPath:path defaults:defaults error:NULL]; CHECK(store);
         __block double now = 0; __block BOOL environment = YES, targetAllowed = YES, ready = YES;
         __block NSString *account = @"account";
         NSMutableArray<SmallHost *> *hosts = [NSMutableArray array];
@@ -139,6 +144,19 @@ int main(void) {
         NSArray *big = makePlan(store, @"big", 601); CHECK(![session startRule:big[0][@"id"] account:@"account" error:NULL]);
         CHECK([store historyForRule:big[0][@"id"] account:@"account" limit:1 offset:0 error:NULL].count == 0);
 
+        NSString *limitedRule = makePlan(store, @"configured-limit", 28)[0][@"id"];
+        NSError *limitError = nil;
+        CHECK(![session startRule:limitedRule account:@"account" error:&limitError]);
+        CHECK([limitError.localizedDescription isEqual:SRTargetLimitMessage(28, 20)]);
+        CHECK([store historyForRule:limitedRule account:@"account" limit:1 offset:0 error:NULL].count == 0);
+        preferences.maxTargetsPerTask = 28;
+        CHECK([session.status[@"targetLimit"] isEqual:@28]);
+        CHECK([session startRule:limitedRule account:@"account" error:NULL]);
+        NSString *limitedRun = latest(store, limitedRule);
+        CHECK(count(store, limitedRun, @"pending") == 28);
+        CHECK([session endRun:limitedRun account:@"account" error:NULL] && hosts.count == 3);
+        preferences.maxTargetsPerTask = 20;
+
         // Cancellation before main-queue dispatch cannot invoke a native host.
         rules = makePlan(store, @"queued", 3); rule = rules[0][@"id"];
         CHECK([session startRule:rule account:@"account" error:NULL]); run = latest(store, rule);
@@ -159,7 +177,7 @@ int main(void) {
         old = session; session = nil;
         }
         CHECK(!old); store = nil;
-        store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
+        store = [[SRStore alloc] initWithPath:path defaults:defaults error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
         CHECK(count(store, run, @"uncertain") == 1 && count(store, run, @"pending") == 2);
         session = newSession(); now += 1000; [session tick]; pump(session); CHECK(hosts.count == 6);
         account = @"other"; CHECK(![session resumeRun:run account:@"account" error:NULL]); account = @"account";
@@ -217,7 +235,7 @@ int main(void) {
         CHECK(sqlite3_exec(db, "DROP TRIGGER reject_native", NULL, NULL, NULL) == SQLITE_OK); CHECK(sqlite3_close(db) == SQLITE_OK);
         CHECK([store claimSmallGroupDelivery:delivery source:source(@"claims") account:@"account" error:NULL]);
         CHECK(![store claimSmallGroupDelivery:delivery source:source(@"claims") account:@"account" error:NULL]);
-        store = nil; store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
+        store = nil; store = [[SRStore alloc] initWithPath:path defaults:defaults error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
         CHECK(![store claimSmallGroupDelivery:delivery source:source(@"claims") account:@"account" error:NULL]);
         CHECK([store endRun:run error:NULL]);
 
@@ -233,7 +251,7 @@ int main(void) {
             @autoreleasepool {
                 if (half == 1) {
                     CHECK(!old);
-                    store = [[SRStore alloc] initWithPath:path error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
+                    store = [[SRStore alloc] initWithPath:path defaults:defaults error:NULL]; CHECK(store && [store recoverInterruptedRuns:NULL]);
                     CHECK(count(store, run, @"submitted") == 10 && count(store, run, @"pending") == 10);
                 }
                 session = newSession();
@@ -295,7 +313,7 @@ int main(void) {
         [hosts.lastObject finish]; [session tick];
         CHECK(count(store, run, @"submitted") == 1 && count(store, run, @"cancelled") == 1);
         CHECK(!session.busy && !session.needsIdleTimer && [session.status[@"state"] isEqual:@"ended"]);
-        CHECK([session.status[@"targetLimit"] isEqual:@600]);
+        CHECK([session.status[@"targetLimit"] isEqual:@20]);
         NSNumber *endedAt = [store summaryForRun:run error:NULL][@"ended_at"];
         CHECK([session cancelRun:run account:@"account" error:NULL]);
         CHECK([[store summaryForRun:run error:NULL][@"ended_at"] isEqual:endedAt]);
@@ -308,6 +326,7 @@ int main(void) {
         for (NSString *secret in @[@"mother@chatroom", @"target0@chatroom", @"Synthetic text only", @"sourceMessageID"])
             CHECK(![json containsString:secret]);
         session = nil; store = nil;
+        [defaults removePersistentDomainForName:suite];
         CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:NULL]);
         puts("PASS: real-session bridge mocks, main-thread dispatch, 20-target limits, completion pacing, pause/restart, durable native claims, strict evidence and image scope");
     }
