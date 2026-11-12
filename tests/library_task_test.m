@@ -96,6 +96,7 @@ int main(void) {
             confirmationID:@"confirm-1" targets:targets() minimum:5 maximum:10 error:NULL];
         CHECK([repeated isEqual:first]);
         CHECK(taskCount(store, @"account") == plans + 1);
+        CHECK([store forwardingRecordsForAccount:@"account" beforeRun:nil limit:30 error:NULL].count == 0);
         // The same key with a different request is refused, never re-pointed.
         CHECK(![store createLibraryTaskForAccount:@"account" item:text version:frozenVersion
             confirmationID:@"confirm-1" targets:@[@"one@chatroom"] minimum:5 maximum:10 error:NULL]);
@@ -198,6 +199,9 @@ int main(void) {
         NSDictionary *summary = [store summaryForRun:run error:NULL];
         CHECK([summary[@"state"] isEqual:@"awaiting_resume"]);
         CHECK(countForRun(summary, @"pending") == 2);
+        NSArray *records = [store forwardingRecordsForAccount:@"account" beforeRun:nil limit:30 error:NULL];
+        CHECK(records.count == 1 && [records[0][@"id"] isEqual:run]);
+        CHECK([records[0][@"sourceKind"] isEqual:@"message_library"] && [records[0][@"excerpt"] isEqual:@"first body"]);
         // An active library run is not an unclaimed legacy run awaiting adoption.
         NSDictionary *projection = [store operationsContentForAccount:@"account" error:NULL];
         CHECK(projection[@"legacyRun"] == NSNull.null);
@@ -235,6 +239,8 @@ int main(void) {
         // Cancelling stays available for every run kind.
         CHECK([store cancelOperationsRun:run account:@"account" error:&error]);
         CHECK([[store summaryForRun:run error:NULL][@"state"] isEqual:@"ended"]);
+        NSDictionary *receipt = [store forwardingRecordForRun:run account:@"account" error:NULL];
+        CHECK([receipt[@"cancelled"] isEqual:@YES] && [receipt[@"counts"][@"uncertain"] isEqual:@1]);
         // Ending the run releases the occupancy projection, not the frozen task.
         CHECK([store operationsContentForAccount:@"account" error:NULL][@"libraryOccupancy"] == NSNull.null);
         CHECK([[store libraryTask:first account:@"account" error:NULL][@"runID"] isEqual:run]);

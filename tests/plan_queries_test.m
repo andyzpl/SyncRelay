@@ -34,6 +34,7 @@ int main(void) {
         NSString *plan = [store createPlanFromConfiguration:configuration() envelope:envelope(@"account", @"first") account:@"account" error:NULL]; CHECK(plan);
         NSString *newer = [store createPlanFromConfiguration:configuration() envelope:envelope(@"account", @"second") account:@"account" error:NULL]; CHECK(newer);
         CHECK([store createPlanFromConfiguration:configuration() envelope:envelope(@"other", @"first") account:@"other" error:NULL]);
+        CHECK([store forwardingRecordsForAccount:@"account" beforeRun:nil limit:30 error:NULL].count == 0);
         NSArray *plans = [store plansForAccount:@"account" limit:1 offset:0 error:NULL];
         CHECK(plans.count == 1 && [plans[0][@"id"] isEqual:newer] && [plans[0][@"targetCount"] isEqual:@5]);
         CHECK([[store plansForAccount:@"account" limit:1 offset:1 error:NULL][0][@"id"] isEqual:plan]);
@@ -66,6 +67,13 @@ int main(void) {
         CHECK([completed[@"state"] isEqual:@"completed"] && [completed[@"ended_at"] doubleValue] > 0);
         NSNumber *endedAt = completed[@"ended_at"];
         CHECK(!completed[@"snapshot"] && ![completed.description containsString:@"secret message body"]);
+        NSDictionary *forwarded = [store forwardingRecordForRun:run account:@"account" error:NULL];
+        CHECK([forwarded[@"sourceKind"] isEqual:@"group_sync"] && [forwarded[@"excerpt"] isEqual:@"secret message body"]);
+        CHECK([forwarded[@"counts"][@"confirmed"] isEqual:@2] && !forwarded[@"snapshot"]);
+        CHECK(![store forwardingRecordForRun:run account:@"other" error:NULL]);
+        CHECK(![store forwardingTargetsForRun:run account:@"other" limit:1 offset:0 error:NULL]);
+        CHECK(![store forwardingRecordsForAccount:@"other" beforeRun:run limit:1 error:NULL]);
+        CHECK(![store forwardingRecordsForAccount:@"account" beforeRun:nil limit:101 error:NULL]);
         CHECK([store exceptionsForRun:run account:@"account" limit:50 offset:0 error:NULL].count == 0);
         CHECK(![store exceptionsForRun:run account:@"other" limit:50 offset:0 error:NULL]);
         CHECK(![store exceptionsForRun:run account:@"account" limit:0 offset:0 error:NULL]);
@@ -75,6 +83,14 @@ int main(void) {
         NSString *secondRun = [store startRule:second replay:NO error:NULL]; CHECK(secondRun);
         CHECK(result(store, [store claimNextForRun:secondRun error:NULL], @"failed"));
         CHECK(result(store, [store claimNextForRun:secondRun error:NULL], @"uncertain"));
+        NSArray *forwardingRows = [store forwardingRecordsForAccount:@"account" beforeRun:nil limit:1 error:NULL];
+        CHECK(forwardingRows.count == 1 && [forwardingRows[0][@"id"] isEqual:secondRun]);
+        forwardingRows = [store forwardingRecordsForAccount:@"account" beforeRun:secondRun limit:1 error:NULL];
+        CHECK(forwardingRows.count == 1 && [forwardingRows[0][@"id"] isEqual:run]);
+        CHECK([store forwardingRecordsForAccount:@"account" beforeRun:run limit:1 error:NULL].count == 0);
+        NSArray *targets = [store forwardingTargetsForRun:secondRun account:@"account" limit:1 offset:0 error:NULL];
+        CHECK(targets.count == 1 && [targets[0][@"state"] isEqual:@"failed"] && [targets[0][@"target"] isEqual:@"group-1-0@chatroom"]);
+        CHECK([[store forwardingTargetsForRun:secondRun account:@"account" limit:1 offset:1 error:NULL][0][@"state"] isEqual:@"uncertain"]);
         NSArray *exceptions = [store exceptionsForRun:secondRun account:@"account" limit:1 offset:0 error:NULL];
         CHECK(exceptions.count == 1 && [exceptions[0][@"state"] isEqual:@"failed"] && [exceptions[0][@"reason"] isEqual:@"Network failure"]);
         CHECK([[store exceptionsForRun:secondRun account:@"account" limit:1 offset:1 error:NULL][0][@"state"] isEqual:@"uncertain"]);

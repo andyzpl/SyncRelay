@@ -6,11 +6,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def evaluate_home_top_guard(condition, home_exists, home_is_top):
-    """Evaluate the source's home/top comparison guard.
+def evaluate_page_top_guard(condition, home_exists, origin_is_top):
+    """Evaluate the source's origin/top comparison guard.
 
     The guard is the expression from openSettingsFromNavigation that compares
-    the home controller with the top of the presented stack. It is evaluated
+    the explicit source (or home for a home request) with the top of the stack. It is evaluated
     here so the direction of the comparison is actually executed, not merely
     matched as text. Returns True when the guard rejects the request.
 
@@ -31,9 +31,9 @@ def evaluate_home_top_guard(condition, home_exists, home_is_top):
             text = text[2:].strip()
 
     # The comparison itself, in either direction.
-    if text == "home != navigation.topViewController":
+    if text == "(source ?: home) != navigation.topViewController":
         comparison = "ne"
-    elif text == "home == navigation.topViewController":
+    elif text == "(source ?: home) == navigation.topViewController":
         comparison = "eq"
     else:
         raise AssertionError(f"unsupported guard shape: {condition!r}")
@@ -41,9 +41,8 @@ def evaluate_home_top_guard(condition, home_exists, home_is_top):
     if not home_exists:
         # "!home" already rejects before the comparison is reached.
         return True
-    # "home != top" rejects when the home is NOT the visible page, so the
-    # normal single-home stack (home is the top) is allowed.
-    different = home_exists != home_is_top
+    # A stale originating page must never trigger the push.
+    different = not origin_is_top
     rejects = different if comparison == "ne" else not different
     return rejects
 
@@ -326,10 +325,10 @@ class PhaseBUIContracts(unittest.TestCase):
         # A managed navigation with only the home: the home IS the top.
         home_is_top = True
         home_exists = True
-        self.assertFalse(evaluate_home_top_guard(condition, home_exists, home_is_top),
+        self.assertFalse(evaluate_page_top_guard(condition, home_exists, home_is_top),
                          "the normal single-home case must not be rejected")
         # The rejection must be for a home that is NOT the top, not the reverse.
-        self.assertTrue(evaluate_home_top_guard(condition, home_exists, not home_is_top),
+        self.assertTrue(evaluate_page_top_guard(condition, home_exists, not home_is_top),
                         "a home that is not the visible page must be rejected")
 
     def test_route_guard_direction_is_locked_to_the_top_comparison(self):
@@ -339,10 +338,9 @@ class PhaseBUIContracts(unittest.TestCase):
         guards = self.route_guard_order()
         condition = [g for g in guards if "topViewController" in g][0]
         # The comparison operator is locked: home != navigation.topViewController.
-        self.assertIn("home != navigation.topViewController", condition)
-        self.assertNotIn("home == navigation.topViewController", condition)
-        # The rejection is expressed as "the home is not the top".
-        self.assertRegex(condition, r"home\s*!=\s*navigation\.topViewController")
+        self.assertIn("(source ?: home) != navigation.topViewController", condition)
+        self.assertNotIn("(source ?: home) == navigation.topViewController", condition)
+        self.assertIn("fromPage:nil account:currentAccount", self.text("UI/SRPanel.m"))
 
     def test_route_still_refuses_the_other_cases(self):
         """A stacked page on top, an existing settings panel, a navigation that

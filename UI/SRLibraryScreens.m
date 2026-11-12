@@ -12,13 +12,6 @@
 /* Shared read-only helpers                                                  */
 /* ------------------------------------------------------------------------ */
 
-/* A short numbered identifier, not a storage handle. */
-static NSString *SRLibraryShortID(id value) {
-    if (![value isKindOfClass:NSString.class] || ![(NSString *)value length]) return @"未记录";
-    NSString *text = value;
-    return text.length <= 8 ? text : [text substringToIndex:8];
-}
-
 static NSDictionary *SRLibraryDictionary(id value) {
     return [value isKindOfClass:NSDictionary.class] ? value : nil;
 }
@@ -58,6 +51,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, copy, nullable) void (^openGroups)(UIViewController *source);
 @property(nonatomic, strong, nullable) SRSmallGroupSession *session;
 @property(nonatomic, strong) NSMutableArray *rows;
 @property(nonatomic, copy, nullable) NSDictionary *problem;
@@ -241,7 +235,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     id identifier = row[@"id"];
     if (![identifier isKindOfClass:NSString.class] || ![identifier length]) return;
     [self.navigationController pushViewController:SRCreateLibraryItem(self.store, self.account,
-        self.verifyAccount, identifier, self.session) animated:YES];
+        self.verifyAccount, identifier, self.session, self.openGroups) animated:YES];
 }
 @end
 
@@ -259,6 +253,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
 @property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, copy, nullable) void (^openGroups)(UIViewController *source);
 @property(nonatomic, strong, nullable) SRSmallGroupSession *session;
 @property(nonatomic, copy) NSString *item;
 @property(nonatomic, copy, nullable) NSDictionary *entry;
@@ -337,9 +332,17 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 
 - (void)promptForward {
     if (![self canChooseTargets] || ![self verified] || self.navigationController.topViewController != self) return;
+    NSString *version = [self.entry[@"current_version_id"] copy];
+    if (!version.length) return;
     __weak typeof(self) weakSelf = self;
-    UIViewController *picker = SRCreateTargetPicker(self.store, self.account, ^(NSArray<NSString *> *targets) {
-        [weakSelf forwardToGroups:targets];
+    UIViewController *picker = SRCreateTargetPicker(self.store, self.account, self.verifyAccount, self.openGroups, ^(NSArray<NSString *> *targets) {
+        SRLibraryItemScreen *detail = weakSelf;
+        if (!detail || detail.navigationController.topViewController != detail || ![detail canChooseTargets] || ![detail verified]) return;
+        if (![detail.entry[@"current_version_id"] isEqual:version]) {
+            [detail showFailure:@"消息版本已变更，请重新选择分组" error:nil];
+            return;
+        }
+        [detail forwardToGroups:targets];
     });
     [self.navigationController pushViewController:picker animated:YES];
 }
@@ -890,237 +893,146 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @end
 
 
-/* Read-only helper for host objects: only a declared, zero-argument getter is
- * called, and only after respondsToSelector:. */
-static id SRLibraryReadGetter(id object, NSString *name) {
-    if (!object) return nil;
-    SEL selector = NSSelectorFromString(name);
-    if (![object respondsToSelector:selector]) return nil;
-    IMP imp = [object methodForSelector:selector];
-    if (!imp) return nil;
-    return ((id (*)(id, SEL))imp)(object, selector);
-}
-
 /* ------------------------------------------------------------------------ */
-/* 目标选择器（后续图片/视频转发共用）                                          */
+/* Saved group target picker                                                 */
 /* ------------------------------------------------------------------------ */
 
 @interface SRTargetPickerScreen : UITableViewController
 @property(nonatomic, strong) SRStore *store;
 @property(nonatomic, copy) NSString *account;
-@property(nonatomic, strong) NSArray *plans;
-@property(nonatomic, strong) NSArray *rules;      // saved configuration draft
-@property(nonatomic, strong) NSMutableSet *selectedRules;
-@property(nonatomic, strong) NSMutableSet *selectedPlans;
+@property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, copy, nullable) void (^openGroups)(UIViewController *source);
+@property(nonatomic, copy) NSArray *rules;
+@property(nonatomic, strong) NSMutableIndexSet *selectedRules;
 @property(nonatomic, copy) void (^completion)(NSArray<NSString *> *targets);
-@property(nonatomic, copy, nullable) NSDictionary *problem;
-@property(nonatomic, strong, nullable) id nativePicker;
+@property(nonatomic, copy, nullable) NSString *problem;
 @end
 
 @implementation SRTargetPickerScreen
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"选择转发目标";
-    self.selectedRules = [NSMutableSet set];
-    self.selectedPlans = [NSMutableSet set];
+    self.selectedRules = [NSMutableIndexSet indexSet];
     SRStyleSettingsTable(self);
-    NSError *error = nil;
-    // The groups the user arranged live in the saved configuration draft; plans
-    // only exist after a capture has been confirmed.
-    NSDictionary *draft = [self.store configurationForAccount:self.account error:&error];
-    NSArray *rules = [draft[@"rules"] isKindOfClass:NSArray.class] ? draft[@"rules"] : @[];
-    self.rules = rules;
-    NSArray *plans = [self.store plansForAccount:self.account limit:100 offset:0 error:&error];
-    if (plans) self.plans = plans;
-    if (!rules.count && !plans.count && error) {
-        self.problem = @{@"title": @"读取失败", @"message": error.localizedDescription ?: @"无法读取已分组的列表"};
-    }
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"完成"
         style:UIBarButtonItemStyleDone target:self action:@selector(finish)];
+    self.navigationItem.rightBarButtonItem.enabled = NO;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(resigningActive:)
+        name:UIApplicationWillResignActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
 }
-
-- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 2; }
-
-- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return self.problem ? 1 : MAX((NSInteger)self.rules.count, 1);
-    return MAX((NSInteger)self.plans.count, 1);
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reloadGroups]; }
+- (BOOL)verified {
+    @try { return self.verifyAccount && self.verifyAccount(); }
+    @catch (__unused id exception) { return NO; }
 }
-
-- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section == 0 ? @"已分组的列表" : @"已确认的计划";
+- (void)updateSelection {
+    self.navigationItem.rightBarButtonItem.enabled = !self.problem && self.selectedRules.count > 0;
+    [self.tableView reloadData];
 }
-
-- (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return [NSString stringWithFormat:@"来自设置页保存的分组规则；最多可选 %lu 个群，超过 100 个会有风控风险。", (unsigned long)self.store.forwardingTargetLimit];
-    return @"已冻结的计划目标；与上方的规则可以叠加选择。";
+- (void)resigningActive:(__unused NSNotification *)notification {
+    self.rules = @[];
+    self.problem = @"返回前台后重新核对";
+    [self.selectedRules removeAllIndexes];
+    [self updateSelection];
 }
-
+- (void)becameActive:(__unused NSNotification *)notification {
+    if (self.viewIfLoaded.window && self.navigationController.topViewController == self) [self reloadGroups];
+}
+- (NSArray *)readGroups {
+    NSDictionary *configuration = [self.store configurationForAccount:self.account error:NULL];
+    id rules = configuration[@"rules"];
+    return [rules isKindOfClass:NSArray.class] ? rules : nil;
+}
+- (void)reloadGroups {
+    [self.selectedRules removeAllIndexes];
+    BOOL verified = [self verified];
+    self.rules = verified ? [self readGroups] : nil;
+    self.problem = !verified ? @"账号无法核对，请返回后重新打开" :
+        (self.rules ? nil : @"暂时无法读取目标分组，请返回后重试");
+    [self updateSelection];
+}
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return 1; }
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(__unused NSInteger)section {
+    if (self.problem) return 1;
+    if (!self.rules.count) return self.openGroups ? 2 : 1;
+    return (NSInteger)self.rules.count;
+}
+- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(__unused NSInteger)section {
+    return @"目标分组";
+}
+- (NSString *)tableView:(__unused UITableView *)tableView titleForFooterInSection:(__unused NSInteger)section {
+    if (self.problem || !self.rules.count) return nil;
+    return [NSString stringWithFormat:@"最多可选 %lu 个群，超过 100 个会有风控风险。", (unsigned long)self.store.forwardingTargetLimit];
+}
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"picker"] ?:
         [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"picker"];
     SRStyleSettingsCell(cell);
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil;
     cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    if (path.section == 0) {
-        if (self.problem) {
-            cell.textLabel.text = self.problem[@"title"];
-            cell.detailTextLabel.text = self.problem[@"message"];
-            return cell;
+    if (self.problem) {
+        cell.textLabel.text = self.problem;
+    } else if (!self.rules.count) {
+        if (path.row == 1 && self.openGroups) {
+            cell.textLabel.text = @"去群分组";
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        } else {
+            cell.textLabel.text = @"还没有可用的目标分组";
+            if (!self.openGroups) cell.detailTextLabel.text = @"请先回首页，在「群分组」中配置并保存。";
         }
-        if (!self.rules.count) {
-            cell.textLabel.text = @"还没有已分组的列表";
-            cell.detailTextLabel.text = @"先在设置页配置分组规则并保存，之后这里就能直接选取。";
-            return cell;
-        }
+    } else {
         NSDictionary *rule = self.rules[(NSUInteger)path.row];
         NSArray *targets = [rule[@"targets"] isKindOfClass:NSArray.class] ? rule[@"targets"] : @[];
-        NSString *name = [rule[@"name"] isKindOfClass:NSString.class] ? rule[@"name"] : @"未命名规则";
-        cell.textLabel.text = name;
+        cell.textLabel.text = [rule[@"name"] isKindOfClass:NSString.class] ? rule[@"name"] : @"未命名分组";
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群", (unsigned long)targets.count];
-        cell.accessoryType = [self.selectedRules containsObject:@(path.row)] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        cell.accessoryType = [self.selectedRules containsIndex:(NSUInteger)path.row] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        return cell;
-    }
-    if (path.section == 1) {
-        if (!self.plans.count) {
-            cell.textLabel.text = @"还没有已确认的计划";
-            cell.detailTextLabel.text = @"确认一次采集后，冻结的目标会出现在这里。";
-            return cell;
-        }
-        NSDictionary *plan = self.plans[(NSUInteger)path.row];
-        NSString *identifier = plan[@"id"];
-        NSString *name = [plan[@"source_group"] isKindOfClass:NSString.class] && [plan[@"source_group"] length]
-            ? plan[@"source_group"] : [NSString stringWithFormat:@"计划 %ld · %@",
-                (long)(path.row + 1), SRLibraryShortID(identifier)];
-        cell.textLabel.text = name;
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 个群 · %@ 条规则",
-            plan[@"targetCount"] ?: @0, plan[@"ruleCount"] ?: @0];
-        cell.accessoryType = [self.selectedPlans containsObject:identifier] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        return cell;
     }
     return cell;
 }
-
+- (BOOL)canAct {
+    UINavigationController *navigation = self.navigationController;
+    if (navigation.topViewController != self || navigation.transitionCoordinator || navigation.presentedViewController || self.problem) return NO;
+    if ([self verified]) return YES;
+    [self reloadGroups];
+    return NO;
+}
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
-    if (path.section == 0) {
-        if (self.problem || !self.rules.count) return;
-        NSNumber *row = @(path.row);
-        if ([self.selectedRules containsObject:row]) [self.selectedRules removeObject:row];
-        else [self.selectedRules addObject:row];
-        [tableView reloadData]; return;
-    }
-    if (path.section == 1) {
-        if (!self.plans.count) return;
-        NSString *identifier = self.plans[(NSUInteger)path.row][@"id"];
-        if (!identifier.length) return;
-        if ([self.selectedPlans containsObject:identifier]) [self.selectedPlans removeObject:identifier];
-        else [self.selectedPlans addObject:identifier];
-        [tableView reloadData];
+    if (path.section != 0 || ![self canAct]) return;
+    NSUInteger row = (NSUInteger)path.row;
+    if (!self.rules.count) {
+        if (row == 1 && self.openGroups) self.openGroups(self);
         return;
     }
+    if (row >= self.rules.count) return;
+    if ([self.selectedRules containsIndex:row]) [self.selectedRules removeIndex:row];
+    else [self.selectedRules addIndex:row];
+    [self updateSelection];
 }
-
-- (void)openNativePicker {
-    // Group chats live in the session list; the contacts controller only offers
-    // the address book, so it is the fallback, never the first choice.
-    Class pickerClass = NSClassFromString(@"SessionSelectController");
-    if (!pickerClass || ![pickerClass isSubclassOfClass:UIViewController.class])
-        pickerClass = NSClassFromString(@"MultiSelectContactsViewController");
-    if (!pickerClass || ![pickerClass isSubclassOfClass:UIViewController.class]) return;
-    UIViewController *controller = nil;
-    @try { controller = [[pickerClass alloc] init]; } @catch (__unused NSException *exception) { return; }
-    if (!controller) return;
-    SEL multi = NSSelectorFromString(@"beginMultiSelect");
-    if ([controller respondsToSelector:multi]) {
-        IMP imp = [controller methodForSelector:multi];
-        if (imp) ((void (*)(id, SEL))imp)(controller, multi);
-    }
-    self.nativePicker = controller;
-    // The host picker ships without a cancel affordance of its own, so it is
-    // wrapped in a navigation controller that carries explicit 取消 / 完成.
-    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
-    controller.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"取消"
-        style:UIBarButtonItemStylePlain target:self action:@selector(cancelNativePicker)];
-    controller.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"完成"
-        style:UIBarButtonItemStyleDone target:self action:@selector(finishNativePicker)];
-    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
-    [self presentViewController:navigation animated:YES completion:nil];
-}
-
-- (void)cancelNativePicker {
-    id picker = self.nativePicker;
-    self.nativePicker = nil;
-    if (picker) [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)finishNativePicker {
-    id picker = self.nativePicker;
-    if (!picker) return;
-    NSMutableArray<NSString *> *targets = [NSMutableArray array];
-    id contacts = SRLibraryReadGetter(picker, @"getSelectedContacts");
-    if (![contacts isKindOfClass:NSArray.class]) {
-        id selectView = SRLibraryReadGetter(picker, @"getContactSelectView");
-        contacts = SRLibraryReadGetter(selectView, @"getSelectedContacts");
-    }
-    for (id contact in (NSArray *)contacts ?: @[]) {
-        NSString *name = SRLibraryReadGetter(contact, @"m_nsUsrName");
-        if ([name isKindOfClass:NSString.class] && [name hasSuffix:@"@chatroom"] && ![targets containsObject:name])
-            [targets addObject:name];
-    }
-    self.nativePicker = nil;
-    __weak typeof(self) weakSelf = self;
-    [self dismissViewControllerAnimated:YES completion:^{
-        if (!targets.count) return;
-        [weakSelf deliver:targets];
-    }];
-}
-
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    id picker = self.nativePicker;
-    if (!picker) return;
-    // The host picker dismissed: read its selection through declared getters only.
-    id contacts = SRLibraryReadGetter(picker, @"getSelectedContacts");
-    if (![contacts isKindOfClass:NSArray.class]) {
-        id selectView = SRLibraryReadGetter(picker, @"getContactSelectView");
-        contacts = SRLibraryReadGetter(selectView, @"getSelectedContacts");
-    }
-    NSMutableArray<NSString *> *targets = [NSMutableArray array];
-    for (id contact in (NSArray *)contacts ?: @[]) {
-        NSString *name = SRLibraryReadGetter(contact, @"m_nsUsrName");
-        if ([name isKindOfClass:NSString.class] && [name hasSuffix:@"@chatroom"] && ![targets containsObject:name])
-            [targets addObject:name];
-    }
-    self.nativePicker = nil;
-    if (!targets.count) return;   // host picker returned nothing usable
-    [self deliver:targets];
-}
-
 - (void)finish {
-    NSMutableArray<NSString *> *targets = [NSMutableArray array];
-    NSError *error = nil;
-    for (NSNumber *row in self.selectedRules) {
-        NSDictionary *rule = self.rules[row.unsignedIntegerValue];
-        for (NSDictionary *target in rule[@"targets"]) {
+    if (![self canAct] || !self.selectedRules.count) return;
+    if (![[self readGroups] isEqualToArray:self.rules]) {
+        [self reloadGroups];
+        if (!self.problem && self.rules.count) [self alert:@"目标分组已变更" message:@"请重新选择本次分组。"];
+        return;
+    }
+    NSMutableOrderedSet<NSString *> *targets = [NSMutableOrderedSet orderedSet];
+    [self.selectedRules enumerateIndexesUsingBlock:^(NSUInteger row, __unused BOOL *stop) {
+        for (NSDictionary *target in self.rules[row][@"targets"]) {
             NSString *identifier = target[@"id"];
-            if ([identifier isKindOfClass:NSString.class] && [identifier hasSuffix:@"@chatroom"] &&
-                ![targets containsObject:identifier]) [targets addObject:identifier];
+            if ([identifier isKindOfClass:NSString.class] && [identifier hasSuffix:@"@chatroom"]) [targets addObject:identifier];
         }
-    }
-    for (NSDictionary *plan in self.plans) {
-        if (![self.selectedPlans containsObject:plan[@"id"]]) continue;
-        NSArray *allocated = [self.store allocatedTargetsForPlan:plan[@"id"] error:&error];
-        if (!allocated) continue;   // one unreadable plan never silently shrinks the scope
-        for (NSString *target in allocated)
-            if ([target hasSuffix:@"@chatroom"] && ![targets containsObject:target]) [targets addObject:target];
-    }
-    [self deliver:targets];
+    }];
+    [self deliver:targets.array];
 }
 
 - (void)deliver:(NSArray<NSString *> *)targets {
-    if (!targets.count) { [self alert:@"没有选择目标" message:@"请先选择至少一个已分组的列表。"]; return; }
+    if (!targets.count) { [self alert:@"没有选择目标" message:@"请先选择至少一个目标分组。"]; return; }
     NSUInteger limit = self.store.forwardingTargetLimit;
     if (targets.count > limit) { [self alert:@"超过目标上限" message:SRTargetLimitMessage(targets.count, limit)]; return; }
     void (^completion)(NSArray<NSString *> *) = self.completion;
@@ -1139,23 +1051,26 @@ static id SRLibraryReadGetter(id object, NSString *name) {
 }
 @end
 
-UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account,
-                                      void (^completion)(NSArray<NSString *> *targets)) {
+UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account, BOOL (^verifyAccount)(void),
+                                      void (^openGroups)(UIViewController *source), void (^completion)(NSArray<NSString *> *targets)) {
     SRTargetPickerScreen *screen = [[SRTargetPickerScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    screen.store = store; screen.account = account; screen.completion = completion;
+    screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount;
+    screen.openGroups = openGroups; screen.completion = completion;
     return screen;
 }
 
-UIViewController *SRCreateLibraryList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *session) {
+UIViewController *SRCreateLibraryList(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession *session,
+                                      void (^openGroups)(UIViewController *source)) {
     SRLibraryListScreen *screen = [[SRLibraryListScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
     screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount; screen.session = session;
-    screen.rows = [NSMutableArray array];
+    screen.openGroups = openGroups; screen.rows = [NSMutableArray array];
     return screen;
 }
-UIViewController *SRCreateLibraryItem(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), NSString *item, SRSmallGroupSession *session) {
+UIViewController *SRCreateLibraryItem(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), NSString *item, SRSmallGroupSession *session,
+                                      void (^openGroups)(UIViewController *source)) {
     SRLibraryItemScreen *screen = [[SRLibraryItemScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
     screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount;
-    screen.item = item; screen.versions = @[]; screen.session = session;
+    screen.openGroups = openGroups; screen.item = item; screen.versions = @[]; screen.session = session;
     return screen;
 }
 UIViewController *SRCreateMediaResources(SRStore *store, NSString *account, BOOL (^verifyAccount)(void)) {

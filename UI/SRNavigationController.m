@@ -1,5 +1,9 @@
 #import "SRNavigationController.h"
 
+@interface SRNavigationController ()
+@property(nonatomic, weak) UIViewController *pluginRoot;
+@end
+
 BOOL SRPopPluginPage(UIViewController *controller, BOOL animated) {
     UINavigationController *navigation = controller.navigationController;
     NSArray<UIViewController *> *stack = navigation.viewControllers;
@@ -10,6 +14,11 @@ BOOL SRPopPluginPage(UIViewController *controller, BOOL animated) {
 }
 
 @implementation SRNavigationController
+- (instancetype)initWithRootViewController:(UIViewController *)rootViewController {
+    self = [super initWithRootViewController:rootViewController];
+    if (self) _pluginRoot = rootViewController;
+    return self;
+}
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.delegate = self;
@@ -17,7 +26,8 @@ BOOL SRPopPluginPage(UIViewController *controller, BOOL animated) {
 }
 - (void)navigationController:(__unused UINavigationController *)navigation
      willShowViewController:(UIViewController *)controller animated:(__unused BOOL)animated {
-    if (controller == self.viewControllers.firstObject) return;
+    // Keep the root's Close item out of the child Back setup during stack transitions.
+    if (controller == self.pluginRoot || controller == self.viewControllers.firstObject) return;
     __weak typeof(self) weakSelf = self;
     __weak UIViewController *weakPage = controller;
     UIAction *back = [UIAction actionWithTitle:@"" image:[UIImage systemImageNamed:@"chevron.backward"] identifier:nil handler:^(__unused UIAction *action) {

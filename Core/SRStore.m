@@ -830,8 +830,9 @@ static NSArray *SRImagePayloadKeys(void) {
     } transaction:NO error:error];
 }
 
+#define SRDeliveryOutcomeSQL "CASE WHEN d.state='uncertain' AND v.attempt_id IS NOT NULL THEN 'submitted' ELSE d.state END"
 - (NSArray *)countsForRun:(NSString *)run {
-    return [self query:@"SELECT CASE WHEN d.state='uncertain' AND v.attempt_id IS NOT NULL THEN 'submitted' ELSE d.state END AS state,COUNT(*) AS count FROM deliveries d LEFT JOIN submission_receipts v ON v.delivery_id=d.id AND v.attempt_id=d.attempt_id WHERE d.run_id=? GROUP BY CASE WHEN d.state='uncertain' AND v.attempt_id IS NOT NULL THEN 'submitted' ELSE d.state END" values:@[run]];
+    return [self query:@"SELECT " SRDeliveryOutcomeSQL " AS state,COUNT(*) AS count FROM deliveries d LEFT JOIN submission_receipts v ON v.delivery_id=d.id AND v.attempt_id=d.attempt_id WHERE d.run_id=? GROUP BY " SRDeliveryOutcomeSQL values:@[run]];
 }
 
 - (NSArray<NSString *> *)allocatedTargetsForPlan:(NSString *)plan error:(NSError **)error {
@@ -964,6 +965,72 @@ static NSArray *SRImagePayloadKeys(void) {
         return cards;
     } transaction:NO error:error];
 }
+static NSString *const SRForwardingRecordSelect =
+    @"SELECT x.id,x.state,x.started_at,x.ended_at,x.snapshot,r.name AS ruleName,"
+    "COALESCE(s.source_kind,'group_sync') AS sourceKind,"
+    "EXISTS(SELECT 1 FROM operations_cancellations c WHERE c.run_id=x.id) AS cancelled "
+    "FROM runs x JOIN rules r ON r.id=x.rule_id JOIN plans p ON p.id=r.plan_id AND p.account=x.account "
+    "LEFT JOIN plan_sources s ON s.plan_id=p.id AND s.account=p.account WHERE x.account=?";
+
+- (NSDictionary *)forwardingRecordCard:(NSDictionary *)row {
+    NSMutableDictionary *card = [[self runCard:row] mutableCopy];
+    id json = [NSJSONSerialization JSONObjectWithData:[row[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    NSDictionary *source = [json isKindOfClass:NSDictionary.class] ? json : nil;
+    NSString *type = [source[@"type"] isKindOfClass:NSString.class] ? source[@"type"] : nil;
+    if ([type isEqual:@"text"] || [type isEqual:@"image"]) card[@"messageType"] = type;
+    NSDictionary *payload = [source[@"payload"] isKindOfClass:NSDictionary.class] ? source[@"payload"] : nil;
+    NSString *text = [type isEqual:@"text"] && [payload[@"text"] isKindOfClass:NSString.class] ? payload[@"text"] : nil;
+    if (text.length > 80) {
+        NSUInteger end = [text rangeOfComposedCharacterSequenceAtIndex:80].location;
+        text = [[text substringToIndex:end] stringByAppendingString:@"..."];
+    }
+    if (text.length) card[@"excerpt"] = text;
+    return card;
+}
+
+- (NSArray<NSDictionary *> *)forwardingRecordsForAccount:(NSString *)account beforeRun:(NSString *)beforeRun
+                                                    limit:(NSUInteger)limit error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && limit > 0 && limit <= 100, @"Invalid account or page range");
+        NSString *select = SRForwardingRecordSelect;
+        NSMutableArray *values = [NSMutableArray arrayWithObject:account];
+        if (beforeRun) {
+            NSDictionary *cursor = [self query:@"SELECT started_at,rowid AS ordering FROM runs WHERE id=? AND account=?"
+                values:@[beforeRun, account]].firstObject;
+            SRRequire(cursor != nil, @"Run cursor is unavailable for this account");
+            select = [select stringByAppendingString:@" AND (x.started_at,x.rowid)<(?,?)"];
+            [values addObjectsFromArray:@[cursor[@"started_at"], cursor[@"ordering"]]];
+        }
+        [values addObject:@(limit)];
+        NSMutableArray *cards = [NSMutableArray array];
+        for (NSDictionary *row in [self query:[select stringByAppendingString:@" ORDER BY x.started_at DESC,x.rowid DESC LIMIT ?"] values:values])
+            [cards addObject:[self forwardingRecordCard:row]];
+        return cards;
+    } transaction:NO error:error];
+}
+
+- (NSDictionary *)forwardingRecordForRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && run.length, @"Account and run are required");
+        NSDictionary *row = [self query:[SRForwardingRecordSelect stringByAppendingString:@" AND x.id=?"] values:@[account, run]].firstObject;
+        SRRequire(row != nil, @"Run is unavailable for this account");
+        return [self forwardingRecordCard:row];
+    } transaction:NO error:error];
+}
+
+- (NSArray<NSDictionary *> *)forwardingTargetsForRun:(NSString *)run account:(NSString *)account
+                                               limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && run.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid run or page range");
+        SRRequire([self query:@"SELECT id FROM runs WHERE id=? AND account=?" values:@[run, account]].count,
+            @"Run is unavailable for this account");
+        return [self query:@"SELECT d.target," SRDeliveryOutcomeSQL " AS state FROM deliveries d "
+            "LEFT JOIN submission_receipts v ON v.delivery_id=d.id AND v.attempt_id=d.attempt_id "
+            "WHERE d.run_id=? ORDER BY d.position,d.rowid LIMIT ? OFFSET ?" values:@[run, @(limit), @(offset)]];
+    } transaction:NO error:error];
+}
+#undef SRDeliveryOutcomeSQL
+
 - (NSArray *)exceptionsForRun:(NSString *)run account:(NSString *)account limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error {
     return [self perform:^id{
         SRRequire(account.length && run.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid account or page range");

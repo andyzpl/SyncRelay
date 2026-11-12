@@ -160,6 +160,7 @@ UIViewController *SRCreateRunResultRecord(SRStore *store, NSString *account, BOO
 @property(nonatomic, copy) NSString *problem;
 @property(nonatomic) BOOL accountInvalid;
 @property(nonatomic) NSInteger hintDestination;
+@property(nonatomic, strong) UIBarButtonItem *closeItem;
 @end
 @implementation SRNavigationHomeScreen
 - (void)viewDidLoad {
@@ -169,8 +170,9 @@ UIViewController *SRCreateRunResultRecord(SRStore *store, NSString *account, BOO
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.estimatedRowHeight = 74;
     self.view.accessibilityIdentifier = @"SyncRelay.NavigationHome";
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+    self.closeItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
         style:UIBarButtonItemStylePlain target:self action:@selector(close)];
+    [self restoreCloseButton];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload)
         name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(hideContent)
@@ -179,7 +181,16 @@ UIViewController *SRCreateRunResultRecord(SRStore *store, NSString *account, BOO
         name:SRRelayStateChangedNotification object:nil];
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reload]; }
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self restoreCloseButton];
+    [self reload];
+}
+- (void)restoreCloseButton {
+    self.navigationItem.hidesBackButton = YES;
+    self.navigationItem.leftItemsSupplementBackButton = NO;
+    self.navigationItem.leftBarButtonItems = @[self.closeItem];
+}
 - (BOOL)verified {
     @try { return self.verifyAccount && self.verifyAccount(); }
     @catch (__unused id exception) { return NO; }
@@ -202,13 +213,20 @@ UIViewController *SRCreateRunResultRecord(SRStore *store, NSString *account, BOO
     }
     [self.tableView reloadData];
 }
-- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return self.hintDestination >= 0 ? 2 : 1; }
+- (NSInteger)recordsSection { return self.hintDestination >= 0 ? 2 : 1; }
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return self.recordsSection + 1; }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == self.recordsSection) return 1;
     return self.hintDestination >= 0 && section == 0 ? 1 : 4;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
     SRHomeNavigationCell *cell = [tableView dequeueReusableCellWithIdentifier:@"navigation-home"] ?:
         [[SRHomeNavigationCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"navigation-home"];
+    if (path.section == self.recordsSection) {
+        [cell configureTitle:@"转发记录" summary:nil symbol:@"clock.arrow.circlepath" first:YES last:YES hint:YES];
+        cell.accessibilityIdentifier = @"SyncRelay.HomeForwardingRecords";
+        return cell;
+    }
     if (self.hintDestination >= 0 && path.section == 0) {
         [cell configureTitle:self.hintDestination == 0 ? @"先设置母群" : @"去群分组" summary:nil
             symbol:@"info.circle" first:YES last:YES hint:YES];
@@ -232,16 +250,167 @@ UIViewController *SRCreateRunResultRecord(SRStore *store, NSString *account, BOO
     [tableView deselectRowAtIndexPath:path animated:YES];
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive || ![self verified]) { [self reload]; return; }
     if (self.navigationController.topViewController != self || self.navigationController.transitionCoordinator) return;
+    if (path.section == self.recordsSection) {
+        if (self.openDestination) self.openDestination(SRHomeForwardingRecords);
+        return;
+    }
     NSUInteger destination = self.hintDestination >= 0 && path.section == 0 ? (NSUInteger)self.hintDestination : (NSUInteger)path.row;
     if (destination < 4 && self.openDestination) self.openDestination(destination);
 }
-- (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)close {
+    UINavigationController *navigation = self.navigationController;
+    if (navigation.topViewController != self || !navigation.presentingViewController || navigation.isBeingDismissed) return;
+    [navigation dismissViewControllerAnimated:YES completion:nil];
+}
 @end
 
 UIViewController *SRCreateNavigationHome(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), void (^openDestination)(NSUInteger)) {
     SRNavigationHomeScreen *screen = [[SRNavigationHomeScreen alloc] initWithStyle:UITableViewStyleGrouped];
     screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount; screen.openDestination = openDestination;
     screen.hintDestination = -1; return screen;
+}
+
+static NSString *SRForwardingExcerpt(NSDictionary *record) {
+    if ([record[@"excerpt"] length]) return record[@"excerpt"];
+    if ([record[@"messageType"] isEqual:@"image"]) return @"图片消息";
+    return @"暂无消息摘要";
+}
+
+static NSString *SRForwardingSource(NSDictionary *record) {
+    return [record[@"sourceKind"] isEqual:@"message_library"] ? @"消息库" : @"群同步";
+}
+
+@interface SRForwardingRecordsScreen : UITableViewController
+@property(nonatomic, strong) SRStore *store;
+@property(nonatomic, copy) NSString *account;
+@property(nonatomic, copy) BOOL (^verifyAccount)(void);
+@property(nonatomic, copy, nullable) NSString *run;
+@property(nonatomic, copy, nullable) NSDictionary *record;
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *rows;
+@property(nonatomic, copy, nullable) NSString *problem;
+@property(nonatomic) BOOL more;
+@property(nonatomic) BOOL pageFailed;
+@property(nonatomic) BOOL masked;
+@end
+
+@implementation SRForwardingRecordsScreen
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = self.run ? @"转发详情" : @"转发记录";
+    SRStyleSettingsTable(self);
+    self.refreshControl = [[UIRefreshControl alloc] init];
+    [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(resigningActive:)
+        name:UIApplicationWillResignActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reload]; }
+- (void)resigningActive:(__unused NSNotification *)notification {
+    self.masked = YES;
+    [self hideWithMessage:@"返回前台后重新核对"];
+}
+- (void)becameActive:(__unused NSNotification *)notification {
+    self.masked = NO;
+    if (self.viewIfLoaded.window && self.navigationController.topViewController == self) [self reload];
+}
+- (void)hideWithMessage:(NSString *)message {
+    self.record = nil; [self.rows removeAllObjects]; self.more = NO; self.pageFailed = NO;
+    self.problem = message;
+    [self.tableView reloadData];
+}
+- (BOOL)verifyVisibleAccount {
+    @try { if (self.verifyAccount && self.verifyAccount()) return YES; }
+    @catch (__unused NSException *exception) { }
+    [self hideWithMessage:@"账号无法核对，请返回后重新打开"];
+    return NO;
+}
+- (void)reload {
+    if (self.masked) { [self.refreshControl endRefreshing]; return; }
+    self.record = nil; self.rows = [NSMutableArray array]; self.more = NO; self.pageFailed = NO; self.problem = nil;
+    if ([self verifyVisibleAccount]) {
+        if (self.run) self.record = [self.store forwardingRecordForRun:self.run account:self.account error:NULL];
+        if (self.run && !self.record) [self hideWithMessage:@"暂时无法读取这次转发，请下拉重试"];
+        else [self loadPage];
+    }
+    [self.refreshControl endRefreshing];
+}
+- (void)loadPage {
+    const NSUInteger limit = 30;
+    NSArray *page = self.run ? [self.store forwardingTargetsForRun:self.run account:self.account limit:limit offset:self.rows.count error:NULL] :
+        [self.store forwardingRecordsForAccount:self.account beforeRun:self.rows.lastObject[@"id"] limit:limit error:NULL];
+    self.pageFailed = !page;
+    self.more = !page || page.count == limit;
+    if (page) [self.rows addObjectsFromArray:page];
+    [self.tableView reloadData];
+}
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView { return self.record ? 3 : 1; }
+- (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (self.problem || (self.record && section < 2)) return 1;
+    return MAX((NSUInteger)1, self.rows.count + (self.more ? 1 : 0));
+}
+- (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return self.record ? @[@"消息摘要", @"执行结果", @"目标群明细"][section] : nil;
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"forwarding-record"] ?:
+        [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"forwarding-record"];
+    SRStyleSettingsCell(cell);
+    cell.textLabel.text = nil; cell.detailTextLabel.text = nil;
+    cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
+    cell.accessoryType = UITableViewCellAccessoryNone; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    if (self.problem) {
+        cell.textLabel.text = self.problem;
+    } else if (self.record && path.section == 0) {
+        cell.textLabel.text = SRForwardingExcerpt(self.record);
+        NSString *source = SRForwardingSource(self.record);
+        if ([self.record[@"sourceKind"] isEqual:@"group_sync"] && [self.record[@"ruleName"] length])
+            source = [source stringByAppendingFormat:@" · %@", self.record[@"ruleName"]];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@\n开始 %@", source, SRDate(self.record[@"started_at"])];
+    } else if (self.record && path.section == 1) {
+        cell.textLabel.text = [NSString stringWithFormat:@"共 %@ 个目标群", [SRRunProjection runSummary:self.record][@"total"]];
+        cell.detailTextLabel.text = SRRunDescription(self.record);
+    } else if (path.row == (NSInteger)self.rows.count) {
+        cell.textLabel.text = self.pageFailed ? @"读取失败，点此重试" :
+            (self.more ? @"加载更多" : (self.record ? @"没有目标群记录" : @"还没有转发记录"));
+        if (self.more) cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    } else if (self.record) {
+        NSDictionary *row = self.rows[(NSUInteger)path.row];
+        cell.textLabel.text = row[@"target"];
+        cell.detailTextLabel.text = @{@"pending": @"未发", @"submitting": @"在途", @"submitted": @"已提交 · 未确认送达",
+            @"confirmed": @"已确认送达", @"failed": @"失败", @"uncertain": @"待核对", @"cancelled": @"已取消"}[row[@"state"]] ?: @"状态待核对";
+    } else {
+        NSDictionary *row = self.rows[(NSUInteger)path.row];
+        NSDictionary *summary = [SRRunProjection runSummary:row];
+        cell.textLabel.numberOfLines = 2;
+        cell.textLabel.text = SRForwardingExcerpt(row);
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@\n%@ 个群 · %@",
+            SRForwardingSource(row), summary[@"startedText"], summary[@"total"], summary[@"phaseText"]];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    return cell;
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
+    [tableView deselectRowAtIndexPath:path animated:YES];
+    UINavigationController *navigation = self.navigationController;
+    if (self.problem || navigation.topViewController != self || navigation.transitionCoordinator || ![self verifyVisibleAccount]) return;
+    if (self.record && path.section != 2) return;
+    if (path.row == (NSInteger)self.rows.count && self.more) { [self loadPage]; return; }
+    if (self.record || path.row >= (NSInteger)self.rows.count) return;
+    NSString *run = self.rows[(NSUInteger)path.row][@"id"];
+    if (!run.length) return;
+    SRForwardingRecordsScreen *detail = [[SRForwardingRecordsScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    detail.store = self.store; detail.account = self.account; detail.verifyAccount = self.verifyAccount; detail.run = run;
+    [navigation pushViewController:detail animated:YES];
+}
+@end
+
+UIViewController *SRCreateForwardingRecords(SRStore *store, NSString *account, BOOL (^verifyAccount)(void)) {
+    SRForwardingRecordsScreen *screen = [[SRForwardingRecordsScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount;
+    return screen;
 }
 
 @interface SRSourceTextScreen : UIViewController
@@ -1227,7 +1396,7 @@ static NSInteger SRHomeModelSection(NSInteger section) { return section < 2 ? 1 
     if (path.section == 2) {
         if (path.row == 2) {
             [self.navigationController pushViewController:SRCreateLibraryList(self.store, self.account,
-                self.verifyAccount, self.execution) animated:YES];
+                self.verifyAccount, self.execution, nil) animated:YES];
             return;
         }
         if (path.row == 1) {

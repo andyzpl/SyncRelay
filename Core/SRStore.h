@@ -80,6 +80,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<NSDictionary *> *)ruleCardsForPlan:(NSString *)plan account:(NSString *)account error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)historyForRule:(NSString *)rule account:(NSString *)account
                                             limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
+/* Only materialized runs, across both sources. The cursor is an older-page
+ * boundary by start time and insertion order, bound to the same account. */
+- (nullable NSArray<NSDictionary *> *)forwardingRecordsForAccount:(NSString *)account
+                                                        beforeRun:(nullable NSString *)beforeRun limit:(NSUInteger)limit error:(NSError **)error;
+- (nullable NSDictionary *)forwardingRecordForRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+- (nullable NSArray<NSDictionary *> *)forwardingTargetsForRun:(NSString *)run account:(NSString *)account
+                                                       limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)exceptionsForRun:(NSString *)run account:(NSString *)account
                                                limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
 /* Persist before the experimental host call. Same source cannot be submitted

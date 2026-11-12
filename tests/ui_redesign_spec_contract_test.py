@@ -14,9 +14,12 @@ HOME = SCREENS.split('@implementation SRNavigationHomeScreen', 1)[1].split('@end
 
 
 class UIRedesignSpecContracts(unittest.TestCase):
-    def test_home_has_exactly_the_four_approved_destinations(self):
+    def test_home_keeps_four_primary_destinations_and_a_separate_records_row(self):
         self.assertIn('@[@"群同步", @"消息库转发", @"群分组", @"设置"][path.row]', HOME)
         self.assertIn('section == 0 ? 1 : 4', HOME)
+        self.assertIn('if (section == self.recordsSection) return 1', HOME)
+        self.assertIn('configureTitle:@"转发记录" summary:nil', HOME)
+        self.assertIn('self.openDestination(SRHomeForwardingRecords)', HOME)
         self.assertIn('constraintGreaterThanOrEqualToConstant:74', SCREENS)
         for forbidden in ('runSummary:', 'confirmForCurrentAccount:', 'armForAccount:', 'startRule:', 'UISwitch'):
             self.assertNotIn(forbidden, HOME)
@@ -38,7 +41,7 @@ class UIRedesignSpecContracts(unittest.TestCase):
         route = PANEL.split('- (void)openOperationsFromController:', 1)[1].split('\n}', 1)[0]
         self.assertIn('SRCreateNavigationHome(self.store, account, verify, openDestination)', route)
         self.assertIn('if (destination == 1)', route)
-        self.assertIn('SRCreateLibraryList(entry.store, account, verify, entry.smallGroupSession)', route)
+        self.assertIn('SRCreateLibraryList(entry.store, account, verify, entry.smallGroupSession, openGroups)', route)
         self.assertIn('SRPanelPageSource', route)
         self.assertIn('SRPanelPageGroups', route)
         self.assertIn('SRPanelPageSettings', route)
@@ -103,7 +106,21 @@ class UIRedesignSpecContracts(unittest.TestCase):
         self.assertIn('@interface SRPanel : UITableViewController <SRNavigationBackGuard>', PANEL)
         self.assertIn('SRNavigationController alloc', PANEL)
 
-    def test_native_navigation_cases_cover_the_reported_return_failure(self):
+    def test_home_is_the_initial_root_and_owns_close_on_return(self):
+        route = PANEL.split('- (void)openOperationsFromController:', 1)[1].split('\n}', 1)[0]
+        self.assertIn('initWithRootViewController:home', route)
+        self.assertNotIn('initWithRootViewController:[[UIViewController alloc]', route)
+        navigation = (ROOT / 'UI/SRNavigationController.m').read_text(encoding='utf-8')
+        self.assertIn('_pluginRoot = rootViewController', navigation)
+        self.assertIn('if (controller == self.pluginRoot', navigation)
+        appearance = HOME.split('- (void)viewWillAppear:', 1)[1].split('- (void)restoreCloseButton', 1)[0]
+        self.assertIn('[self restoreCloseButton]', appearance)
+        self.assertIn('self.navigationItem.leftBarButtonItems = @[self.closeItem]', HOME)
+        close = HOME.split('- (void)close {', 1)[1]
+        self.assertIn('navigation.topViewController != self', close)
+        self.assertIn('[navigation dismissViewControllerAnimated:YES', close)
+
+    def test_native_navigation_cases_keep_dirty_and_stale_page_guards(self):
         native = (ROOT / 'tests/ios/SRNavigationTests.m').read_text(encoding='utf-8')
         for expected in ('destination < 4', 'settings.dirty = YES', 'settings.closeRequests == 2',
                          '!SRPopPluginPage(settings, NO)', 'navigation.topViewController == home'):
@@ -171,11 +188,28 @@ class UIRedesignSpecContracts(unittest.TestCase):
         self.assertIn('![self verified]', prompt)
         self.assertIn('topViewController != self', prompt)
         self.assertIn('SRCreateTargetPicker', prompt)
+        self.assertIn('isEqual:version', prompt)
         for forbidden in ('createLibraryTaskForAccount:', 'startLibraryTask:'):
             self.assertNotIn(forbidden, prompt)
         native = (ROOT / 'tests/ios/SRNavigationTests.m').read_text(encoding='utf-8')
         self.assertIn('store.reads == reads && button.hidden', native)
         self.assertIn('CGRectGetMaxY(table.frame) <= CGRectGetMinY(button.frame)', native)
+
+    def test_library_picker_only_uses_saved_groups_and_routes_empty_state(self):
+        library = (ROOT / 'UI/SRLibraryScreens.m').read_text(encoding='utf-8')
+        picker = library.split('@implementation SRTargetPickerScreen', 1)[1].split('@end', 1)[0]
+        self.assertIn('configurationForAccount:self.account', picker)
+        self.assertIn('isEqualToArray:self.rules', picker)
+        self.assertIn('self.openGroups(self)', picker)
+        self.assertIn('暂时无法读取目标分组', picker)
+        self.assertIn('UIApplicationWillResignActiveNotification', picker)
+        self.assertIn('UIApplicationDidBecomeActiveNotification', picker)
+        self.assertIn('verified ? [self readGroups] : nil', picker)
+        for forbidden in ('plansForAccount:', 'allocatedTargetsForPlan:', 'selectedPlans', 'openNativePicker'):
+            self.assertNotIn(forbidden, picker)
+        route = PANEL.split('- (void)openOperationsFromController:', 1)[1].split('\n}', 1)[0]
+        self.assertIn('source.navigationController != bound', route)
+        self.assertIn('fromPage:source account:account verify:verify page:SRPanelPageGroups', route)
 
     def test_result_close_is_bound_to_one_durable_terminal_run(self):
         close = PANEL.split('self.floatingProgress.closeResultAction =', 1)[1].split('self.floatingProgress.action =', 1)[0]
@@ -197,6 +231,17 @@ class UIRedesignSpecContracts(unittest.TestCase):
             self.assertIn(expected, record)
         for forbidden in ('startRule:', 'resumeRun:', 'cancelRun:', 'finishContent:', 'saveConfiguration:'):
             self.assertNotIn(forbidden, record)
+
+    def test_forwarding_history_reuses_native_style_without_send_actions(self):
+        route = PANEL.split('- (void)openOperationsFromController:', 1)[1].split('\n}', 1)[0]
+        self.assertLess(route.index('![currentAccount isEqual:account]'), route.index('SRCreateForwardingRecords('))
+        records = SCREENS.split('@implementation SRForwardingRecordsScreen', 1)[1].split('@interface SRSourceTextScreen', 1)[0]
+        for expected in ('UITableViewStyleInsetGrouped', 'SRStyleSettingsTable', 'SRStyleSettingsCell',
+                         'forwardingRecordForRun:self.run account:self.account', 'forwardingTargetsForRun:self.run account:self.account',
+                         'UIApplicationWillResignActiveNotification', 'SRRunProjection runSummary:'):
+            self.assertIn(expected, records)
+        for forbidden in ('plansForAccount:', 'startRule:', 'startLibraryTask:', 'resumeRun:', 'cancelRun:'):
+            self.assertNotIn(forbidden, records)
 
     def test_native_uikit_harness_is_separate_from_macos_evidence(self):
         harness = (ROOT / 'tests/ios/SRFloatingProgressTests.m').read_text(encoding='utf-8')

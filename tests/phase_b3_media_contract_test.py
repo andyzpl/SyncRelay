@@ -123,10 +123,6 @@ class B3ReadOnlyPages(unittest.TestCase):
         """Leaving the app hides what is on screen; returning re-checks the
         account this page was opened with. Lifecycle handling must never stop a
         capture, create a task or start sending."""
-        source = screens()
-        self.assertEqual(source.count("UIApplicationWillResignActiveNotification"), 3)
-        self.assertEqual(source.count("UIApplicationDidBecomeActiveNotification"), 3)
-
         clears = {
             "SRLibraryListScreen": "[self.rows removeAllObjects]; self.problem = nil; self.more = NO;",
             "SRLibraryItemScreen": "self.entry = nil; self.versions = @[]; self.problem = nil;",
@@ -134,6 +130,9 @@ class B3ReadOnlyPages(unittest.TestCase):
         }
         for name, clear in clears.items():
             body = block(name)
+            self.assertIn("UIApplicationWillResignActiveNotification", body, name)
+            self.assertIn("UIApplicationDidBecomeActiveNotification", body, name)
+            self.assertIn("if (self.masked) return;", body, name)
             self.assertIn("- (void)resigningActive:", body, name)
             self.assertIn("- (void)becameActive:", body, name)
             resign = body.split("- (void)resigningActive:", 1)[1].split("\n}", 1)[0]
@@ -160,9 +159,6 @@ class B3ReadOnlyPages(unittest.TestCase):
             for forbidden in ("[receiver stop]", "[capture cancel]", "armForAccount", "startRule:",
                               "createLibraryItem", "submitDelivery", "resumeRun:", "capture.tick"):
                 self.assertNotIn(forbidden, lifecycle, name)
-
-        # A masked page cannot start any navigation either.
-        self.assertEqual(source.count("if (self.masked) return;"), 3)
 
     def test_masked_state_is_its_own_display(self):
         source = screens()

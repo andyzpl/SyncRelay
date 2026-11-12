@@ -1295,7 +1295,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
 - (void)openLibrary {
     if (![self canOpenReadOnlyPage]) return;
     [self.navigationController pushViewController:SRCreateLibraryList(self.store, self.account,
-        [self readOnlyVerifier], self.smallGroupSession) animated:YES];
+        [self readOnlyVerifier], self.smallGroupSession, nil) animated:YES];
 }
 - (void)openMediaResources {
     if (![self canOpenReadOnlyPage]) return;
@@ -2311,8 +2311,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
      * block, so a strong capture would form a retain cycle. The navigation is
      * fetched back and re-checked at call time instead. */
     __weak typeof(self) weakSelf = self;
-    UINavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:[[UIViewController alloc] init]];
-    __weak UINavigationController *weakNavigation = navigation;
+    __block __weak UINavigationController *weakNavigation = nil;
     void (^openDestination)(NSUInteger) = ^void(NSUInteger destination) {
         SREntry *entry = weakSelf;
         if (!entry) return;
@@ -2324,18 +2323,28 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
             current.transitionCoordinator || current.presentedViewController) return;
         NSString *currentAccount = [entry.identityReader connect:NULL] ? entry.identityReader.accountID : nil;
         if (!currentAccount.length || ![currentAccount isEqual:account]) return;
+        if (destination == SRHomeForwardingRecords) {
+            [current pushViewController:SRCreateForwardingRecords(entry.store, account, verify) animated:YES];
+            return;
+        }
         if (destination == 1) {
-            [current pushViewController:SRCreateLibraryList(entry.store, account, verify, entry.smallGroupSession) animated:YES];
+            void (^openGroups)(UIViewController *) = ^(UIViewController *source) {
+                UINavigationController *bound = weakNavigation;
+                if (!bound || source.navigationController != bound) return;
+                [weakSelf openSettingsFromNavigation:bound fromPage:source account:account verify:verify page:SRPanelPageGroups];
+            };
+            [current pushViewController:SRCreateLibraryList(entry.store, account, verify, entry.smallGroupSession, openGroups) animated:YES];
             return;
         }
         SRPanelPage page = destination == 0 ? SRPanelPageSource : (destination == 2 ? SRPanelPageGroups : SRPanelPageSettings);
-        [entry openSettingsFromNavigation:current account:currentAccount verify:verify page:page];
+        [entry openSettingsFromNavigation:current fromPage:nil account:currentAccount verify:verify page:page];
     };
     UIViewController *home = SRCreateNavigationHome(self.store, account, verify, openDestination);
+    UINavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:home];
+    weakNavigation = navigation;
     if (generation) navigation.viewControllers = @[home, SRCreateCapturedForwarding(self.store, self.capture, account, generation, verify, self.smallGroupSession)];
     else if (showProgress && self.smallGroupSession.currentRunID.length)
         navigation.viewControllers = @[home, SRCreateOperationsHome(self.store, self.capture, self.smallGroupSession, account, verify, nil)];
-    else navigation.viewControllers = @[home];
     UINavigationController *hostNavigation = [presenter isKindOfClass:UINavigationController.class] ? (UINavigationController *)presenter : presenter.navigationController;
     SRStyleSettingsNavigation(navigation, hostNavigation);
     navigation.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -2349,19 +2358,16 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
 - (void)openOperationsFromController:(UIViewController *)controller {
     [self openOperationsFromController:controller previewAccount:nil generation:nil];
 }
-/* Presents the existing settings panel on top of the operations home. The panel
+/* Presents the existing settings panel from the home or the bound group picker. The panel
  * is built from the same shared objects the entry already uses, so there is no
  * parallel state source, and its own close/draft guard semantics are kept. */
-- (void)openSettingsFromNavigation:(UINavigationController *)navigation account:(NSString *)account verify:(BOOL (^)(void))verify page:(SRPanelPage)page {
+- (void)openSettingsFromNavigation:(UINavigationController *)navigation fromPage:(UIViewController *)source account:(NSString *)account verify:(BOOL (^)(void))verify page:(SRPanelPage)page {
     if (!NSThread.isMainThread || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     if (!navigation || !account.length || !verify || !verify()) return;
-    /* The route is only valid for the navigation this entry still manages and
-     * only while the home that started it is still the visible page of that
-     * stack. The home is the root controller, so pushing a page above it does
-     * not move the root; the check is on the top of the stack instead. */
+    /* The managed stack must still own the home and show the originating page. */
     if (navigation != self.presented) return;
     UIViewController *home = navigation.viewControllers.firstObject;
-    if (!home || home != navigation.topViewController) return;
+    if (!home || (source ?: home) != navigation.topViewController) return;
     if (home != self.operationsHome) return;
     /* No second settings page: the panel is located anywhere in the stack, so
      * a settings panel that is already there is recognized. */
@@ -2386,9 +2392,7 @@ typedef NS_ENUM(NSUInteger, SRPanelPage) {
         [menuEntry menuCallObservationActionFromPanel:target action:action observer:observer token:token];
     };
     panel.settingsFooterActive = self.settingsFooterActive;
-    /* The settings panel keeps its own save, close and unsaved-draft guard. It
-     * is pushed onto the home's navigation stack, so closing it returns to the
-     * home instead of tearing the whole home down. */
+    /* Closing pops back to the originating page, with the existing draft guard. */
     panel.returnsToOperationsHome = YES;
     panel.didClose = ^{};
     [navigation pushViewController:panel animated:YES];

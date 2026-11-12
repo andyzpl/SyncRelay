@@ -11,16 +11,20 @@ NS_ASSUME_NONNULL_BEGIN
  * Every page re-verifies the account it was opened with before it reads or
  * shows anything, and refuses (rather than switching) when that account
  * changed. */
-/* Reusable target picker: grouped plans -> frozen targets. */
+/* Only saved group configuration is selectable; historical plans are not targets. */
 FOUNDATION_EXPORT UIViewController *SRCreateTargetPicker(SRStore *store, NSString *account,
+                                                         BOOL (^verifyAccount)(void),
+                                                         void (^ _Nullable openGroups)(UIViewController *source),
                                                          void (^completion)(NSArray<NSString *> *targets));
 @class SRSmallGroupSession;
 FOUNDATION_EXPORT UIViewController *SRCreateLibraryList(SRStore *store, NSString *account,
                                                         BOOL (^verifyAccount)(void),
-                                                        SRSmallGroupSession * _Nullable session);
+                                                        SRSmallGroupSession * _Nullable session,
+                                                        void (^ _Nullable openGroups)(UIViewController *source));
 FOUNDATION_EXPORT UIViewController *SRCreateLibraryItem(SRStore *store, NSString *account,
                                                         BOOL (^verifyAccount)(void), NSString *item,
-                                                        SRSmallGroupSession * _Nullable session);
+                                                        SRSmallGroupSession * _Nullable session,
+                                                        void (^ _Nullable openGroups)(UIViewController *source));
 FOUNDATION_EXPORT UIViewController *SRCreateMediaResources(SRStore *store, NSString *account,
                                                            BOOL (^verifyAccount)(void));
 NS_ASSUME_NONNULL_END
