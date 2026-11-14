@@ -20,7 +20,7 @@
 ## 版本与产物
 
 - 分支：`codex/nightly-closeout-20261115`
-- 提交：`a739eb0`（已推送到 `origin`）
+- 提交：`a739eb0` 及后续缩略图收口提交（均已推送到 `origin`）
 - DEB：未生成。仓库工作流只在 `main` push 或手动 `workflow_dispatch(build_deb=true)` 构建；本环境没有 `gh`、GitHub token 或 macOS 构建机，无法安全触发手动构建。不得把 Python/静态结果写成包或真机通过。
 
 明早若取得包，先核对 control 版本、arm64/arm64e、源码 commit/run、DEB SHA-256 和载荷过滤，再按现有小群前台步骤实测；本轮改动本身不扩大真实发送范围。

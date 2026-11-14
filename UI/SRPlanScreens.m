@@ -4,6 +4,7 @@
 #import "Core/SRSourceCapture.h"
 #import "Core/SRImageAssetStore.h"
 #import "Adapter/SRSmallGroupSession.h"
+#import <ImageIO/ImageIO.h>
 
 NSString *const SRRelayStateChangedNotification = @"andyz.syncrelay.stateChanged";
 typedef NS_ENUM(NSUInteger, SRRecordKind) { SRRecordPreview, SRRecordPlans, SRRecordPlan, SRRecordHistory, SRRecordRunTargets, SRRecordExceptions };
@@ -28,6 +29,21 @@ static NSString *SRSourceTextForSource(NSDictionary *source) {
     id payload = source[@"payload"];
     id text = [payload isKindOfClass:NSDictionary.class] ? payload[@"text"] : nil;
     return [text isKindOfClass:NSString.class] ? text : @"没有可用的文字摘要。";
+}
+static UIImage *SRVerifiedThumbnail(NSData *data) {
+    if (!data.length) return nil;
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!source) return nil;
+    NSDictionary *options = @{
+        (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize: @160
+    };
+    CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    UIImage *thumbnail = image ? [UIImage imageWithCGImage:image scale:UIScreen.mainScreen.scale orientation:UIImageOrientationUp] : nil;
+    if (image) CGImageRelease(image);
+    CFRelease(source);
+    return thumbnail;
 }
 static void SRScreenPresent(UIViewController *controller, UIAlertController *alert) {
     void (^show)(void) = ^{ [controller presentViewController:alert animated:YES completion:nil]; };
@@ -246,7 +262,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
                 cell.detailTextLabel.text = image ? @"缩略图仅来自已保存并校验的本地快照。" : SRSourceTextForSource(source);
                 if (image) {
                     NSData *data = [self.store.imageAssets dataForPayload:source[@"payload"] source:source error:NULL];
-                    UIImage *imageObject = data ? [UIImage imageWithData:data] : nil;
+                    UIImage *imageObject = SRVerifiedThumbnail(data);
                     if (imageObject) {
                         cell.imageView.image = imageObject;
                         cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
