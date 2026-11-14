@@ -75,6 +75,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<NSDictionary *> *)ruleCardsForPlan:(NSString *)plan account:(NSString *)account error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)historyForRule:(NSString *)rule account:(NSString *)account
                                             limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
+- (nullable NSDictionary *)runDetailsForRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+- (nullable NSArray<NSDictionary *> *)targetDetailsForRun:(NSString *)run account:(NSString *)account
+                                                    limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)exceptionsForRun:(NSString *)run account:(NSString *)account
                                                limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
 /* Persist before the experimental host call. Same source cannot be submitted

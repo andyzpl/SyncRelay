@@ -891,6 +891,40 @@ static NSArray *SRImagePayloadKeys(void) {
         return cards;
     } transaction:NO error:error];
 }
+
+/* History is an account-scoped projection.  The source snapshot is returned
+ * only for the explicitly opened run detail page; it is never included in
+ * list cards or diagnostics.  Submission receipts remain a separate fact, so
+ * a submitted row is still displayed as submitted/unknown rather than sent.
+ */
+- (NSDictionary *)runDetailsForRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && run.length, @"Account and run are required");
+        NSDictionary *row = [self query:@"SELECT x.*,r.name AS ruleName,p.source_group AS sourceGroup,p.snapshot AS sourceSnapshot FROM runs x JOIN rules r ON r.id=x.rule_id JOIN plans p ON p.id=r.plan_id WHERE x.id=? AND x.account=? AND p.account=?"
+            values:@[run, account, account]].firstObject;
+        SRRequire(row != nil, @"Run is unavailable for this account");
+        NSMutableDictionary *details = [[self runCard:row] mutableCopy];
+        NSData *data = [row[@"sourceSnapshot"] dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *source = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+        SRRequire([source isKindOfClass:NSDictionary.class] && [source[@"account"] isEqual:account], @"Run source is unavailable");
+        details[@"ruleName"] = row[@"ruleName"] ?: @"";
+        details[@"sourceGroup"] = row[@"sourceGroup"] ?: @"";
+        details[@"source"] = [SRSourceMessage frozenJSON:source];
+        return details;
+    } transaction:NO error:error];
+}
+
+- (NSArray *)targetDetailsForRun:(NSString *)run account:(NSString *)account limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(account.length && run.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid run or page range");
+        SRRequire([self query:@"SELECT id FROM runs WHERE id=? AND account=?" values:@[run, account]].count,
+                  @"Run is unavailable for this account");
+        NSString *projection = @"CASE WHEN d.state='uncertain' AND v.attempt_id IS NOT NULL THEN 'submitted' ELSE d.state END";
+        NSString *sql = [NSString stringWithFormat:@"SELECT d.target,d.position,%@ AS state,d.reason FROM deliveries d LEFT JOIN submission_receipts v ON v.delivery_id=d.id AND v.attempt_id=d.attempt_id WHERE d.run_id=? ORDER BY d.position,d.rowid LIMIT ? OFFSET ?", projection];
+        return [self query:sql values:@[run, @(limit), @(offset)]];
+    } transaction:NO error:error];
+}
+
 - (NSArray *)exceptionsForRun:(NSString *)run account:(NSString *)account limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error {
     return [self perform:^id{
         SRRequire(account.length && run.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid account or page range");

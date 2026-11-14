@@ -6,7 +6,7 @@
 #import "Adapter/SRSmallGroupSession.h"
 
 NSString *const SRRelayStateChangedNotification = @"andyz.syncrelay.stateChanged";
-typedef NS_ENUM(NSUInteger, SRRecordKind) { SRRecordPreview, SRRecordPlans, SRRecordPlan, SRRecordHistory, SRRecordExceptions };
+typedef NS_ENUM(NSUInteger, SRRecordKind) { SRRecordPreview, SRRecordPlans, SRRecordPlan, SRRecordHistory, SRRecordRunTargets, SRRecordExceptions };
 
 static NSString *SRDate(id value) {
     if (![value isKindOfClass:NSNumber.class] || [value doubleValue] <= 0) return @"时间未记录";
@@ -23,6 +23,11 @@ static NSString *SRRunDescription(NSDictionary *run) {
     return [NSString stringWithFormat:@"%@\n已提交 %@ · 已确认送达 %@\n失败 %@ · 结果未知 %@\n未发 %@ · 在途 %@ · 已取消 %@", state,
         counts[@"submitted"] ?: @0, counts[@"confirmed"] ?: @0, counts[@"failed"] ?: @0, counts[@"uncertain"] ?: @0,
         counts[@"pending"] ?: @0, counts[@"submitting"] ?: @0, counts[@"cancelled"] ?: @0];
+}
+static NSString *SRSourceTextForSource(NSDictionary *source) {
+    id payload = source[@"payload"];
+    id text = [payload isKindOfClass:NSDictionary.class] ? payload[@"text"] : nil;
+    return [text isKindOfClass:NSString.class] ? text : @"没有可用的文字摘要。";
 }
 static void SRScreenPresent(UIViewController *controller, UIAlertController *alert) {
     void (^show)(void) = ^{ [controller presentViewController:alert animated:YES completion:nil]; };
@@ -162,6 +167,9 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
         self.content = [self.store plan:self.identifier account:self.account error:&error];
         NSArray *cards = self.content ? [self.store ruleCardsForPlan:self.identifier account:self.account error:&error] : nil;
         if (cards) [self.rows addObjectsFromArray:cards];
+    } else if (self.kind == SRRecordRunTargets) {
+        self.content = [self.store runDetailsForRun:self.identifier account:self.account error:&error];
+        if (self.content) [self loadPage];
     } else [self loadPage];
     if (error) { self.problem = error.localizedDescription; self.content = nil; [self.rows removeAllObjects]; }
     [self.refreshControl endRefreshing]; [self.tableView reloadData];
@@ -171,6 +179,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     NSError *error = nil; NSArray *page = nil;
     if (self.kind == SRRecordPlans) page = [self.store plansForAccount:self.account limit:50 offset:self.offset error:&error];
     if (self.kind == SRRecordHistory) page = [self.store historyForRule:self.identifier account:self.account limit:50 offset:self.offset error:&error];
+    if (self.kind == SRRecordRunTargets) page = [self.store targetDetailsForRun:self.identifier account:self.account limit:50 offset:self.offset error:&error];
     if (self.kind == SRRecordExceptions) page = [self.store exceptionsForRun:self.identifier account:self.account limit:50 offset:self.offset error:&error];
     if (!page) { self.problem = error.localizedDescription ?: @"无法读取记录，请下拉重试。"; self.more = NO; }
     else { self.problem = nil; [self.rows addObjectsFromArray:page]; self.offset += page.count; self.more = page.count == 50; }
@@ -191,17 +200,24 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
 }
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView {
     if (self.problem || !self.content) return 1;
-    return self.kind == SRRecordPreview ? 3 : 2;
+    if (self.kind == SRRecordPreview || self.kind == SRRecordRunTargets) return 3;
+    return 2;
 }
 - (NSInteger)tableView:(__unused UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.problem) return 1;
     if (self.kind == SRRecordPreview) return section == 0 ? 5 : (section == 1 ? 1 : 2);
+    if (self.kind == SRRecordRunTargets) {
+        if (section == 0) return 2;
+        if (section == 1) return 1;
+        return MAX((NSUInteger)1, self.rows.count + (self.more ? 1 : 0));
+    }
     if (self.kind == SRRecordPlan) return section == 0 ? 5 : MAX((NSUInteger)1, self.rows.count);
     return MAX((NSUInteger)1, self.rows.count + (self.more ? 1 : 0));
 }
 - (NSString *)tableView:(__unused UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (self.problem) return @"读取已停止";
     if (self.kind == SRRecordPreview) return @[@"锁定的一条源消息", @"捕获时冻结的配置", @"确认操作"][section];
+    if (self.kind == SRRecordRunTargets) return @[@"本次消息", @"执行结果", @"目标群明细"][section];
     if (self.kind == SRRecordPlan) return section == 0 ? @"已确认源消息" : @"规则与最近状态";
     return nil;
 }
@@ -218,8 +234,51 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     SRStyleSettingsCell(cell);
     cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil; cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.imageView.image = nil;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     if (self.problem) { cell.textLabel.text = self.problem; return cell; }
+    if (self.kind == SRRecordRunTargets) {
+        NSDictionary *source = self.content[@"source"];
+        if (path.section == 0) {
+            if (path.row == 0) {
+                BOOL image = [source[@"type"] isEqual:@"image"];
+                cell.textLabel.text = image ? @"图片消息" : @"文字消息";
+                cell.detailTextLabel.text = image ? @"缩略图仅来自已保存并校验的本地快照。" : SRSourceTextForSource(source);
+                if (image) {
+                    NSData *data = [self.store.imageAssets dataForPayload:source[@"payload"] source:source error:NULL];
+                    UIImage *imageObject = data ? [UIImage imageWithData:data] : nil;
+                    if (imageObject) {
+                        cell.imageView.image = imageObject;
+                        cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
+                    }
+                }
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            } else {
+                cell.textLabel.text = @"来源与时间";
+                cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@\n开始 %@", self.content[@"sourceGroup"] ?: @"未记录",
+                    self.content[@"ruleName"] ?: @"未命名分组", SRDate(self.content[@"started_at"] ?: @0)];
+            }
+            return cell;
+        }
+        if (path.section == 1) {
+            cell.textLabel.text = SRRunDescription(self.content);
+            cell.detailTextLabel.text = @"已提交不等于已确认送达；结果未知保持待核对。";
+            return cell;
+        }
+        if (path.row == (NSInteger)self.rows.count) {
+            cell.textLabel.text = self.more ? @"加载更多" : @"没有目标群记录";
+            cell.selectionStyle = self.more ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+            return cell;
+        }
+        NSDictionary *target = self.rows[(NSUInteger)path.row];
+        cell.textLabel.text = target[@"target"] ?: @"未记录目标群";
+        cell.detailTextLabel.text = @{ @"pending": @"未发", @"submitting": @"在途处理中", @"submitted": @"已提交 · 未确认送达",
+            @"confirmed": @"已确认送达", @"failed": @"明确失败", @"uncertain": @"结果待核对", @"cancelled": @"已取消" }[target[@"state"]] ?: @"状态待核对";
+        if ([target[@"reason"] isKindOfClass:NSString.class] && [target[@"reason"] length])
+            cell.detailTextLabel.text = [cell.detailTextLabel.text stringByAppendingFormat:@"\n%@", target[@"reason"]];
+        return cell;
+    }
     if ((self.kind == SRRecordPreview || self.kind == SRRecordPlan) && path.section == 0) {
         NSDictionary *source = [self source];
         cell.textLabel.text = @[@"母群 ID", @"实际发送者 wxid", @"源消息类型", @"源消息 ID", @"消息内容（点开完整查看）"][path.row];
@@ -342,6 +401,22 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
         }
         return;
     }
+    if (self.kind == SRRecordRunTargets && path.section == 0 && path.row == 0) {
+        NSDictionary *source = self.content[@"source"];
+        if ([source[@"type"] isEqual:@"image"]) {
+            SRSourceImageScreen *viewer = [[SRSourceImageScreen alloc] init]; viewer.title = @"图片缩略图（只读）";
+            viewer.source = source; viewer.assets = self.store.imageAssets; viewer.verifyAccount = self.verifyAccount;
+            [self.navigationController pushViewController:viewer animated:YES];
+        } else {
+            SRSourceTextScreen *viewer = [[SRSourceTextScreen alloc] init]; viewer.title = @"源消息内容";
+            viewer.body = SRSourceTextForSource(source); viewer.verifyAccount = self.verifyAccount;
+            [self.navigationController pushViewController:viewer animated:YES];
+        }
+        return;
+    }
+    if (self.kind == SRRecordRunTargets && path.section == 2 && path.row == (NSInteger)self.rows.count && self.more) {
+        [self loadPage]; return;
+    }
     if (self.kind == SRRecordPreview) {
         if (path.section != 2) return;
         if (path.row == 1) { [self.capture cancel]; [NSNotificationCenter.defaultCenter postNotificationName:SRRelayStateChangedNotification object:nil]; [self.navigationController popViewControllerAnimated:YES]; return; }
@@ -357,7 +432,7 @@ static void SRScreenAlert(UIViewController *controller, NSString *title, NSStrin
     NSDictionary *row = self.rows[path.row]; SRRecordScreen *next = nil;
     if (self.kind == SRRecordPlans) next = [self screen:SRRecordPlan identifier:row[@"id"] title:@"内容计划与规则"];
     if (self.kind == SRRecordPlan) { [self ruleActions:row]; return; }
-    if (self.kind == SRRecordHistory) next = [self screen:SRRecordExceptions identifier:row[@"id"] title:@"异常群与未发项"];
+    if (self.kind == SRRecordHistory) next = [self screen:SRRecordRunTargets identifier:row[@"id"] title:@"转发详情 · 目标群"];
     if (next) [self.navigationController pushViewController:next animated:YES];
 }
 @end

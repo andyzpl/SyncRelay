@@ -82,7 +82,11 @@ static void SRGroupingError(NSError **error, id reason) {
                 do { name = [NSString stringWithFormat:@"Rule %lu", (unsigned long)nextNumber++]; }
                 while ([names containsObject:name]);
                 [names addObject:name];
+                /* Generated rows record their 100/200 grouping specification.
+                 * Existing rows are copied untouched, so a user's custom name
+                 * is never rewritten when a later batch is added. */
                 [rules addObject:@{@"id": NSUUID.UUID.UUIDString, @"name": name,
+                    @"origin": @"auto", @"capacity": @(size),
                     @"targets": [eligible subarrayWithRange:NSMakeRange(cursor, length)]}];
                 cursor += length; generated++; batchRules++;
                 if (length < size) partial++;

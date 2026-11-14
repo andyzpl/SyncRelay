@@ -73,6 +73,10 @@ int main(void) {
         CHECK(emptied && [emptied[@"rules"] count] == 0 && [emptied[@"senders"] count] == 0);
         CHECK(![SRGroupPlanner configurationBySettingSourceGroup:@{@"id": @"wxid_not_group", @"name": @"Invalid"} inDraft:candidate error:NULL]);
         for (NSUInteger i = 0; i < 20; i++) CHECK([candidate[@"rules"][i][@"targets"] count] == (i < 10 ? 100 : 200));
+        for (NSUInteger i = 0; i < 20; i++) {
+            CHECK([candidate[@"rules"][i][@"origin"] isEqual:@"auto"]);
+            CHECK([candidate[@"rules"][i][@"capacity"] isEqual:(i < 10 ? @100 : @200)]);
+        }
         for (NSString *key in @[@"sourceGroup", @"senders", @"types", @"minimum", @"maximum"])
             CHECK([candidate[key] isEqual:original[key]]);
         CHECK([SRSourceMessage matchesEnvelope:@{@"account": @"account", @"group": @"mother@chatroom", @"sender": @"wxid_b",
@@ -109,6 +113,7 @@ int main(void) {
         CHECK([filtered[@"availableCount"] isEqual:@3096] && [filtered[@"remainingCount"] isEqual:@96]);
         CHECK(targetIDs(filtered[@"configuration"]).count == 3002);
         CHECK([filtered[@"configuration"][@"rules"][0] isEqual:existing]);
+        CHECK([filtered[@"configuration"][@"rules"][0][@"name"] isEqual:@"Rule 2"]);
         CHECK([filtered[@"configuration"][@"rules"][1][@"targets"][0][@"id"] isEqual:group(4)[@"id"]]);
         CHECK(![targetIDs(filtered[@"configuration"]) containsObject:group(2)[@"id"]]);
         CHECK(![targetIDs(filtered[@"configuration"]) containsObject:@"mother@chatroom"]);

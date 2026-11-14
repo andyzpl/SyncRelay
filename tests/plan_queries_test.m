@@ -61,6 +61,13 @@ int main(void) {
         CHECK([completed[@"state"] isEqual:@"completed"] && [completed[@"ended_at"] doubleValue] > 0);
         NSNumber *endedAt = completed[@"ended_at"];
         CHECK(!completed[@"snapshot"] && ![completed.description containsString:@"secret message body"]);
+        NSDictionary *details = [store runDetailsForRun:run account:@"account" error:NULL];
+        CHECK([details[@"source"][@"payload"][@"text"] isEqual:@"secret message body"]);
+        CHECK(![store runDetailsForRun:run account:@"other" error:NULL]);
+        NSArray *targets = [store targetDetailsForRun:run account:@"account" limit:1 offset:0 error:NULL];
+        CHECK(targets.count == 1 && [targets[0][@"state"] isEqual:@"confirmed"]);
+        CHECK([store targetDetailsForRun:run account:@"account" limit:1 offset:1 error:NULL].count == 1);
+        CHECK(![store targetDetailsForRun:run account:@"other" limit:1 offset:0 error:NULL]);
         CHECK([store exceptionsForRun:run account:@"account" limit:50 offset:0 error:NULL].count == 0);
         CHECK(![store exceptionsForRun:run account:@"other" limit:50 offset:0 error:NULL]);
         CHECK(![store exceptionsForRun:run account:@"account" limit:0 offset:0 error:NULL]);
@@ -70,6 +77,8 @@ int main(void) {
         NSString *secondRun = [store startRule:second replay:NO error:NULL]; CHECK(secondRun);
         CHECK(result(store, [store claimNextForRun:secondRun error:NULL], @"failed"));
         CHECK(result(store, [store claimNextForRun:secondRun error:NULL], @"uncertain"));
+        targets = [store targetDetailsForRun:secondRun account:@"account" limit:50 offset:0 error:NULL];
+        CHECK(targets.count == 2 && [targets[0][@"state"] isEqual:@"failed"] && [targets[1][@"state"] isEqual:@"uncertain"]);
         NSArray *exceptions = [store exceptionsForRun:secondRun account:@"account" limit:1 offset:0 error:NULL];
         CHECK(exceptions.count == 1 && [exceptions[0][@"state"] isEqual:@"failed"] && [exceptions[0][@"reason"] isEqual:@"Network failure"]);
         CHECK([[store exceptionsForRun:secondRun account:@"account" limit:1 offset:1 error:NULL][0][@"state"] isEqual:@"uncertain"]);
