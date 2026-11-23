@@ -95,6 +95,18 @@ jobs:
             "$RUNNER_TEMP/message-menu-hook-test"
             "$RUNNER_TEMP/menu-abi-probe-test"
           done
+      - name: Run native UIKit simulator tests and capture After evidence
+        env:
+          SR_UI_EVIDENCE_DIR: ${{ runner.temp }}/ios-ui-evidence
+        run: bash tools/run_ios_ui_tests.sh
+      - name: Upload UIKit simulator evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SyncRelay-ios-ui-evidence
+          path: ${{ runner.temp }}/ios-ui-evidence/
+          if-no-files-found: error
+          retention-days: 7
       - name: Install build tools
         if: github.event_name == 'workflow_dispatch' && inputs.build_deb
         run: |

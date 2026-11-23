@@ -2,12 +2,14 @@
 @class SRStore, SRSourceCapture, SRSmallGroupSession;
 NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSString *const SRRelayStateChangedNotification;
-/* Navigation only: four primary destinations and a secondary records entry.
+/* Navigation only: five peer destinations; records precede settings.
  * The route callback owns account-bound assembly, never a capture/send command. */
 enum { SRHomeForwardingRecords = 4 };
 FOUNDATION_EXPORT UIViewController *SRCreateNavigationHome(SRStore *store, NSString *account,
                                                            BOOL (^verifyAccount)(void),
                                                            void (^openDestination)(NSUInteger destination));
+/* Complete read-only grouped history for the exact account/run selected by the user. */
+FOUNDATION_EXPORT UIViewController *SRCreateForwardingRecord(SRStore *store, NSString *account, BOOL (^verifyAccount)(void), NSString *run);
 FOUNDATION_EXPORT UIViewController *SRCreateForwardingRecords(SRStore *store, NSString *account, BOOL (^verifyAccount)(void));
 FOUNDATION_EXPORT UIViewController *SRCreateCapturePreview(SRStore *store, SRSourceCapture *capture,
                                                           NSString *account, BOOL (^verifyAccount)(void), SRSmallGroupSession * _Nullable execution);

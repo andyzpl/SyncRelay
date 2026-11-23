@@ -66,6 +66,28 @@ int main(void) {
         CHECK([preview[@"shortfallCount"] isEqual:@0] && [preview[@"remainingCount"] isEqual:@0]);
         NSDictionary *candidate = preview[@"configuration"];
         CHECK(targetIDs(candidate).count == 3000);
+        CHECK([candidate[@"rules"][0][@"name"] isEqual:@"群分组1-100"]);
+        CHECK([candidate[@"rules"][9][@"name"] isEqual:@"群分组901-1000"]);
+        CHECK([candidate[@"rules"][10][@"name"] isEqual:@"群分组1001-1200"]);
+        NSDictionary *reversed = [SRGroupPlanner previewWithRows:groups(437) draft:draft()
+            recipe:@[@{@"size": @200, @"count": @2}, @{@"size": @100, @"count": @1}] error:NULL];
+        CHECK([reversed[@"configuration"][@"rules"][0][@"name"] isEqual:@"群分组1-100"]);
+        CHECK([reversed[@"configuration"][@"rules"][1][@"name"] isEqual:@"群分组101-300"]);
+        CHECK([reversed[@"configuration"][@"rules"][2][@"name"] isEqual:@"群分组301-437"]);
+        NSDictionary *filledNames = [SRGroupPlanner previewWithRows:groups(500) draft:reversed[@"configuration"]
+            recipe:@[@{@"size": @100, @"count": @0}] executionLimit:0 error:NULL];
+        CHECK([filledNames[@"configuration"][@"rules"][2][@"name"] isEqual:@"群分组301-500"]);
+        NSMutableDictionary *manualNames = [reversed[@"configuration"] mutableCopy];
+        NSMutableArray *manualRules = [manualNames[@"rules"] mutableCopy];
+        NSMutableDictionary *manualRule = [manualRules[2] mutableCopy]; manualRule[@"name"] = @"我的分组";
+        manualRules[2] = manualRule; manualNames[@"rules"] = manualRules;
+        NSDictionary *keptName = [SRGroupPlanner previewWithRows:groups(500) draft:manualNames recipe:@[@{@"size": @100, @"count": @0}] error:NULL];
+        CHECK([keptName[@"configuration"][@"rules"][2][@"name"] isEqual:@"我的分组"]);
+        CHECK(keptName[@"configuration"][@"rules"][2][@"generatedName"] == nil);
+        NSDictionary *prunedName = [SRGroupPlanner configurationBySettingExcludedGroups:@[group(0)]
+            inDraft:reversed[@"configuration"] error:NULL];
+        CHECK([prunedName[@"rules"][0][@"name"] isEqual:@"群分组1-99"]);
+        CHECK([prunedName[@"rules"][1][@"name"] isEqual:@"群分组100-299"]);
         // Automatic source exclusion does not depend on the manual exclusion list.
         NSDictionary *sourceOnly = [SRGroupPlanner previewWithRows:@[original[@"sourceGroup"]]
             draft:original recipe:recipe error:NULL];

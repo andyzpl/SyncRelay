@@ -71,6 +71,61 @@ static void checkForwardingLimit(NSString *root, NSUserDefaults *defaults, SREnt
     CHECK([[store smallGroupRun:run account:@"account" error:NULL][@"targets"] isEqual:scope]);
     CHECK([store endSmallGroupRun:run account:@"account" error:NULL]);
 }
+static void checkFrozenHistory(NSString *root, NSUserDefaults *defaults) {
+    SRStore *store = [[SRStore alloc] initWithPath:[root stringByAppendingPathComponent:@"history.sqlite3"] defaults:defaults error:NULL]; CHECK(store);
+    NSMutableDictionary *draft = [configuration() mutableCopy];
+    NSArray *groups = @[@{@"id": @"a", @"name": @"群分组1-1", @"targets": @[@{@"id": @"one@chatroom", @"name": @"One"}]},
+        @{@"id": @"b", @"name": @"群分组2-2", @"targets": @[@{@"id": @"two@chatroom", @"name": @"Two"}]}];
+    draft[@"rules"] = groups; CHECK([store saveConfiguration:draft account:@"account" error:NULL]);
+    NSData *bytes = png();
+    NSDictionary *asset = [store saveLibraryImageData:bytes account:@"account" error:NULL]; CHECK(asset);
+    NSString *item = [store createLibraryItemForAccount:@"account" kind:@"image" payload:asset capturedAt:10 error:NULL]; CHECK(item);
+    NSString *version = [store libraryItem:item account:@"account" error:NULL][@"current_version_id"];
+    CHECK([[store libraryImageDataForItem:item version:version account:@"account" error:NULL] isEqual:bytes]);
+    CHECK(![store libraryImageDataForItem:item version:version account:@"other" error:NULL]);
+    NSString *task = [store createLibraryTaskForAccount:@"account" item:item version:version confirmationID:@"grouped"
+        targets:targets() targetGroups:groups minimum:5 maximum:8 error:NULL]; CHECK(task);
+    NSMutableDictionary *renamed = [groups[0] mutableCopy]; renamed[@"name"] = @"New name";
+    draft[@"rules"] = @[renamed, groups[1]];
+    CHECK([store saveConfiguration:draft account:@"account" error:NULL]);
+    CHECK([[store createLibraryTaskForAccount:@"account" item:item version:version confirmationID:@"grouped"
+        targets:targets() targetGroups:groups minimum:5 maximum:8 error:NULL] isEqual:task]);
+    CHECK(![store createLibraryTaskForAccount:@"account" item:item version:version confirmationID:@"grouped"
+        targets:targets() targetGroups:draft[@"rules"] minimum:5 maximum:8 error:NULL]);
+    CHECK(![store createLibraryTaskForAccount:@"account" item:item version:version confirmationID:@"stale"
+        targets:targets() targetGroups:groups minimum:5 maximum:8 error:NULL]);
+    CHECK(![store createLibraryTaskForAccount:@"account" item:item version:version confirmationID:@"wrong-order"
+        targets:@[@"two@chatroom", @"one@chatroom"] targetGroups:draft[@"rules"] minimum:5 maximum:8 error:NULL]);
+    CHECK(![store createLibraryTaskForAccount:@"account" item:item version:version confirmationID:@"grouped"
+        targets:targets() minimum:5 maximum:8 error:NULL]);
+    CHECK(taskCount(store, @"account") == 1);
+    NSString *run = [store startLibraryTask:task account:@"account" error:NULL]; CHECK(run);
+    CHECK([[store forwardingImageDataForRun:run account:@"account" error:NULL] isEqual:bytes]);
+    CHECK(![store forwardingImageDataForRun:run account:@"other" error:NULL]);
+    NSArray *cards = [store forwardingTargetGroupsForRun:run account:@"account" error:NULL];
+    CHECK(cards.count == 2 && [cards[0][@"name"] isEqual:@"群分组1-1"] && [cards[0][@"count"] isEqual:@1]);
+    CHECK(![cards[0][@"legacy"] boolValue]);
+    NSArray *first = [store forwardingTargetsForRun:run account:@"account" group:0 limit:30 offset:0 error:NULL];
+    CHECK(first.count == 1 && [first[0][@"target"] isEqual:@"one@chatroom"] && [first[0][@"name"] isEqual:@"One"]);
+    CHECK([first[0][@"state"] isEqual:@"pending"]);
+    CHECK([store forwardingTargetsForRun:run account:@"account" group:0 limit:30 offset:1 error:NULL].count == 0);
+    CHECK(![store forwardingTargetsForRun:run account:@"account" group:2 limit:30 offset:0 error:NULL]);
+    CHECK(![store forwardingTargetGroupsForRun:run account:@"other" error:NULL]);
+    CHECK([store appendLibraryVersion:item account:@"account" payload:asset expectedVersion:version capturedAt:20 error:NULL]);
+    CHECK(![store libraryImageDataForItem:item version:version account:@"account" error:NULL]);
+    CHECK([[store forwardingImageDataForRun:run account:@"account" error:NULL] isEqual:bytes]);
+    CHECK([store deleteLibraryEntry:item account:@"account" error:NULL]);
+    CHECK(![store libraryImageDataForItem:item version:version account:@"account" error:NULL]);
+    CHECK([[store forwardingImageDataForRun:run account:@"account" error:NULL] isEqual:bytes]);
+    CHECK([store endSmallGroupRun:run account:@"account" error:NULL]);
+    store = [[SRStore alloc] initWithPath:[root stringByAppendingPathComponent:@"history.sqlite3"] defaults:defaults error:NULL]; CHECK(store);
+    CHECK([[store forwardingTargetGroupsForRun:run account:@"account" error:NULL] isEqual:cards]);
+    NSString *file = [store.imageAssets.directory stringByAppendingPathComponent:[asset[@"mediaReference"] stringByAppendingString:@".srimage"]];
+    CHECK([[NSData dataWithBytes:"bad" length:3] writeToFile:file atomically:YES]);
+    CHECK(![store forwardingImageDataForRun:run account:@"account" error:NULL]);
+    CHECK([store forwardingRecordForRun:run account:@"account" error:NULL]);
+}
+
 int main(void) {
     @autoreleasepool {
         NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
@@ -81,6 +136,7 @@ int main(void) {
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
         SREntryPreferences *preferences = [[SREntryPreferences alloc] initWithDefaults:defaults];
         checkForwardingLimit(root, defaults, preferences);
+        checkFrozenHistory(root, defaults);
         SRStore *store = [[SRStore alloc] initWithPath:path defaults:defaults error:&error]; CHECK(store);
 
         // 1. A repeated confirmation resolves to the same frozen task.
@@ -201,6 +257,10 @@ int main(void) {
         CHECK(countForRun(summary, @"pending") == 2);
         NSArray *records = [store forwardingRecordsForAccount:@"account" beforeRun:nil limit:30 error:NULL];
         CHECK(records.count == 1 && [records[0][@"id"] isEqual:run]);
+        NSArray *legacyGroups = [store forwardingTargetGroupsForRun:run account:@"account" error:NULL];
+        CHECK(legacyGroups.count == 1 && [legacyGroups[0][@"legacy"] boolValue] && [legacyGroups[0][@"count"] isEqual:@2]);
+        CHECK([store forwardingTargetsForRun:run account:@"account" group:0 limit:30 offset:0 error:NULL].count == 2);
+        CHECK(![store forwardingImageDataForRun:run account:@"account" error:NULL]);
         CHECK([records[0][@"sourceKind"] isEqual:@"message_library"] && [records[0][@"excerpt"] isEqual:@"first body"]);
         // An active library run is not an unclaimed legacy run awaiting adoption.
         NSDictionary *projection = [store operationsContentForAccount:@"account" error:NULL];

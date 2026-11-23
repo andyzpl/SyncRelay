@@ -85,6 +85,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<NSDictionary *> *)forwardingRecordsForAccount:(NSString *)account
                                                         beforeRun:(nullable NSString *)beforeRun limit:(NSUInteger)limit error:(NSError **)error;
 - (nullable NSDictionary *)forwardingRecordForRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+/* Frozen historical content only, never the entry's currently edited image. */
+- (nullable NSData *)forwardingImageDataForRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+- (nullable NSArray<NSDictionary *> *)forwardingTargetGroupsForRun:(NSString *)run account:(NSString *)account error:(NSError **)error;
+- (nullable NSArray<NSDictionary *> *)forwardingTargetsForRun:(NSString *)run account:(NSString *)account
+                                                       group:(NSUInteger)group limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)forwardingTargetsForRun:(NSString *)run account:(NSString *)account
                                                        limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error;
 - (nullable NSArray<NSDictionary *> *)exceptionsForRun:(NSString *)run account:(NSString *)account
@@ -122,6 +127,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<NSDictionary *> *)libraryItemsForAccount:(NSString *)account limit:(NSUInteger)limit
                                                       offset:(NSUInteger)offset error:(NSError **)error;
 - (nullable NSDictionary *)libraryItem:(NSString *)item account:(NSString *)account error:(NSError **)error;
+/* Local preview bytes for this exact current version; no host media access. */
+- (nullable NSData *)libraryImageDataForItem:(NSString *)item version:(NSString *)version
+                                    account:(NSString *)account error:(NSError **)error;
 /* Identical bytes within one account reuse one stored token; they never merge
  * an entry, version, plan or sending task. Other accounts never share it.
  * An unusable registered asset can be replaced only when no media reference,
@@ -146,6 +154,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)createLibraryTaskForAccount:(NSString *)account item:(NSString *)item
                                            version:(nullable NSString *)version confirmationID:(NSString *)confirmationID
                                            targets:(NSArray<NSString *> *)targets
+                                           minimum:(double)minimum maximum:(double)maximum error:(NSError **)error;
+/* Selected saved rules captured at confirmation, frozen for historical display.
+ * They must exactly match the saved configuration and the ordered targets.
+ * An identical retry compares the original snapshot, not today's configuration. */
+- (nullable NSString *)createLibraryTaskForAccount:(NSString *)account item:(NSString *)item
+                                           version:(nullable NSString *)version confirmationID:(NSString *)confirmationID
+                                           targets:(NSArray<NSString *> *)targets targetGroups:(nullable NSArray<NSDictionary *> *)targetGroups
                                            minimum:(double)minimum maximum:(double)maximum error:(NSError **)error;
 /* Explicit start: creates the task's single run (awaiting_resume) and its
  * pending deliveries. Repeating it returns the existing run. The only update a

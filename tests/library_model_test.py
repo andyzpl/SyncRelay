@@ -221,7 +221,9 @@ class LibraryModelTests(unittest.TestCase):
 
     def test_image_registration_is_checked_before_creating_references(self):
         section = library_section()
-        validate = section.split('- (NSString *)libraryTokenForPayload:', 1)[1].split('\n}', 1)[0]
+        validate = section.split('- (NSData *)validatedLibraryImageDataForPayload:', 1)[1].split('\n}', 1)[0]
+        token = section.split('- (NSString *)libraryTokenForPayload:', 1)[1].split('\n}', 1)[0]
+        self.assertIn('[self validatedLibraryImageDataForPayload:payload account:account]', token)
         self.assertLess(validate.index('SELECT token FROM media_assets WHERE token=? AND account=?'),
                         validate.index('[self.imageAssets dataForPayload:'))
         self.assertIn('Library image is not registered with matching metadata for this account', validate)

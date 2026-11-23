@@ -4,8 +4,10 @@
 #import "UI/SRNativeStyle.h"
 #import "UI/SRLibraryScreens.h"
 #import "UI/SRPlanScreens.h"
+#import "UI/SRLocalImagePreviews.h"
 #include <assert.h>
 #include <stdio.h>
+#include <math.h>
 
 @interface SRNavigationDraftFixture : UIViewController <SRNavigationBackGuard>
 @property(nonatomic) BOOL dirty;
@@ -72,6 +74,73 @@ static void SRRunMessageDetailTests(UIWindow *window) {
     puts("PASS: content-first detail, fixed CTA, inactive masking and account rejection without dispatch");
 }
 
+@interface SRImageStoreFixture : SRMessageStoreFixture
+@property(nonatomic, strong) NSData *bytes;
+@property(nonatomic) NSUInteger imageReads;
+@property(nonatomic, strong) dispatch_semaphore_t gate;
+@end
+@implementation SRImageStoreFixture
+- (NSDictionary *)libraryItem:(__unused NSString *)item account:(__unused NSString *)account error:(__unused NSError **)error {
+    return @{@"id": @"fixture-item", @"kind": @"image", @"current_version_id": @"fixture-version",
+        @"versions": @[@{@"id": @"fixture-version", @"kind": @"image", @"captured_at": @100, @"media_token": @"fixture-token",
+            @"payload": @{@"pixelWidth": @600, @"pixelHeight": @300, @"byteCount": @100}}]};
+}
+- (NSData *)libraryImageDataForItem:(NSString *)item version:(NSString *)version account:(NSString *)account error:(__unused NSError **)error {
+    assert([item isEqual:@"fixture-item"] && [version isEqual:@"fixture-version"] && [account isEqual:@"fixture-account"]);
+    @synchronized (self) { self.imageReads++; }
+    if (self.gate) dispatch_semaphore_wait(self.gate, DISPATCH_TIME_FOREVER);
+    return self.bytes;
+}
+@end
+static void SRPumpPreviews(void) {
+    [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+}
+static void SRRunLocalImagePreviewTests(UIWindow *window) {
+    for (NSValue *value in @[[NSValue valueWithCGSize:CGSizeMake(600, 300)], [NSValue valueWithCGSize:CGSizeMake(300, 600)],
+                            [NSValue valueWithCGSize:CGSizeMake(12, 8)]]) {
+        CGSize size = value.CGSizeValue;
+        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat]; format.scale = 1;
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+        SRImageStoreFixture *store = [[SRImageStoreFixture alloc] init];
+        store.bytes = [renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *context) {
+            [UIColor.systemBlueColor setFill]; [context fillRect:CGRectMake(0, 0, size.width, size.height)];
+        }];
+        __block BOOL allowed = YES;
+        UITableViewController *page = (id)SRCreateLibraryItem((id)store, @"fixture-account", ^{ return allowed; }, @"fixture-item", nil, nil);
+        window.rootViewController = [[SRNavigationController alloc] initWithRootViewController:page];
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+        UIImageView *image = nil;
+        do { [page.tableView layoutIfNeeded]; image = (id)SRFindMessageElement(page.view, @"SyncRelay.LibraryImagePreview");
+            if (!image) SRPumpPreviews();
+        } while (!image && deadline.timeIntervalSinceNow > 0);
+        assert(image && image.image && store.imageReads == 1);
+        [page.tableView layoutIfNeeded];
+        assert(image.contentMode == UIViewContentModeScaleAspectFit);
+        assert(CGRectGetHeight(image.frame) <= 240.5);
+        assert(CGRectGetWidth(image.frame) <= CGRectGetWidth(image.superview.bounds) * 0.7 + 0.5);
+        assert(fabs(CGRectGetWidth(image.frame) / CGRectGetHeight(image.frame) - size.width / size.height) < 0.02);
+        assert(CGRectGetWidth(image.frame) <= size.width / UIScreen.mainScreen.scale + 0.5);
+        allowed = NO;
+        [page.refreshControl sendActionsForControlEvents:UIControlEventValueChanged]; [page.tableView layoutIfNeeded];
+        assert(!SRFindMessageElement(page.view, @"SyncRelay.LibraryImagePreview"));
+    }
+    // Reject a late image after foreground/account invalidation.
+    SRImageStoreFixture *slow = [[SRImageStoreFixture alloc] init]; slow.gate = dispatch_semaphore_create(0);
+    UITableViewController *page = (id)SRCreateLibraryItem((id)slow, @"fixture-account", ^{ return YES; }, @"fixture-item", nil, nil);
+    window.rootViewController = [[SRNavigationController alloc] initWithRootViewController:page]; [page.tableView layoutIfNeeded];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+    BOOL reading = NO;
+    do { @synchronized (slow) { reading = slow.imageReads > 0; } if (!reading) SRPumpPreviews(); }
+    while (!reading && deadline.timeIntervalSinceNow > 0);
+    assert(reading);
+    [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+    dispatch_semaphore_signal(slow.gate);
+    for (NSUInteger i = 0; i < 10; i++) SRPumpPreviews();
+    [page.tableView layoutIfNeeded];
+    assert(!SRFindMessageElement(page.view, @"SyncRelay.LibraryImagePreview"));
+    puts("PASS: bounded local image preview preserves aspect ratio, does not upscale and rejects inactive/foreign-account results");
+}
+
 @interface SRFooterLayoutFixture : UITableViewController
 @end
 @implementation SRFooterLayoutFixture
@@ -117,6 +186,7 @@ static void SRSettleNavigation(SRNavigationController *navigation) {
 
 @interface SRForwardingRecordsFixture : NSObject
 @property(nonatomic) NSUInteger reads;
+@property(nonatomic, strong) NSData *imageBytes;
 @end
 @implementation SRForwardingRecordsFixture
 - (NSArray *)forwardingRecordsForAccount:(NSString *)account beforeRun:(NSString *)beforeRun
@@ -128,13 +198,22 @@ static void SRSettleNavigation(SRNavigationController *navigation) {
 - (NSDictionary *)forwardingRecordForRun:(NSString *)run account:(NSString *)account error:(__unused NSError **)error {
     assert([run isEqual:@"record-1"] && [account isEqual:@"fixture-account"]);
     self.reads++;
-    return @{@"id": run, @"sourceKind": @"message_library", @"excerpt": @"会议通知",
+    return @{@"id": run, @"sourceKind": @"message_library", @"messageType": self.imageBytes ? @"image" : @"text", @"excerpt": @"会议通知",
         @"state": @"completed", @"started_at": @100, @"ended_at": @150,
         @"counts": @{@"confirmed": @1, @"uncertain": @1}};
 }
-- (NSArray *)forwardingTargetsForRun:(NSString *)run account:(NSString *)account limit:(NSUInteger)limit
+- (NSData *)forwardingImageDataForRun:(NSString *)run account:(NSString *)account error:(__unused NSError **)error {
+    assert([run isEqual:@"record-1"] && [account isEqual:@"fixture-account"]);
+    return self.imageBytes;
+}
+- (NSArray *)forwardingTargetGroupsForRun:(NSString *)run account:(NSString *)account error:(__unused NSError **)error {
+    assert([run isEqual:@"record-1"] && [account isEqual:@"fixture-account"]);
+    self.reads++;
+    return @[@{@"name": @"本次转发目标", @"count": @2, @"legacy": @YES}];
+}
+- (NSArray *)forwardingTargetsForRun:(NSString *)run account:(NSString *)account group:(NSUInteger)group limit:(NSUInteger)limit
                              offset:(NSUInteger)offset error:(__unused NSError **)error {
-    assert([run isEqual:@"record-1"] && [account isEqual:@"fixture-account"] && limit == 30 && offset == 0);
+    assert([run isEqual:@"record-1"] && [account isEqual:@"fixture-account"] && group == 0 && limit == 30 && offset == 0);
     self.reads++;
     return @[@{@"target": @"one@chatroom", @"state": @"confirmed"}, @{@"target": @"two@chatroom", @"state": @"uncertain"}];
 }
@@ -155,7 +234,15 @@ static void SRRunForwardingRecordsTests(UIWindow *window) {
     SRSettleNavigation(navigation);
     UITableViewController *detail = (id)navigation.topViewController;
     assert([detail.title isEqual:@"转发详情"] && detail.tableView.numberOfSections == 3);
-    NSIndexPath *unknown = [NSIndexPath indexPathForRow:1 inSection:2];
+    NSIndexPath *group = [NSIndexPath indexPathForRow:0 inSection:2];
+    UITableViewCell *groupCell = [detail.tableView.dataSource tableView:detail.tableView cellForRowAtIndexPath:group];
+    assert([groupCell.textLabel.text isEqual:@"本次转发目标"] && groupCell.accessoryType == UITableViewCellAccessoryDisclosureIndicator);
+    assert([[detail.tableView.dataSource tableView:detail.tableView titleForFooterInSection:2] containsString:@"旧记录"]);
+    [detail.tableView.delegate tableView:detail.tableView didSelectRowAtIndexPath:group];
+    SRSettleNavigation(navigation);
+    detail = (id)navigation.topViewController;
+    assert([detail.title isEqual:@"本次转发目标"] && detail.tableView.numberOfSections == 1);
+    NSIndexPath *unknown = [NSIndexPath indexPathForRow:1 inSection:0];
     UITableViewCell *target = [detail.tableView.dataSource tableView:detail.tableView cellForRowAtIndexPath:unknown];
     assert([target.detailTextLabel.text isEqual:@"待核对"] && !detail.navigationItem.rightBarButtonItem);
     [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
@@ -169,6 +256,116 @@ static void SRRunForwardingRecordsTests(UIWindow *window) {
     UITableViewCell *blocked = [detail.tableView.dataSource tableView:detail.tableView cellForRowAtIndexPath:first];
     assert([blocked.textLabel.text containsString:@"账号无法核对"]);
     puts("PASS: forwarding records use the native list, show one bound run and mask on account rejection");
+}
+
+@interface SRDelayedForwardingFixture : SRForwardingRecordsFixture
+@property(nonatomic, strong) dispatch_semaphore_t gate;
+@property(nonatomic) NSUInteger imageReads;
+@property(nonatomic) BOOL snapshotInvalid;
+@end
+@implementation SRDelayedForwardingFixture
+- (NSData *)forwardingImageDataForRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    @synchronized (self) { self.imageReads++; }
+    dispatch_semaphore_wait(self.gate, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    return [super forwardingImageDataForRun:run account:account error:error];
+}
+- (NSArray *)forwardingTargetGroupsForRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    if (self.snapshotInvalid) return nil;
+    return [super forwardingTargetGroupsForRun:run account:account error:error];
+}
+- (NSArray *)historyForRule:(NSString *)rule account:(NSString *)account limit:(NSUInteger)limit
+                    offset:(NSUInteger)offset error:(__unused NSError **)error {
+    assert([rule isEqual:@"fixture-rule"] && [account isEqual:@"fixture-account"] && limit == 50 && offset == 0);
+    return @[@{@"id": @"record-1", @"state": @"completed", @"started_at": @100,
+        @"counts": @{@"confirmed": @1, @"uncertain": @1}}];
+}
+@end
+
+static void SRRunLegacyHistoryRouteTests(UIWindow *window) {
+    SRDelayedForwardingFixture *store = [[SRDelayedForwardingFixture alloc] init];
+    UITableViewController *history = [(UITableViewController *)[NSClassFromString(@"SRRecordScreen") alloc] initWithStyle:UITableViewStyleGrouped];
+    [history setValue:@3 forKey:@"kind"]; [history setValue:store forKey:@"store"];
+    [history setValue:@"fixture-account" forKey:@"account"]; [history setValue:@"fixture-rule" forKey:@"identifier"];
+    [history setValue:[^{ return YES; } copy] forKey:@"verifyAccount"];
+    SRNavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:history];
+    window.rootViewController = navigation; [history.view layoutIfNeeded];
+    [history.tableView.delegate tableView:history.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+    SRSettleNavigation(navigation);
+    UITableViewController *detail = (id)navigation.topViewController;
+    assert([detail.title isEqual:@"转发详情"] && detail.tableView.numberOfSections == 3);
+    assert([[detail valueForKey:@"run"] isEqual:@"record-1"] && [[detail valueForKey:@"account"] isEqual:@"fixture-account"]);
+    [detail.tableView.delegate tableView:detail.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:2]];
+    SRSettleNavigation(navigation);
+    UITableViewController *targets = (id)navigation.topViewController;
+    assert([targets.tableView numberOfRowsInSection:0] == 2);
+    UITableViewCell *confirmed = [targets.tableView.dataSource tableView:targets.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+    assert([confirmed.detailTextLabel.text isEqual:@"已确认送达"]);
+    puts("PASS: legacy rule history opens exact account/run grouped history including confirmed targets");
+}
+
+static void SRRunLateForwardingPreviewTests(UIWindow *window) {
+    for (NSString *change in @[@"run", @"account", @"snapshot", @"rejected-account"]) {
+        SRDelayedForwardingFixture *store = [[SRDelayedForwardingFixture alloc] init];
+        store.gate = dispatch_semaphore_create(0);
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(10, 10)];
+        store.imageBytes = [renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *context) {
+            [UIColor.systemBlueColor setFill]; [context fillRect:CGRectMake(0, 0, 10, 10)];
+        }];
+        __block BOOL allowed = YES;
+        UITableViewController *page = (id)SRCreateForwardingRecord((id)store, @"fixture-account", ^{ return allowed; }, @"record-1");
+        window.rootViewController = [[SRNavigationController alloc] initWithRootViewController:page];
+        [page.view layoutIfNeeded];
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3]; BOOL reading = NO;
+        do { @synchronized (store) { reading = store.imageReads > 0; } if (!reading) SRPumpPreviews(); }
+        while (!reading && deadline.timeIntervalSinceNow > 0);
+        assert(reading);
+        if ([change isEqual:@"run"]) [page setValue:@"record-2" forKey:@"run"];
+        else if ([change isEqual:@"account"]) [page setValue:@"other-account" forKey:@"account"];
+        else if ([change isEqual:@"snapshot"]) store.snapshotInvalid = YES;
+        else allowed = NO;
+        dispatch_semaphore_signal(store.gate);
+        SRLocalImagePreviews *loader = [page valueForKey:@"thumbnails"];
+        NSOperationQueue *queue = [loader valueForKey:@"queue"]; [queue waitUntilAllOperationsAreFinished];
+        for (NSUInteger i = 0; i < 10; i++) SRPumpPreviews();
+        if ([change isEqual:@"snapshot"] || [change isEqual:@"rejected-account"]) {
+            assert([page valueForKey:@"record"] == nil && [[page valueForKey:@"rows"] count] == 0);
+            assert(!SRFindMessageElement(page.view, @"SyncRelay.ForwardingImageThumbnail"));
+        } else {
+            assert([[page valueForKey:@"problem"] length] == 0);
+            UITableViewCell *cell = [page.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            UIListContentConfiguration *content = (id)cell.contentConfiguration;
+            assert(!content.image || content.image.isSymbolImage);
+        }
+    }
+    puts("PASS: late forwarding images reject changed run/account, failed account verification and invalid snapshots");
+}
+
+static void SRRunForwardingThumbnailTests(UIWindow *window) {
+    SRForwardingRecordsFixture *store = [[SRForwardingRecordsFixture alloc] init];
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(300, 200)];
+    store.imageBytes = [renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *context) {
+        [UIColor.systemGreenColor setFill]; [context fillRect:CGRectMake(0, 0, 300, 200)];
+    }];
+    UITableViewController *list = (id)SRCreateForwardingRecords((id)store, @"fixture-account", ^{ return YES; });
+    SRNavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:list]; window.rootViewController = navigation;
+    [list.view layoutIfNeeded];
+    [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+    SRSettleNavigation(navigation);
+    UITableViewController *detail = (id)navigation.topViewController;
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+    UIListContentConfiguration *content = nil;
+    do {
+        [detail.tableView layoutIfNeeded];
+        UITableViewCell *cell = [detail.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        content = [cell.contentConfiguration isKindOfClass:UIListContentConfiguration.class] ? (id)cell.contentConfiguration : nil;
+        if (!content.image || content.image.isSymbolImage) SRPumpPreviews();
+    } while ((!content.image || content.image.isSymbolImage) && deadline.timeIntervalSinceNow > 0);
+    assert(content.image && !content.image.isSymbolImage);
+    assert(CGSizeEqualToSize(content.imageProperties.maximumSize, CGSizeMake(48, 48)));
+    assert(CGSizeEqualToSize(content.imageProperties.reservedLayoutSize, CGSizeMake(48, 48)) && content.imageProperties.cornerRadius == 6);
+    [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil]; [detail.tableView layoutIfNeeded];
+    assert(!SRFindMessageElement(detail.view, @"SyncRelay.ForwardingImageThumbnail"));
+    puts("PASS: frozen forwarding detail uses a 48pt rounded local thumbnail and masks on resign");
 }
 
 @interface SRGroupPickerStoreFixture : NSObject
@@ -265,8 +462,8 @@ static void SRRunHomeCloseTests(UIWindow *window) {
     assert(host.presentedViewController == navigation);
     SRAssertHomeClose(navigation, home);
     UITableView *homeTable = ((UITableViewController *)home).tableView;
-    assert(homeTable.numberOfSections == 2 && [homeTable numberOfRowsInSection:0] == 4);
-    NSIndexPath *records = [NSIndexPath indexPathForRow:0 inSection:1];
+    assert(homeTable.numberOfSections == 1 && [homeTable numberOfRowsInSection:0] == 5);
+    NSIndexPath *records = [NSIndexPath indexPathForRow:3 inSection:0];
     UITableViewCell *entry = [homeTable.dataSource tableView:homeTable cellForRowAtIndexPath:records];
     assert([entry.accessibilityIdentifier isEqual:@"SyncRelay.HomeForwardingRecords"]);
 
@@ -305,8 +502,12 @@ static void SRRunHomeCloseTests(UIWindow *window) {
 void SRRunNavigationTests(UIWindow *window) {
     SRRunFooterLayoutTests(window);
     SRRunMessageDetailTests(window);
+    SRRunLocalImagePreviewTests(window);
     SRRunLibraryGroupPickerTests(window);
     SRRunForwardingRecordsTests(window);
+    SRRunForwardingThumbnailTests(window);
+    SRRunLegacyHistoryRouteTests(window);
+    SRRunLateForwardingPreviewTests(window);
     SRRunHomeCloseTests(window);
     UIViewController *home = [[UIViewController alloc] init];
     SRNavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:home];

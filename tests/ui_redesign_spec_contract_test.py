@@ -14,19 +14,18 @@ HOME = SCREENS.split('@implementation SRNavigationHomeScreen', 1)[1].split('@end
 
 
 class UIRedesignSpecContracts(unittest.TestCase):
-    def test_home_keeps_four_primary_destinations_and_a_separate_records_row(self):
-        self.assertIn('@[@"群同步", @"消息库转发", @"群分组", @"设置"][path.row]', HOME)
-        self.assertIn('section == 0 ? 1 : 4', HOME)
-        self.assertIn('if (section == self.recordsSection) return 1', HOME)
-        self.assertIn('configureTitle:@"转发记录" summary:nil', HOME)
-        self.assertIn('self.openDestination(SRHomeForwardingRecords)', HOME)
+    def test_home_keeps_five_peer_destinations_with_records_before_settings(self):
+        self.assertIn('@[@"群同步", @"消息库转发", @"群分组", @"转发记录", @"设置"][path.row]', HOME)
+        self.assertIn('section == 0 ? 1 : 5', HOME)
+        self.assertNotIn('recordsSection', HOME)
+        self.assertIn('{0, 1, 2, SRHomeForwardingRecords, 3}[path.row]', HOME)
         self.assertIn('constraintGreaterThanOrEqualToConstant:74', SCREENS)
         for forbidden in ('runSummary:', 'confirmForCurrentAccount:', 'armForAccount:', 'startRule:', 'UISwitch'):
             self.assertNotIn(forbidden, HOME)
 
     def test_missing_source_hint_is_not_a_library_gate(self):
         tap = HOME.split('didSelectRowAtIndexPath:', 1)[1].split('- (void)close', 1)[0]
-        self.assertIn('destination < 4 && self.openDestination', tap)
+        self.assertIn('destination <= SRHomeForwardingRecords && self.openDestination', tap)
         self.assertNotIn('sourceGroup', tap)
         self.assertNotIn('self.problem', tap)
         self.assertIn('else if (![self.configuration[@"sourceGroup"][@"id"] length]) self.hintDestination = 0', HOME)
@@ -187,7 +186,7 @@ class UIRedesignSpecContracts(unittest.TestCase):
         prompt = detail.split('- (void)promptForward {', 1)[1].split('\n}', 1)[0]
         self.assertIn('![self verified]', prompt)
         self.assertIn('topViewController != self', prompt)
-        self.assertIn('SRCreateTargetPicker', prompt)
+        self.assertIn('SRCreateGroupedTargetPicker', prompt)
         self.assertIn('isEqual:version', prompt)
         for forbidden in ('createLibraryTaskForAccount:', 'startLibraryTask:'):
             self.assertNotIn(forbidden, prompt)

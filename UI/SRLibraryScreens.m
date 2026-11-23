@@ -7,6 +7,96 @@
 #import "Core/SRImageAssetStore.h"
 #import "Core/SRMediaProjection.h"
 #import "Core/SRRunProjection.h"
+#import <ImageIO/ImageIO.h>
+#import "SRLocalImagePreviews.h"
+
+/* A page-local, memory-only cache. Work is serial and downsampled off the UI
+ * thread; invalidation rejects in-flight results as well as queued reads. */
+@interface SRLocalImagePreviews ()
+@property(nonatomic, strong) NSOperationQueue *queue;
+@property(nonatomic, strong) NSCache *cache;
+@property(nonatomic, strong) NSMutableSet *pending;
+@property(nonatomic) NSUInteger generation;
+@end
+@implementation SRLocalImagePreviews
+- (instancetype)init {
+    if ((self = [super init])) {
+        _queue = [[NSOperationQueue alloc] init]; _queue.maxConcurrentOperationCount = 1;
+        _queue.qualityOfService = NSQualityOfServiceUtility;
+        _cache = [[NSCache alloc] init]; _cache.countLimit = 40; _cache.totalCostLimit = 8 * 1024 * 1024;
+        _pending = [NSMutableSet set]; _maximumPixels = 144;
+    }
+    return self;
+}
+- (void)invalidate {
+    self.generation++;
+    [self.queue cancelAllOperations]; [self.cache removeAllObjects]; [self.pending removeAllObjects];
+}
+- (BOOL)unavailableForItem:(NSString *)item version:(NSString *)version account:(NSString *)account {
+    return item && version && account && [self.cache objectForKey:@[account, item, version]] == NSNull.null;
+}
+- (UIImage *)imageForItem:(NSString *)item version:(NSString *)version account:(NSString *)account
+                    store:(SRStore *)store completion:(void (^)(void))completion {
+    if (!item.length || !version.length || !account.length) return nil;
+    return [self imageForKey:@[account, item, version] read:^{
+        return [store libraryImageDataForItem:item version:version account:account error:NULL];
+    } completion:completion];
+}
+- (BOOL)unavailableForRun:(NSString *)run account:(NSString *)account {
+    return [self.cache objectForKey:@[account, run]] == NSNull.null;
+}
+- (UIImage *)imageForRun:(NSString *)run account:(NSString *)account store:(SRStore *)store completion:(void (^)(void))completion {
+    if (!run.length || !account.length) return nil;
+    return [self imageForKey:@[account, run] read:^{
+        return [store forwardingImageDataForRun:run account:account error:NULL];
+    } completion:completion];
+}
+- (UIImage *)imageForKey:(NSArray *)key read:(NSData *(^)(void))read completion:(void (^)(void))completion {
+    id cached = [self.cache objectForKey:key];
+    if (cached) return [cached isKindOfClass:UIImage.class] ? cached : nil;
+    if ([self.pending containsObject:key] || self.pending.count >= 16) return nil;
+    [self.pending addObject:key];
+    NSUInteger generation = self.generation, maximumPixels = self.maximumPixels;
+    CGFloat scale = UIScreen.mainScreen.scale;
+    __weak typeof(self) weakSelf = self;
+    NSBlockOperation *operation = [[NSBlockOperation alloc] init];
+    __weak NSBlockOperation *weakOperation = operation;
+    [operation addExecutionBlock:^{
+        @autoreleasepool {
+            if (!weakOperation || weakOperation.cancelled) return;
+            NSData *data = read();
+            if (weakOperation.cancelled) return;
+            CGImageSourceRef source = data ? CGImageSourceCreateWithData((__bridge CFDataRef)data,
+                (__bridge CFDictionaryRef)@{(__bridge NSString *)kCGImageSourceShouldCache: @NO}) : NULL;
+            CGImageRef bitmap = source ? CGImageSourceCreateThumbnailAtIndex(source, 0,
+                (__bridge CFDictionaryRef)@{(__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                    (__bridge NSString *)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                    (__bridge NSString *)kCGImageSourceShouldCacheImmediately: @YES,
+                    (__bridge NSString *)kCGImageSourceThumbnailMaxPixelSize: @(maximumPixels)}) : NULL;
+            UIImage *image = bitmap ? [UIImage imageWithCGImage:bitmap scale:scale orientation:UIImageOrientationUp] : nil;
+            NSUInteger cost = bitmap ? CGImageGetBytesPerRow(bitmap) * CGImageGetHeight(bitmap) : 0;
+            if (bitmap) CGImageRelease(bitmap);
+            if (source) CFRelease(source);
+            if (weakOperation.cancelled) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                SRLocalImagePreviews *loader = weakSelf;
+                if (!loader || loader.generation != generation) return;
+                [loader.pending removeObject:key];
+                [loader.cache setObject:image ?: (id)NSNull.null forKey:key cost:cost];
+                completion();
+            });
+        }
+    }];
+    [self.queue addOperation:operation];
+    return nil;
+}
+@end
+
+@interface SRLibraryPreviewView : UIImageView
+@end
+@implementation SRLibraryPreviewView
+- (CGSize)intrinsicContentSize { return CGSizeZero; }
+@end
 
 /* ------------------------------------------------------------------------ */
 /* Shared read-only helpers                                                  */
@@ -21,9 +111,7 @@ static BOOL SRLibraryHasMedia(NSDictionary *version) {
     return [token isKindOfClass:NSString.class] && [token length] > 0;
 }
 
-/* One readable line for a stored version payload. Text is quoted with a bound;
- * image data is described by its stored metadata only — the page never reads
- * the asset bytes, prepares media or calls a host getter. */
+/* History stays metadata-only. The current version has a separate local preview. */
 static NSString *SRLibraryVersionBody(NSDictionary *version) {
     NSDictionary *payload = SRLibraryDictionary(version[@"payload"]);
     NSString *kind = [version[@"kind"] isKindOfClass:NSString.class] ? version[@"kind"] : nil;
@@ -32,7 +120,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         NSString *width = payload[@"pixelWidth"] ?: @"未记录";
         NSString *height = payload[@"pixelHeight"] ?: @"未记录";
         NSNumber *bytes = [payload[@"byteCount"] isKindOfClass:NSNumber.class] ? payload[@"byteCount"] : nil;
-        return [NSString stringWithFormat:@"%@ × %@ · %@\n素材不在此页渲染",
+        return [NSString stringWithFormat:@"%@ × %@ · %@",
             width, height, [SRMediaProjection bytesText:bytes]];
     }
     id text = payload[@"text"];
@@ -58,12 +146,14 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic) BOOL accountInvalid;
 @property(nonatomic) BOOL masked;
 @property(nonatomic) BOOL more;
+@property(nonatomic, strong) SRLocalImagePreviews *thumbnails;
 @end
 
 @implementation SRLibraryListScreen
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"消息库转发";
+    self.thumbnails = [[SRLocalImagePreviews alloc] init]; self.thumbnails.maximumPixels = 144;
     SRStyleSettingsTable(self);
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
@@ -72,10 +162,14 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:)
         name:UIApplicationDidBecomeActiveNotification object:nil];
 }
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)dealloc { [self.thumbnails invalidate]; [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated]; [self.thumbnails invalidate]; [self.tableView reloadData];
+}
 /* Leaving the foreground hides what is on screen; it never stops a capture,
  * cancels a run or starts one. */
 - (void)resigningActive:(__unused NSNotification *)notification {
+    [self.thumbnails invalidate];
     self.masked = YES;
     [self.rows removeAllObjects]; self.problem = nil; self.more = NO;
     [self.tableView reloadData];
@@ -85,6 +179,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)becameActive:(__unused NSNotification *)notification {
     if (!self.viewIfLoaded.window) return;
     if (![self verified]) {
+        [self.thumbnails invalidate];
         self.accountInvalid = YES; self.masked = NO;
         [self.rows removeAllObjects]; self.problem = nil; self.more = NO;
         [self.tableView reloadData]; return;
@@ -97,6 +192,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     @catch (__unused id exception) { return NO; }
 }
 - (void)reload {
+    [self.thumbnails invalidate];
     self.rows = [NSMutableArray array]; self.problem = nil; self.more = NO; self.masked = NO;
     self.accountInvalid = ![self verified];
     if (self.accountInvalid) { [self.refreshControl endRefreshing]; [self.tableView reloadData]; return; }
@@ -112,7 +208,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     [self.tableView reloadData];
 }
 - (void)loadMore {
-    if (![self verified]) { self.accountInvalid = YES; [self.tableView reloadData]; return; }
+    if (![self verified]) { [self.thumbnails invalidate]; self.accountInvalid = YES; [self.tableView reloadData]; return; }
     NSError *error = nil;
     NSArray *page = [self.store libraryItemsForAccount:self.account limit:50 offset:self.rows.count error:&error];
     if (!page) { self.problem = @{@"title": @"读取失败",
@@ -143,6 +239,8 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"library"] ?:
         [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"library"];
     SRStyleSettingsCell(cell);
+    cell.contentConfiguration = nil;
+    cell.accessibilityIdentifier = nil;
     cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil;
     cell.imageView.image = nil;
@@ -178,10 +276,35 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     NSString *symbol = [@{@"image": @"photo", @"text": @"doc.text"} objectForKey:row[@"kind"] ?: @""] ?: @"questionmark.square";
     cell.imageView.image = [UIImage systemImageNamed:symbol];
     cell.imageView.tintColor = UIColor.systemBlueColor;
+    UIImage *thumbnail = nil;
+    BOOL imageRow = [row[@"kind"] isEqual:@"image"];
+    if (imageRow && self.viewIfLoaded.window && self.navigationController.topViewController == self && [self verified]) {
+        __weak typeof(self) weakSelf = self;
+        thumbnail = [self.thumbnails imageForItem:row[@"id"] version:row[@"current_version_id"]
+            account:self.account store:self.store completion:^{
+                SRLibraryListScreen *page = weakSelf;
+                if (page && ![page verified]) { [page reload]; return; }
+                if (page && !page.masked && page.viewIfLoaded.window && page.navigationController.topViewController == page && [page verified])
+                    [page.tableView reloadData];
+            }];
+    }
     cell.detailTextLabel.text = [NSString stringWithFormat:@"更新于 %@ · %@ 个版本",
         [SRRunProjection localDateTimeText:row[@"updated_at"]], row[@"versionCount"] ?: @0];
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    if (imageRow) {
+        UIListContentConfiguration *content = [cell defaultContentConfiguration];
+        content.text = cell.textLabel.text; content.secondaryText = cell.detailTextLabel.text;
+        content.textProperties.font = SRSettingsFont(17, UIFontTextStyleBody);
+        content.secondaryTextProperties.font = SRSettingsFont(14, UIFontTextStyleSubheadline);
+        content.textProperties.numberOfLines = 0; content.secondaryTextProperties.numberOfLines = 0;
+        content.image = thumbnail ?: [UIImage systemImageNamed:@"photo"];
+        content.imageProperties.maximumSize = CGSizeMake(48, 48);
+        content.imageProperties.reservedLayoutSize = CGSizeMake(48, 48);
+        content.imageProperties.cornerRadius = 6;
+        cell.contentConfiguration = content;
+        cell.accessibilityIdentifier = @"SyncRelay.LibraryThumbnailRow";
+    }
     return cell;
 }
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
@@ -225,7 +348,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
     if (self.masked) return;
-    if (![self verified]) { self.accountInvalid = YES; [self.tableView reloadData]; return; }
+    if (![self verified]) { [self.thumbnails invalidate]; self.accountInvalid = YES; [self.tableView reloadData]; return; }
     if (self.problem) { [self reload]; return; }
     if (!self.rows.count) return;
     if (path.row == (NSInteger)self.rows.count) { [self loadMore]; return; }
@@ -262,9 +385,10 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, copy, nullable) NSDictionary *problem;
 @property(nonatomic) BOOL accountInvalid;
 @property(nonatomic) BOOL masked;
+@property(nonatomic, strong) SRLocalImagePreviews *thumbnails;
 - (void)promptForward;
-- (void)forwardToGroups:(NSArray<NSString *> *)targets;
-- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets version:(NSString *)version;
+- (void)forwardToGroups:(NSArray<NSString *> *)targets targetGroups:(NSArray<NSDictionary *> *)groups;
+- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets targetGroups:(NSArray<NSDictionary *> *)groups version:(NSString *)version;
 @end
 
 @implementation SRLibraryItemScreen
@@ -335,19 +459,19 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     NSString *version = [self.entry[@"current_version_id"] copy];
     if (!version.length) return;
     __weak typeof(self) weakSelf = self;
-    UIViewController *picker = SRCreateTargetPicker(self.store, self.account, self.verifyAccount, self.openGroups, ^(NSArray<NSString *> *targets) {
+    UIViewController *picker = SRCreateGroupedTargetPicker(self.store, self.account, self.verifyAccount, self.openGroups, ^(NSArray<NSString *> *targets, NSArray<NSDictionary *> *groups) {
         SRLibraryItemScreen *detail = weakSelf;
         if (!detail || detail.navigationController.topViewController != detail || ![detail canChooseTargets] || ![detail verified]) return;
         if (![detail.entry[@"current_version_id"] isEqual:version]) {
             [detail showFailure:@"消息版本已变更，请重新选择分组" error:nil];
             return;
         }
-        [detail forwardToGroups:targets];
+        [detail forwardToGroups:targets targetGroups:groups];
     });
     [self.navigationController pushViewController:picker animated:YES];
 }
 
-- (void)forwardToGroups:(NSArray<NSString *> *)targets {
+- (void)forwardToGroups:(NSArray<NSString *> *)targets targetGroups:(NSArray<NSDictionary *> *)groups {
     if (![self verified]) return;
     NSUInteger limit = self.store.forwardingTargetLimit;
     if (targets.count > limit) {
@@ -359,6 +483,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     }
     if (!targets.count) return;
     NSArray<NSString *> *confirmedTargets = [targets copy];
+    NSArray<NSDictionary *> *confirmedGroups = [groups copy];
     NSString *version = [self.entry[@"current_version_id"] copy];
     if (!version.length) { [self showFailure:@"无法确认消息版本" error:nil]; return; }
     NSString *risk = targets.count > 100 ? @"\n超过 100 个群有风控风险，建议先用更少的群验证。" : @"";
@@ -369,22 +494,23 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
     [confirm addAction:[UIAlertAction actionWithTitle:@"确认并开始" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-        [weakSelf createAndStartForwardToGroups:confirmedTargets version:version];
+        [weakSelf createAndStartForwardToGroups:confirmedTargets targetGroups:confirmedGroups version:version];
     }]];
     [self presentViewController:confirm animated:YES completion:nil];
 }
 
-- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets version:(NSString *)version {
+- (void)createAndStartForwardToGroups:(NSArray<NSString *> *)targets targetGroups:(NSArray<NSDictionary *> *)groups version:(NSString *)version {
     if (![self verified]) return;
     NSError *error = nil;
     // A stable key makes an identical request (same entry, version and ordered
     // targets) resolve to the frozen task that already exists instead of
     // creating another plan every time the button is tapped.
-    NSString *scope = [NSString stringWithFormat:@"%@|%@|%@", self.item, version,
-                       [targets componentsJoinedByString:@","]];
-    NSString *confirmation = [SRImageAssetStore sha256ForData:[scope dataUsingEncoding:NSUTF8StringEncoding]];
+    NSData *scope = [NSJSONSerialization dataWithJSONObject:@[self.item, version, targets, groups]
+        options:NSJSONWritingSortedKeys error:NULL];
+    if (!scope) { [self showFailure:@"无法确认目标分组" error:nil]; return; }
+    NSString *confirmation = [SRImageAssetStore sha256ForData:scope];
     NSString *task = [self.store createLibraryTaskForAccount:self.account item:self.item
-        version:version confirmationID:confirmation targets:targets
+        version:version confirmationID:confirmation targets:targets targetGroups:groups
         minimum:5 maximum:8 error:&error];
     if (!task.length) { [self showFailure:@"创建转发任务失败" error:error]; return; }
     if (!self.session || ![self.session startLibraryTask:task account:self.account error:&error]) {
@@ -407,6 +533,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    self.thumbnails = [[SRLocalImagePreviews alloc] init]; self.thumbnails.maximumPixels = 720;
     self.title = self.recordsOnly ? @"版本与记录" : @"消息详情";
     if (!self.recordsOnly) self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"ellipsis"] style:UIBarButtonItemStylePlain
@@ -471,9 +598,13 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive:)
         name:UIApplicationDidBecomeActiveNotification object:nil];
 }
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)dealloc { [self.thumbnails invalidate]; [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated]; [self.thumbnails invalidate]; [self.tableView reloadData];
+}
 /* Hiding the entry never touches capture, runs or sending. */
 - (void)resigningActive:(__unused NSNotification *)notification {
+    [self.thumbnails invalidate];
     self.masked = YES;
     self.entry = nil; self.versions = @[]; self.problem = nil;
     [self updateForwardButton]; [self.tableView reloadData];
@@ -481,6 +612,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 - (void)becameActive:(__unused NSNotification *)notification {
     if (!self.viewIfLoaded.window) return;
     if (![self verified]) {
+        [self.thumbnails invalidate];
         self.accountInvalid = YES; self.masked = NO;
         self.entry = nil; self.versions = @[]; self.problem = nil;
         [self updateForwardButton]; [self.tableView reloadData]; return;
@@ -493,6 +625,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     @catch (__unused id exception) { return NO; }
 }
 - (void)reload {
+    [self.thumbnails invalidate];
     self.entry = nil; self.versions = @[]; self.problem = nil; self.masked = NO;
     self.accountInvalid = ![self verified];
     if (self.accountInvalid) { [self.refreshControl endRefreshing]; [self updateForwardButton]; [self.tableView reloadData]; return; }
@@ -646,6 +779,42 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     label.adjustsFontForContentSizeCategory = YES; label.textColor = UIColor.labelColor;
     return label;
 }
+- (UIView *)imagePreviewForVersion:(NSDictionary *)version {
+    if (!self.viewIfLoaded.window || self.navigationController.topViewController != self || ![self verified]) return nil;
+    NSString *identifier = version[@"id"];
+    __weak typeof(self) weakSelf = self;
+    UIImage *image = [self.thumbnails imageForItem:self.item version:identifier account:self.account store:self.store completion:^{
+        SRLibraryItemScreen *page = weakSelf;
+        if (page && ![page verified]) { [page reload]; return; }
+        if (page && !page.masked && page.viewIfLoaded.window && page.navigationController.topViewController == page &&
+            [page verified] && [page.entry[@"current_version_id"] isEqual:identifier]) [page.tableView reloadData];
+    }];
+    if (!image) {
+        BOOL unavailable = [self.thumbnails unavailableForItem:self.item version:identifier account:self.account];
+        UILabel *placeholder = [self messageLabel:unavailable ? @"预览不可用" : @"正在加载预览" size:14 weight:UIFontWeightRegular];
+        placeholder.textAlignment = NSTextAlignmentCenter; placeholder.textColor = UIColor.secondaryLabelColor;
+        return placeholder;
+    }
+    UIView *container = [[UIView alloc] init];
+    SRLibraryPreviewView *preview = [[SRLibraryPreviewView alloc] initWithImage:image];
+    preview.contentMode = UIViewContentModeScaleAspectFit;
+    preview.layer.cornerRadius = 8; preview.clipsToBounds = YES;
+    preview.accessibilityIdentifier = @"SyncRelay.LibraryImagePreview";
+    preview.isAccessibilityElement = YES; preview.accessibilityLabel = @"消息图片预览";
+    preview.translatesAutoresizingMaskIntoConstraints = NO; [container addSubview:preview];
+    NSLayoutConstraint *preferredWidth = [preview.widthAnchor constraintEqualToAnchor:container.widthAnchor multiplier:0.7];
+    preferredWidth.priority = UILayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[
+        [preview.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+        [preview.topAnchor constraintEqualToAnchor:container.topAnchor],
+        [preview.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+        [preview.widthAnchor constraintEqualToAnchor:preview.heightAnchor multiplier:image.size.width / image.size.height],
+        [preview.widthAnchor constraintLessThanOrEqualToAnchor:container.widthAnchor multiplier:0.7],
+        [preview.heightAnchor constraintLessThanOrEqualToConstant:240],
+        [preview.widthAnchor constraintLessThanOrEqualToConstant:image.size.width],
+        [preview.heightAnchor constraintLessThanOrEqualToConstant:image.size.height], preferredWidth]];
+    return container;
+}
 - (UITableViewCell *)messageCellAtIndexPath:(NSIndexPath *)path {
     BOOL accessible = UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
     UITableViewCell *cell = [[UITableViewCell alloc]
@@ -700,6 +869,13 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
         size:13 weight:UIFontWeightRegular];
     origin.textColor = UIColor.secondaryLabelColor; time.textColor = UIColor.secondaryLabelColor;
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[heading, message, line, origin, time]];
+    if ([kind isEqual:@"image"]) {
+        UIView *preview = [self imagePreviewForVersion:version];
+        if (preview) [stack insertArrangedSubview:preview atIndex:1];
+        message.font = SRSettingsFont(14, UIFontTextStyleSubheadline);
+        message.textColor = UIColor.secondaryLabelColor;
+        message.textAlignment = NSTextAlignmentCenter;
+    }
     stack.axis = UILayoutConstraintAxisVertical; stack.spacing = 10;
     [stack setCustomSpacing:20 afterView:heading]; [stack setCustomSpacing:14 afterView:message];
     [stack setCustomSpacing:4 afterView:origin];
@@ -905,6 +1081,7 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
 @property(nonatomic, copy) NSArray *rules;
 @property(nonatomic, strong) NSMutableIndexSet *selectedRules;
 @property(nonatomic, copy) void (^completion)(NSArray<NSString *> *targets);
+@property(nonatomic, copy) void (^groupCompletion)(NSArray<NSString *> *targets, NSArray<NSDictionary *> *groups);
 @property(nonatomic, copy, nullable) NSString *problem;
 @end
 
@@ -1035,12 +1212,21 @@ static NSString *SRLibraryVersionBody(NSDictionary *version) {
     if (!targets.count) { [self alert:@"没有选择目标" message:@"请先选择至少一个目标分组。"]; return; }
     NSUInteger limit = self.store.forwardingTargetLimit;
     if (targets.count > limit) { [self alert:@"超过目标上限" message:SRTargetLimitMessage(targets.count, limit)]; return; }
-    void (^completion)(NSArray<NSString *> *) = self.completion;
+    NSMutableArray *selected = [NSMutableArray array];
+    [self.selectedRules enumerateIndexesUsingBlock:^(NSUInteger index, __unused BOOL *stop) {
+        [selected addObject:self.rules[index]];
+    }];
+    NSArray *groups = [selected copy];
+    void (^completion)(NSArray<NSString *> *, NSArray<NSDictionary *> *) = self.groupCompletion;
+    if (!completion && self.completion) {
+        void (^legacy)(NSArray<NSString *> *) = self.completion;
+        completion = ^(NSArray<NSString *> *identifiers, __unused NSArray<NSDictionary *> *rules) { legacy(identifiers); };
+    }
     UINavigationController *navigation = self.navigationController;
     if (navigation.topViewController != self || ![navigation popViewControllerAnimated:YES] || !completion) return;
     if (![navigation.transitionCoordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
-        if (!context.isCancelled) completion(targets);
-    }]) completion(targets);
+        if (!context.isCancelled) completion(targets, groups);
+    }]) completion(targets, groups);
 }
 
 - (void)alert:(NSString *)title message:(NSString *)message {
@@ -1077,5 +1263,13 @@ UIViewController *SRCreateMediaResources(SRStore *store, NSString *account, BOOL
     SRMediaResourcesScreen *screen = [[SRMediaResourcesScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
     screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount;
     screen.resources = @[];
+    return screen;
+}
+
+UIViewController *SRCreateGroupedTargetPicker(SRStore *store, NSString *account, BOOL (^verifyAccount)(void),
+    void (^openGroups)(UIViewController *source), void (^completion)(NSArray<NSString *> *, NSArray<NSDictionary *> *)) {
+    SRTargetPickerScreen *screen = [[SRTargetPickerScreen alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    screen.store = store; screen.account = account; screen.verifyAccount = verifyAccount; screen.openGroups = openGroups;
+    screen.groupCompletion = completion;
     return screen;
 }

@@ -13,6 +13,7 @@
 }
 @property(nonatomic) NSInteger schemaVersion;
 @property(nonatomic, strong) SREntryPreferences *entryPreferences;
+- (NSData *)validatedLibraryImageDataForPayload:(NSDictionary *)payload account:(NSString *)account;
 - (BOOL)libraryVersionRelationsPassed;
 - (NSDictionary *)libraryTaskForRunUnchecked:(NSString *)run;
 - (NSDictionary *)libraryTaskUnchecked:(NSString *)task account:(NSString *)account;
@@ -988,6 +989,29 @@ static NSString *const SRForwardingRecordSelect =
     return card;
 }
 
+/* A historical grouping is an immutable partition of the frozen target order.
+ * Never reconstruct it from today's editable configuration. */
+static NSArray *SRGroupedTargets(NSArray *groups) {
+    SRRequire([groups isKindOfClass:NSArray.class] && groups.count > 0 && groups.count <= 600, @"Invalid target groups");
+    NSMutableArray *targets = [NSMutableArray array];
+    NSMutableSet *identifiers = [NSMutableSet set];
+    for (NSDictionary *group in groups) {
+        SRRequire([group isKindOfClass:NSDictionary.class] && [group[@"id"] isKindOfClass:NSString.class] &&
+            [group[@"id"] length] && ![identifiers containsObject:group[@"id"]] &&
+            [group[@"name"] isKindOfClass:NSString.class] && [group[@"name"] length] &&
+            [group[@"targets"] isKindOfClass:NSArray.class] && [group[@"targets"] count] > 0, @"Invalid target grouping identity");
+        [identifiers addObject:group[@"id"]];
+        for (NSDictionary *target in group[@"targets"]) {
+            SRRequire([target isKindOfClass:NSDictionary.class] && [target[@"id"] isKindOfClass:NSString.class] &&
+                [target[@"id"] hasSuffix:@"@chatroom"], @"Invalid grouped target");
+            [targets addObject:target[@"id"]];
+            SRRequire(targets.count <= 600, @"Too many grouped targets");
+        }
+    }
+    SRRequire([NSSet setWithArray:targets].count == targets.count, @"Grouped targets overlap");
+    return targets;
+}
+
 - (NSArray<NSDictionary *> *)forwardingRecordsForAccount:(NSString *)account beforeRun:(NSString *)beforeRun
                                                     limit:(NSUInteger)limit error:(NSError **)error {
     return [self perform:^id{
@@ -1027,6 +1051,76 @@ static NSString *const SRForwardingRecordSelect =
         return [self query:@"SELECT d.target," SRDeliveryOutcomeSQL " AS state FROM deliveries d "
             "LEFT JOIN submission_receipts v ON v.delivery_id=d.id AND v.attempt_id=d.attempt_id "
             "WHERE d.run_id=? ORDER BY d.position,d.rowid LIMIT ? OFFSET ?" values:@[run, @(limit), @(offset)]];
+    } transaction:NO error:error];
+}
+- (NSData *)forwardingImageDataForRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(run.length && account.length, @"Account and run are required");
+        NSDictionary *row = [self query:[SRForwardingRecordSelect stringByAppendingString:@" AND x.id=?"] values:@[account, run]].firstObject;
+        SRRequire(row != nil, @"Run is unavailable for this account");
+        NSDictionary *source = [NSJSONSerialization JSONObjectWithData:[row[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        SRRequire([source isKindOfClass:NSDictionary.class] && [source[@"account"] isEqual:account] &&
+            [source[@"type"] isEqual:@"image"], @"No frozen image for this run");
+        if ([row[@"sourceKind"] isEqual:@"message_library"]) {
+            NSDictionary *task = [self libraryTaskForRunUnchecked:run];
+            NSDictionary *frozen = task ? [self libraryTaskUnchecked:task[@"id"] account:account] : nil;
+            SRRequire([frozen[@"frozen"] isEqual:row[@"snapshot"]], @"Run differs from its frozen task");
+            return [self validatedLibraryImageDataForPayload:source[@"payload"] account:account];
+        }
+        return [self.imageAssets dataForPayload:source[@"payload"] source:source error:NULL];
+    } transaction:NO error:error];
+}
+
+- (NSArray *)forwardingGroupsUnchecked:(NSString *)run account:(NSString *)account {
+    NSDictionary *row = [self query:[SRForwardingRecordSelect stringByAppendingString:@" AND x.id=?"] values:@[account, run]].firstObject;
+    SRRequire(row != nil, @"Run is unavailable for this account");
+    NSArray *targets = [self query:@"SELECT target FROM deliveries WHERE run_id=? ORDER BY position,rowid" values:@[run]];
+    SRRequire(targets.count <= 600, @"Historical target scope is too large");
+    if ([row[@"sourceKind"] isEqual:@"message_library"]) {
+        NSDictionary *task = [self libraryTaskForRunUnchecked:run];
+        NSDictionary *frozen = task ? [self libraryTaskUnchecked:task[@"id"] account:account] : nil;
+        SRRequire([frozen[@"frozen"] isEqual:row[@"snapshot"]], @"Run differs from its frozen task");
+        NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:[row[@"snapshot"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        NSArray *groups = snapshot[@"targetGroups"];
+        if (groups) {
+            SRRequire([SRGroupedTargets(groups) isEqualToArray:[targets valueForKey:@"target"]], @"Historical grouping differs from the run");
+            return groups;
+        }
+    }
+    BOOL legacy = [row[@"sourceKind"] isEqual:@"message_library"];
+    NSMutableArray *members = [NSMutableArray array];
+    for (NSDictionary *target in targets) [members addObject:@{@"id": target[@"target"]}];
+    return @[@{@"name": legacy ? @"本次转发目标" : row[@"ruleName"], @"targets": members, @"legacy": @(legacy)}];
+}
+
+- (NSArray<NSDictionary *> *)forwardingTargetGroupsForRun:(NSString *)run account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(run.length && account.length, @"Account and run are required");
+        NSMutableArray *cards = [NSMutableArray array];
+        for (NSDictionary *group in [self forwardingGroupsUnchecked:run account:account])
+            [cards addObject:@{@"name": group[@"name"], @"count": @([group[@"targets"] count]), @"legacy": group[@"legacy"] ?: @NO}];
+        return cards;
+    } transaction:NO error:error];
+}
+
+- (NSArray<NSDictionary *> *)forwardingTargetsForRun:(NSString *)run account:(NSString *)account group:(NSUInteger)group
+                                               limit:(NSUInteger)limit offset:(NSUInteger)offset error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(run.length && account.length && limit > 0 && limit <= 100 && offset <= NSIntegerMax, @"Invalid run or page range");
+        NSArray *groups = [self forwardingGroupsUnchecked:run account:account];
+        SRRequire(group < groups.count, @"Historical group is unavailable");
+        NSArray *members = groups[group][@"targets"];
+        NSMutableDictionary *names = [NSMutableDictionary dictionary];
+        for (NSDictionary *member in members) names[member[@"id"]] = member[@"name"] ?: member[@"id"];
+        NSArray *rows = [self query:@"SELECT d.target," SRDeliveryOutcomeSQL " AS state FROM deliveries d "
+            "LEFT JOIN submission_receipts v ON v.delivery_id=d.id AND v.attempt_id=d.attempt_id "
+            "WHERE d.run_id=? ORDER BY d.position,d.rowid" values:@[run]];
+        NSMutableArray *filtered = [NSMutableArray array];
+        for (NSDictionary *row in rows) if (names[row[@"target"]]) {
+            NSMutableDictionary *card = [row mutableCopy]; card[@"name"] = names[row[@"target"]]; [filtered addObject:card];
+        }
+        if (offset >= filtered.count) return @[];
+        return [filtered subarrayWithRange:NSMakeRange(offset, MIN(limit, filtered.count - offset))];
     } transaction:NO error:error];
 }
 #undef SRDeliveryOutcomeSQL
@@ -1102,6 +1196,10 @@ static NSString *const SRForwardingRecordSelect =
             @"Library text must contain only a non-empty text body");
         return nil;
     }
+    [self validatedLibraryImageDataForPayload:payload account:account];
+    return payload[@"mediaReference"];
+}
+- (NSData *)validatedLibraryImageDataForPayload:(NSDictionary *)payload account:(NSString *)account {
     NSString *scope = [SRImageAssetStore libraryScopeForAccount:account];
     SRRequire(scope && [SRImageAssetStore validPayload:payload] &&
         [[NSSet setWithArray:payload.allKeys] isSubsetOfSet:[NSSet setWithArray:SRImagePayloadKeys()]] &&
@@ -1110,9 +1208,10 @@ static NSString *const SRForwardingRecordSelect =
         values:@[payload[@"mediaReference"], account, scope, payload[@"sha256"], payload[@"byteCount"],
             payload[@"pixelWidth"], payload[@"pixelHeight"], payload[@"format"]]].count == 1,
         @"Library image is not registered with matching metadata for this account");
-    SRRequire([self.imageAssets dataForPayload:payload scopeSHA256:scope error:NULL] != nil,
+    NSData *data = [self.imageAssets dataForPayload:payload scopeSHA256:scope error:NULL];
+    SRRequire(data != nil,
         @"Library image snapshot is missing or changed; stored references were retained");
-    return payload[@"mediaReference"];
+    return data;
 }
 - (void)recordLibraryReferences:(NSString *)token item:(NSString *)item version:(NSString *)version
                         account:(NSString *)account at:(NSNumber *)now {
@@ -1259,6 +1358,18 @@ static NSString *const SRForwardingRecordSelect =
         }
         row[@"versions"] = versions;
         return row;
+    } transaction:NO error:error];
+}
+- (NSData *)libraryImageDataForItem:(NSString *)item version:(NSString *)version account:(NSString *)account error:(NSError **)error {
+    return [self perform:^id{
+        SRRequire(item.length && version.length && account.length, @"Account, entry and version are required");
+        NSDictionary *row = [self query:@"SELECT v.payload,v.media_token FROM library_items i JOIN library_versions v ON v.item_id=i.id AND v.account=i.account AND v.id=i.current_version_id WHERE i.id=? AND i.account=? AND v.id=? AND i.kind='image' AND v.kind='image' AND NOT EXISTS(SELECT 1 FROM library_deletions d WHERE d.item_id=i.id)"
+            values:@[item, account, version]].firstObject;
+        SRRequire(row != nil, @"Current image version is unavailable for this account");
+        id payload = [NSJSONSerialization JSONObjectWithData:[row[@"payload"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        SRRequire([payload isKindOfClass:NSDictionary.class] && [row[@"media_token"] isEqual:payload[@"mediaReference"]],
+            @"Image version does not match its stored media reference");
+        return [self validatedLibraryImageDataForPayload:payload account:account];
     } transaction:NO error:error];
 }
 - (NSDictionary *)sourceForOperationsContent:(NSString *)content account:(NSString *)account error:(NSError **)error {
@@ -1441,6 +1552,8 @@ static BOOL SRSameOptionalValue(id left, id right) {
               @"Frozen target count was altered");
     SRRequire([SRTargetDigest([targets valueForKey:@"target"]) isEqual:row[@"target_sha256"]],
               @"Frozen target scope was altered");
+    if (snapshot[@"targetGroups"]) SRRequire([SRGroupedTargets(snapshot[@"targetGroups"]) isEqualToArray:[targets valueForKey:@"target"]],
+        @"Frozen groups differ from the target order");
     NSUInteger limit = row[@"run_id"] == NSNull.null ? self.forwardingTargetLimit : SRForwardingTargetCeiling;
     BOOL dispatchAvailable = targets.count > 0 && targets.count <= limit;
     return [@{@"id": row[@"id"], @"confirmationID": row[@"confirmation_id"], @"itemID": row[@"item_id"],
@@ -1455,6 +1568,14 @@ static BOOL SRSameOptionalValue(id left, id right) {
 - (NSString *)createLibraryTaskForAccount:(NSString *)account item:(NSString *)item
                                   version:(nullable NSString *)version confirmationID:(NSString *)confirmationID
                                   targets:(NSArray<NSString *> *)targets
+                                  minimum:(double)minimum maximum:(double)maximum error:(NSError **)error {
+    return [self createLibraryTaskForAccount:account item:item version:version confirmationID:confirmationID
+        targets:targets targetGroups:nil minimum:minimum maximum:maximum error:error];
+}
+
+- (NSString *)createLibraryTaskForAccount:(NSString *)account item:(NSString *)item
+                                  version:(nullable NSString *)version confirmationID:(NSString *)confirmationID
+                                  targets:(NSArray<NSString *> *)targets targetGroups:(NSArray<NSDictionary *> *)targetGroups
                                   minimum:(double)minimum maximum:(double)maximum error:(NSError **)error {
     return [self perform:^id{
         SRRequire(account.length && item.length, @"Account and library entry are required");
@@ -1477,7 +1598,18 @@ static BOOL SRSameOptionalValue(id left, id right) {
         // matches; it can never be reused for other content, targets or pacing.
         NSString *replay = [self replayLibraryTaskUncheckedAccount:account confirmation:confirmationID
             item:item version:frozenVersion targets:targets minimum:minimum maximum:maximum origin:nil];
-        if (replay) return replay;
+        if (targetGroups) SRRequire([SRGroupedTargets(targetGroups) isEqualToArray:targets], @"Selected groups differ from target scope or order");
+        if (replay) {
+            NSDictionary *task = [self libraryTaskUnchecked:replay account:account];
+            NSDictionary *source = [NSJSONSerialization JSONObjectWithData:[task[@"frozen"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+            SRRequire(SRSameOptionalValue(source[@"targetGroups"], targetGroups), @"Confirmation was used for different target groups");
+            return replay;
+        }
+        if (targetGroups) {
+            NSArray *saved = [self configurationForAccount:account error:NULL][@"rules"];
+            for (NSDictionary *group in targetGroups)
+                SRRequire([saved containsObject:group], @"Selected groups changed; choose them again");
+        }
         NSDictionary *body = [NSJSONSerialization JSONObjectWithData:[stored[@"payload"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
         SRRequire([body isKindOfClass:NSDictionary.class], @"Stored library version is unreadable");
         SRRequire([self query:@"SELECT id FROM operations_contents WHERE account=? AND archived_at IS NULL" values:@[account]].count == 0,
@@ -1492,9 +1624,11 @@ static BOOL SRSameOptionalValue(id left, id right) {
         } else {
             SRRequire([body[@"text"] isKindOfClass:NSString.class] && [body[@"text"] length], @"Frozen text is empty");
         }
-        NSDictionary *snapshot = [SRSourceMessage frozenJSON:@{@"type": stored[@"kind"], @"payload": body,
+        NSMutableDictionary *source = [@{@"type": stored[@"kind"], @"payload": body,
             @"account": account, @"sourceKind": @"message_library", @"itemID": item, @"versionID": frozenVersion,
-            @"generatedByRelay": @NO}];
+            @"generatedByRelay": @NO} mutableCopy];
+        if (targetGroups) source[@"targetGroups"] = targetGroups;
+        NSDictionary *snapshot = [SRSourceMessage frozenJSON:source];
         SRRequire(snapshot != nil, @"Frozen library snapshot is not serializable");
         return [self createLibraryTaskUncheckedAccount:account item:item version:frozenVersion snapshot:snapshot
             targets:targets minimum:minimum maximum:maximum confirmation:confirmationID origin:nil];

@@ -25,6 +25,28 @@ static void SRGroupingError(NSError **error, id reason) {
         NSLocalizedDescriptionKey: [reason isKindOfClass:NSString.class] ? reason : @"Invalid grouping data; previous rules are unchanged"}];
 }
 
+/* Only names still owned by the generator may follow changed target counts.
+ * A user rename detaches the marker; legacy/manual names are never inferred. */
+static NSArray *SRRefreshGeneratedRangeNames(NSArray *rules) {
+    NSMutableSet *reserved = [NSMutableSet set];
+    for (NSDictionary *rule in rules)
+        if (![rule[@"name"] isEqual:rule[@"generatedName"]]) [reserved addObject:rule[@"name"]];
+    NSMutableArray *result = [NSMutableArray array];
+    NSUInteger count = 0;
+    for (NSDictionary *rule in rules) {
+        NSMutableDictionary *updated = [rule mutableCopy];
+        NSUInteger start = count + 1; count += [rule[@"targets"] count];
+        if ([rule[@"name"] isEqual:rule[@"generatedName"]]) {
+            NSString *base = [NSString stringWithFormat:@"群分组%lu-%lu", (unsigned long)start, (unsigned long)count];
+            NSString *name = base; NSUInteger suffix = 2;
+            while ([reserved containsObject:name]) name = [base stringByAppendingFormat:@" (%lu)", (unsigned long)suffix++];
+            updated[@"name"] = name; updated[@"generatedName"] = name; [reserved addObject:name];
+        } else [updated removeObjectForKey:@"generatedName"];
+        [result addObject:updated];
+    }
+    return result;
+}
+
 @implementation SRGroupPlanner
 + (NSDictionary *)poolSummaryForRows:(NSArray<NSDictionary *> *)rows draft:(NSDictionary *)draft {
     if (![rows isKindOfClass:NSArray.class] || ![SRConfiguration validateDraft:draft error:NULL]) return nil;
@@ -54,7 +76,7 @@ static void SRGroupingError(NSError **error, id reason) {
             if (!targets.count) continue;
             NSMutableDictionary *updated = [rule mutableCopy]; updated[@"targets"] = targets; [rules addObject:updated];
         }
-        candidate[@"rules"] = rules;
+        candidate[@"rules"] = SRRefreshGeneratedRangeNames(rules);
         if (![SRConfiguration validateDraft:candidate error:NULL]) @throw @"Source change would create an invalid draft";
         return [SRSourceMessage frozenJSON:candidate];
     } @catch (id reason) { SRGroupingError(error, reason); return nil; }
@@ -111,7 +133,6 @@ static void SRGroupingError(NSError **error, id reason) {
         SRSelection *selection = [[SRSelection alloc] initWithRows:rows excludedIDs:excluded selectedIDs:NSSet.set];
         NSArray *eligible = selection.rows;
         NSMutableArray *rules = [NSMutableArray array], *topUps = [NSMutableArray array], *batches = [NSMutableArray array];
-        NSMutableSet *names = [NSMutableSet setWithArray:[snapshot[@"rules"] valueForKey:@"name"]];
         NSUInteger cursor = 0;
         // Top up automatic rules first, in allocation order. A custom rule is a
         // deliberate composition and is never filled; a rule already at or above
@@ -140,7 +161,10 @@ static void SRGroupingError(NSError **error, id reason) {
             }
             [rules addObject:updated];
         }
-        NSUInteger generatedFrom = cursor, generated = 0, partial = 0, nextNumber = rules.count + 1;
+        NSUInteger generatedFrom = cursor, generated = 0, partial = 0;
+        if (intent == SRGroupingIntentAutomatic) recipe = [recipe sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+            return [left[@"size"] compare:right[@"size"]];
+        }];
         for (NSDictionary *entry in recipe) {
             NSUInteger size = [entry[@"size"] unsignedIntegerValue], count = [entry[@"count"] unsignedIntegerValue];
             BOOL custom = (intent == SRGroupingIntentCustom);
@@ -148,12 +172,8 @@ static void SRGroupingError(NSError **error, id reason) {
             // Stop at available rows even when the requested rule count is very large.
             for (NSUInteger i = 0; i < count && cursor < eligible.count; i++) {
                 NSUInteger length = MIN(size, eligible.count - cursor);
-                NSString *name;
-                do { name = [NSString stringWithFormat:@"Rule %lu", (unsigned long)nextNumber++]; }
-                while ([names containsObject:name]);
-                [names addObject:name];
-                NSMutableDictionary *created = [@{@"id": NSUUID.UUID.UUIDString, @"name": name,
-                    @"targets": [eligible subarrayWithRange:NSMakeRange(cursor, length)],
+                NSMutableDictionary *created = [@{@"id": NSUUID.UUID.UUIDString, @"name": @"generated",
+                    @"generatedName": @"generated", @"targets": [eligible subarrayWithRange:NSMakeRange(cursor, length)],
                     @"origin": custom ? @"custom" : @"auto"} mutableCopy];
                 // A custom rule carries no capacity: it is never topped up.
                 if (!custom) created[@"capacity"] = @(size);
@@ -164,7 +184,7 @@ static void SRGroupingError(NSError **error, id reason) {
             [batches addObject:@{@"size": @(size), @"count": @(count), @"generatedCount": @(batchRules),
                 @"assignedCount": @(cursor - batchStart), @"shortfallCount": @(size * count - (cursor - batchStart))}];
         }
-        NSMutableDictionary *candidate = [snapshot mutableCopy]; candidate[@"rules"] = rules;
+        NSMutableDictionary *candidate = [snapshot mutableCopy]; candidate[@"rules"] = SRRefreshGeneratedRangeNames(rules);
         if (![SRConfiguration validateDraft:candidate error:NULL]) @throw @"Generated configuration is invalid; previous rules are unchanged";
         // Two different "nothing happened" cases. An explicit request that finds
         // no available row is a legitimate zero result: the caller shows "no
@@ -199,7 +219,7 @@ static void SRGroupingError(NSError **error, id reason) {
             if (!targets.count) continue;
             NSMutableDictionary *updated = [rule mutableCopy]; updated[@"targets"] = targets; [rules addObject:updated];
         }
-        NSMutableDictionary *candidate = [snapshot mutableCopy]; candidate[@"excludedGroups"] = groups; candidate[@"rules"] = rules;
+        NSMutableDictionary *candidate = [snapshot mutableCopy]; candidate[@"excludedGroups"] = groups; candidate[@"rules"] = SRRefreshGeneratedRangeNames(rules);
         if (![SRConfiguration validateDraft:candidate error:NULL]) @throw @"Invalid exclusions; previous rules are unchanged";
         return [SRSourceMessage frozenJSON:candidate];
     } @catch (id reason) { SRGroupingError(error, reason); return nil; }

@@ -94,11 +94,11 @@ class B3ReadOnlyPages(unittest.TestCase):
     def test_unavailable_media_is_stated_not_faked(self):
         source = screens()
         self.assertIn('@"素材不可用：本地没有该版本的媒体引用"', source)
-        self.assertIn("素材不在此页渲染", source)
-        # Image versions never open a viewer or read asset bytes.
+        self.assertIn("预览不可用", source)
+        # Old version rows remain metadata-only; current-version previews read through Core.
         self.assertIn('if (![version[@"kind"] isEqual:@"text"]) return;', source)
         self.assertNotIn("dataForPayload", source)
-        # Type symbols are UI chrome; never decode an item's image bytes here.
+        # Local preview decoding is bounded and never reads a path or host getter.
         self.assertIn("[UIImage systemImageNamed:symbol]", source)
         for forbidden in ("imageWithData:", "imageWithContentsOfFile:", "initWithData:"):
             self.assertNotIn(forbidden, source)

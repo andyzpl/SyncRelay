@@ -16,6 +16,10 @@ FOUNDATION_EXPORT UIViewController *SRCreateTargetPicker(SRStore *store, NSStrin
                                                          BOOL (^verifyAccount)(void),
                                                          void (^ _Nullable openGroups)(UIViewController *source),
                                                          void (^completion)(NSArray<NSString *> *targets));
+/* Same picker, retaining the exact selected saved rules for a frozen history. */
+FOUNDATION_EXPORT UIViewController *SRCreateGroupedTargetPicker(SRStore *store, NSString *account,
+    BOOL (^verifyAccount)(void), void (^ _Nullable openGroups)(UIViewController *source),
+    void (^completion)(NSArray<NSString *> *targets, NSArray<NSDictionary *> *groups));
 @class SRSmallGroupSession;
 FOUNDATION_EXPORT UIViewController *SRCreateLibraryList(SRStore *store, NSString *account,
                                                         BOOL (^verifyAccount)(void),
