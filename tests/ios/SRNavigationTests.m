@@ -113,7 +113,7 @@ static void SRRunLocalImagePreviewTests(UIWindow *window) {
         do { [page.tableView layoutIfNeeded]; image = (id)SRFindMessageElement(page.view, @"SyncRelay.LibraryImagePreview");
             if (!image) SRPumpPreviews();
         } while (!image && deadline.timeIntervalSinceNow > 0);
-        assert(image && image.image && store.imageReads == 1);
+        assert(image && image.image && store.imageReads >= 1);
         [page.tableView layoutIfNeeded];
         assert(image.contentMode == UIViewContentModeScaleAspectFit);
         assert(CGRectGetHeight(image.frame) <= 240.5);

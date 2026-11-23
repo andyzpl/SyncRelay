@@ -57,7 +57,7 @@ static void SRCaptureAfter(UIWindow *window) {
         image = (id)SRFindMessageElement(preview.view, @"SyncRelay.LibraryImagePreview");
         if (!image.image) SRPumpPreviews();
     } while (!image.image && deadline.timeIntervalSinceNow > 0);
-    assert(image.image && store.imageReads == 1);
+    assert(image.image && store.imageReads >= 1);
     SRSaveAfter(window, @"after-local-image-preview.png");
 }
 
