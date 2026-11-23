@@ -71,7 +71,7 @@ try:
          '-framework', 'ImageIO', '-framework', 'CoreGraphics', '-lsqlite3', '-o', app / 'SRTestApp'], timeout=300)
     run(['codesign', '--force', '--sign', '-', app])
     run(['xcrun', 'simctl', 'boot', udid])
-    run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], timeout=180)
+    run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], timeout=360)
     run(['xcrun', 'simctl', 'ui', udid, 'appearance', 'light'])
     run(['xcrun', 'simctl', 'status_bar', udid, 'override', '--time', '9:41', '--batteryState', 'charged', '--batteryLevel', '100'])
     run(['xcrun', 'simctl', 'install', udid, app])
