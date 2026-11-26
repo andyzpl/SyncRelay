@@ -51,7 +51,7 @@ try:
     device_types = json.loads(run(['xcrun', 'simctl', 'list', 'devicetypes', '--json']))['devicetypes']
     # iPhone 14 fixes the UIKit viewport at 390x844 points; use an installed iOS runtime.
     device_type = next(t['identifier'] for t in device_types if t['name'] == 'iPhone 14')
-    udid = run(['xcrun', 'simctl', 'create', 'SyncRelay-UI-tests', device_type, runtime['identifier']]).strip()
+    udid = None
     app = evidence / 'SRTestApp.app'
     app.mkdir(exist_ok=True)
     with (app / 'Info.plist').open('wb') as handle:
@@ -70,8 +70,24 @@ try:
          *sources, 'tests/ios/SRTestApp.m', '-framework', 'Foundation', '-framework', 'UIKit',
          '-framework', 'ImageIO', '-framework', 'CoreGraphics', '-lsqlite3', '-o', app / 'SRTestApp'], timeout=300)
     run(['codesign', '--force', '--sign', '-', app])
-    run(['xcrun', 'simctl', 'boot', udid])
-    run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], timeout=360)
+    last_error = None
+    for attempt in range(1, 4):
+        udid = run(['xcrun', 'simctl', 'create', f'SyncRelay-UI-tests-{attempt}', device_type, runtime['identifier']]).strip()
+        try:
+            run(['xcrun', 'simctl', 'boot', udid], timeout=30)
+            run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], timeout=120)
+            break
+        except Exception as error:
+            last_error = error
+            print(f'simulator boot attempt {attempt} failed: {error}', file=sys.stderr)
+            for command in [['xcrun', 'simctl', 'shutdown', udid], ['xcrun', 'simctl', 'delete', udid]]:
+                try:
+                    run(command, timeout=30)
+                except Exception as cleanup_error:
+                    print(f'boot recovery cleanup: {cleanup_error}', file=sys.stderr)
+            udid = None
+    else:
+        raise RuntimeError('all simulator boot attempts failed') from last_error
     run(['xcrun', 'simctl', 'ui', udid, 'appearance', 'light'])
     run(['xcrun', 'simctl', 'status_bar', udid, 'override', '--time', '9:41', '--batteryState', 'charged', '--batteryLevel', '100'])
     run(['xcrun', 'simctl', 'install', udid, app])
