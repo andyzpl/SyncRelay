@@ -179,8 +179,11 @@ static void SRRunFooterLayoutTests(UIWindow *window) {
 
 static void SRSettleNavigation(SRNavigationController *navigation) {
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
-    while (navigation.transitionCoordinator && deadline.timeIntervalSinceNow > 0)
+    do {
+        [navigation.view.window layoutIfNeeded];
+        [navigation.view layoutIfNeeded];
         [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    } while (navigation.transitionCoordinator && deadline.timeIntervalSinceNow > 0);
     assert(navigation.transitionCoordinator == nil);
 }
 
@@ -388,6 +391,7 @@ static void SRRunLibraryGroupPickerTests(UIWindow *window) {
     UIViewController *detail = [[UIViewController alloc] init];
     SRNavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:detail];
     window.rootViewController = navigation;
+    SRSettleNavigation(navigation);
     __block BOOL allowed = YES;
     __block NSUInteger opens = 0;
     __block NSArray *picked = nil;
@@ -408,6 +412,7 @@ static void SRRunLibraryGroupPickerTests(UIWindow *window) {
     assert([[data tableView:table cellForRowAtIndexPath:first].textLabel.text isEqual:@"还没有可用的目标分组"]);
     assert([[data tableView:table cellForRowAtIndexPath:second].textLabel.text isEqual:@"去群分组"]);
     [delegate tableView:table didSelectRowAtIndexPath:second];
+    SRSettleNavigation(navigation);
     assert(opens == 1 && navigation.topViewController != picker && !picked);
 
     store.rules = @[@{@"name": @"第一组", @"targets": @[@{@"id": @"a@chatroom"}]},
