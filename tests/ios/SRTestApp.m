@@ -76,17 +76,25 @@ static void SRCaptureAfter(UIWindow *window) {
     static BOOL started = NO;
     if (started) return;
     started = YES;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        assert(NSThread.isMainThread);
-        [UIView setAnimationsEnabled:NO];
-        SRRunVisualTests(self.window);
-        puts("SR_TEST_ENTRYPOINT_PASS: SRFloatingProgressTests");
-        SRRunNavigationTests(self.window);
-        puts("SR_TEST_ENTRYPOINT_PASS: SRNavigationTests");
-        SRCaptureAfter(self.window);
-        puts("SR_UI_TESTS_PASS"); fflush(stdout); fflush(stderr);
-        exit(EXIT_SUCCESS);
-    });
+    // Nested test run-loop pumping must be able to drain main-queue image completions.
+    [self performSelector:@selector(runTests) withObject:nil afterDelay:0];
+}
+- (void)runTests {
+    assert(NSThread.isMainThread);
+    __block BOOL mainQueueDrained = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ mainQueueDrained = YES; });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+    while (!mainQueueDrained && deadline.timeIntervalSinceNow > 0) SRPumpPreviews();
+    assert(mainQueueDrained);
+    puts("PASS: nested test run loop drains asynchronous main-queue completions");
+    [UIView setAnimationsEnabled:NO];
+    SRRunVisualTests(self.window);
+    puts("SR_TEST_ENTRYPOINT_PASS: SRFloatingProgressTests");
+    SRRunNavigationTests(self.window);
+    puts("SR_TEST_ENTRYPOINT_PASS: SRNavigationTests");
+    SRCaptureAfter(self.window);
+    puts("SR_UI_TESTS_PASS"); fflush(stdout); fflush(stderr);
+    exit(EXIT_SUCCESS);
 }
 @end
 int main(int argc, char **argv) {
