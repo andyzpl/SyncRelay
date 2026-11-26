@@ -74,7 +74,7 @@ try:
     for attempt in range(1, 4):
         udid = run(['xcrun', 'simctl', 'create', f'SyncRelay-UI-tests-{attempt}', device_type, runtime['identifier']]).strip()
         try:
-            run(['xcrun', 'simctl', 'boot', udid], timeout=30)
+            run(['xcrun', 'simctl', 'boot', udid], timeout=120)
             run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], timeout=120)
             break
         except Exception as error:
