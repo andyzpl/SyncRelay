@@ -99,7 +99,7 @@ try:
         raise RuntimeError('all simulator boot attempts failed') from last_error
     run(['xcrun', 'simctl', 'ui', udid, 'appearance', 'light'])
     run(['xcrun', 'simctl', 'status_bar', udid, 'override', '--time', '9:41', '--batteryState', 'charged', '--batteryLevel', '100'])
-    run(['xcrun', 'simctl', 'install', udid, app])
+    run(['xcrun', 'simctl', 'install', udid, app], timeout=240)
     output = run(['xcrun', 'simctl', 'launch', '--console', '--terminate-running-process', udid, 'local.syncrelay.uitests'], timeout=180)
     required = ['SR_TEST_ENTRYPOINT_PASS: SRFloatingProgressTests',
                 'SR_TEST_ENTRYPOINT_PASS: SRNavigationTests', 'SR_UI_TESTS_PASS']
