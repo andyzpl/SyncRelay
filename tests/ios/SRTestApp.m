@@ -77,9 +77,9 @@ static void SRCaptureAfter(UIWindow *window) {
     if (started) return;
     started = YES;
     // Nested test run-loop pumping must be able to drain main-queue image completions.
-    [self performSelector:@selector(runTests) withObject:nil afterDelay:0];
+    [self performSelector:@selector(runTests:) withObject:nil afterDelay:0];
 }
-- (void)runTests {
+- (void)runTests:(__unused id)sender {
     assert(NSThread.isMainThread);
     __block BOOL mainQueueDrained = NO;
     dispatch_async(dispatch_get_main_queue(), ^{ mainQueueDrained = YES; });
