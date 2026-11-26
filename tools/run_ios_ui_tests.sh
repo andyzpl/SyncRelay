@@ -75,7 +75,16 @@ try:
         udid = run(['xcrun', 'simctl', 'create', f'SyncRelay-UI-tests-{attempt}', device_type, runtime['identifier']]).strip()
         try:
             run(['xcrun', 'simctl', 'boot', udid], timeout=120)
-            run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], timeout=120)
+            deadline = __import__('time').monotonic() + 180
+            while __import__('time').monotonic() < deadline:
+                devices = json.loads(run(['xcrun', 'simctl', 'list', 'devices', '--json'], timeout=30))
+                state = next((device.get('state') for devices_by_runtime in devices['devices'].values()
+                              for device in devices_by_runtime if device.get('udid') == udid), None)
+                if state == 'Booted':
+                    break
+                __import__('time').sleep(2)
+            else:
+                raise RuntimeError('simulator did not reach Booted state')
             break
         except Exception as error:
             last_error = error
