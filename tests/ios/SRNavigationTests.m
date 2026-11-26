@@ -417,8 +417,16 @@ static void SRRunLibraryGroupPickerTests(UIWindow *window) {
 
     store.rules = @[@{@"name": @"第一组", @"targets": @[@{@"id": @"a@chatroom"}]},
                     @{@"name": @"第二组", @"targets": @[@{@"id": @"b@chatroom"}]}];
-    [navigation popViewControllerAnimated:NO];
+    NSUInteger readsBeforeReturn = store.reads;
+    UIViewController *groupsPage = navigation.topViewController;
+    assert([navigation popViewControllerAnimated:NO] == groupsPage);
     SRSettleNavigation(navigation);
+    NSDate *returnDeadline = [NSDate dateWithTimeIntervalSinceNow:3];
+    while (store.reads == readsBeforeReturn && returnDeadline.timeIntervalSinceNow > 0) {
+        [window layoutIfNeeded];
+        SRPumpPreviews();
+    }
+    assert(store.reads > readsBeforeReturn && picker.viewIfLoaded.window == window);
     assert(navigation.topViewController == picker && !picked && !done.enabled);
     assert(table.numberOfSections == 1 && [table numberOfRowsInSection:0] == 2);
     assert([[data tableView:table cellForRowAtIndexPath:first].textLabel.text isEqual:@"第一组"]);
