@@ -234,8 +234,9 @@ static void SRRunForwardingRecordsTests(UIWindow *window) {
     UITableViewCell *record = [list.tableView.dataSource tableView:list.tableView cellForRowAtIndexPath:first];
     assert([list.title isEqual:@"转发记录"] && list.tableView.style == UITableViewStyleInsetGrouped);
     [record layoutIfNeeded];
+    NSLog(@"fixture forwarding row: title=%@ subtitle=%@ reads=%lu", record.textLabel.text, record.detailTextLabel.text, (unsigned long)store.reads);
     assert([record.textLabel.text isEqual:@"会议通知"]);
-    assert([record.detailTextLabel.text containsString:@"消息库"]);
+    assert([record.detailTextLabel.text containsString:@"消息库"] && [record.detailTextLabel.text containsString:@"2 个群"]);
     [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:first];
     SRSettleNavigation(navigation);
     UITableViewController *detail = (id)navigation.topViewController;

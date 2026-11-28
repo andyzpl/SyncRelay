@@ -47,7 +47,11 @@ try:
     sdk = run(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-path']).strip()
     runtime_info = json.loads(run(['xcrun', 'simctl', 'list', 'runtimes', '--json']))
     runtimes = [r for r in runtime_info['runtimes'] if r.get('isAvailable') and '.iOS-' in r['identifier']]
-    runtime = max(runtimes, key=lambda r: tuple(map(int, r['version'].split('.'))))
+    sdk_version = run(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version']).strip()
+    compatible = [r for r in runtimes if r['version'].split('.')[:2] == sdk_version.split('.')[:2]]
+    assert compatible, f'no installed iOS runtime matching selected SDK {sdk_version}'
+    runtime = max(compatible, key=lambda r: tuple(map(int, r['version'].split('.'))))
+    print(f'UIKit SDK {sdk_version}; runtime {runtime["identifier"]}', flush=True)
     device_types = json.loads(run(['xcrun', 'simctl', 'list', 'devicetypes', '--json']))['devicetypes']
     # iPhone 14 fixes the UIKit viewport at 390x844 points; use an installed iOS runtime.
     device_type = next(t['identifier'] for t in device_types if t['name'] == 'iPhone 14')
