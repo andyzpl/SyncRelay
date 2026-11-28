@@ -235,7 +235,7 @@ static void SRRunForwardingRecordsTests(UIWindow *window) {
     assert([list.title isEqual:@"转发记录"] && list.tableView.style == UITableViewStyleInsetGrouped);
     [record layoutIfNeeded];
     assert([record.textLabel.text isEqual:@"会议通知"]);
-    assert([record.detailTextLabel.text containsString:@"已处理 2/2"]);
+    assert([record.detailTextLabel.text containsString:@"消息库"]);
     [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:first];
     SRSettleNavigation(navigation);
     UITableViewController *detail = (id)navigation.topViewController;
