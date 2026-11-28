@@ -232,13 +232,10 @@ static void SRRunForwardingRecordsTests(UIWindow *window) {
     [list.view layoutIfNeeded];
     NSIndexPath *first = [NSIndexPath indexPathForRow:0 inSection:0];
     UITableViewCell *record = [list.tableView.dataSource tableView:list.tableView cellForRowAtIndexPath:first];
-    NSIndexPath *summary = [NSIndexPath indexPathForRow:0 inSection:1];
-    UITableViewCell *result = [list.tableView.dataSource tableView:list.tableView cellForRowAtIndexPath:summary];
     assert([list.title isEqual:@"转发记录"] && list.tableView.style == UITableViewStyleInsetGrouped);
-    UIListContentConfiguration *recordContent = (id)record.contentConfiguration;
-    UIListContentConfiguration *resultContent = (id)result.contentConfiguration;
-    assert([recordContent.text isEqual:@"会议通知"]);
-    assert([resultContent.text containsString:@"2 个目标群"]);
+    [record layoutIfNeeded];
+    assert([record.textLabel.text isEqual:@"会议通知"]);
+    assert([record.detailTextLabel.text containsString:@"已处理 2/2"]);
     [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:first];
     SRSettleNavigation(navigation);
     UITableViewController *detail = (id)navigation.topViewController;
