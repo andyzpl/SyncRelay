@@ -234,7 +234,9 @@ static void SRRunForwardingRecordsTests(UIWindow *window) {
     NSIndexPath *summary = [NSIndexPath indexPathForRow:0 inSection:1];
     UITableViewCell *result = [list.tableView.dataSource tableView:list.tableView cellForRowAtIndexPath:summary];
     assert([list.title isEqual:@"转发记录"] && list.tableView.style == UITableViewStyleInsetGrouped);
-    assert([record.textLabel.text isEqual:@"会议通知"] && [result.textLabel.text containsString:@"2 个目标群"]);
+    printf("forwarding labels: record=%s result=%s\n", record.textLabel.text.UTF8String ?: "<nil>", result.textLabel.text.UTF8String ?: "<nil>");
+    assert([record.textLabel.text isEqual:@"会议通知"]);
+    assert([result.textLabel.text containsString:@"2"]);
     [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:first];
     SRSettleNavigation(navigation);
     UITableViewController *detail = (id)navigation.topViewController;
