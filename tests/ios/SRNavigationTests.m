@@ -228,6 +228,7 @@ static void SRRunForwardingRecordsTests(UIWindow *window) {
     UITableViewController *list = (id)SRCreateForwardingRecords((id)store, @"fixture-account", ^{ return allowed; });
     SRNavigationController *navigation = [[SRNavigationController alloc] initWithRootViewController:list];
     window.rootViewController = navigation;
+    SRSettleNavigation(navigation);
     [list.view layoutIfNeeded];
     NSIndexPath *first = [NSIndexPath indexPathForRow:0 inSection:0];
     UITableViewCell *record = [list.tableView.dataSource tableView:list.tableView cellForRowAtIndexPath:first];
